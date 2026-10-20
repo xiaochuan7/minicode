@@ -167,3 +167,10 @@ class UiaElement:
     help_text: str = ""
     #: 支不支持 InvokePattern（Invoke 优先于坐标点击）。
     supports_invoke: bool = False
+    #: 控件**当前可用吗**（``IsEnabled``）。
+    #:
+    #: 工单 M11 的「某个按钮变成不可用」要靠它判定（可访问性树查**状态**）。
+    #: 读不出来时按**可用**算（读不到 ≠ 不可用）。
+    enabled: bool = True
+    #: 目标**窗口标题**（工单 M11 AC 7：动作日志要含窗口句柄**与标题**）。
+    window_title: str = ""

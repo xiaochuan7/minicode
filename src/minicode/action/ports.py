@@ -130,6 +130,16 @@ class ControlCandidate:
     help_text: str = ""
     #: 是不是密码框（``IsPassword=True``）。
     is_password: bool = False
+    #: 控件**当前可用吗**（``IsEnabled``）。
+    #:
+    #: 工单 M11 AC 1 的「某个按钮变成不可用」要靠它判定 —— 可访问性树这一路
+    #: 查的就是**状态**（状态 / 存在性 / 矩形变化）。
+    #: 读不出来时**按可用算**（fail-closed 的另一头：宁可说「可用」，
+    #: 也不把「读不到」说成「不可用」）。
+    enabled: bool = True
+    #: 目标**窗口标题**（工单 M11 AC 7：动作日志要含窗口句柄**与标题**）。
+    #: 读不出来时是空串。
+    window_title: str = ""
     #: **未登记**的原始属性（fail-closed：一律不外发）。
     extra: Mapping[str, Any] = field(default_factory=dict, compare=False)
 

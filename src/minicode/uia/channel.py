@@ -454,6 +454,8 @@ def to_candidate(element: UiaElement) -> ControlCandidate:
         value=element.value,
         help_text=element.help_text,
         is_password=element.is_password,
+        enabled=element.enabled,
+        window_title=element.window_title,
     )
 
 

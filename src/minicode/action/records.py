@@ -148,6 +148,15 @@ class ActionTrace:
     gate_undecidable: tuple[str, ...] = ()
     #: 这一步**是否真的开启了 crop 精定位**（整屏第二遍不算）。
     refine_enabled: bool = False
+    #: **校验结果**（工单 M11）：期望断言 / 默认校验的结论。
+    #:
+    #: 它是**观测数据**，走旁路出口（不进主返回类型）。
+    #: 形状由校验层自己渲染（``verification.layer.VerificationResult.to_dict()``）。
+    verification_result: Mapping[str, Any] | None = None
+    #: **动作前**的状态（工单 M11 AC 7：动作日志要含「动作前后状态」）。
+    state_before: Mapping[str, Any] | None = None
+    #: **动作后**的状态。
+    state_after: Mapping[str, Any] | None = None
     result: ActionResult = field(default_factory=lambda: ActionResult(ok=True))
 
     @property
@@ -192,6 +201,8 @@ class ActionRecord:
     target_rect: tuple[int, int, int, int] | None = None
     target_control_type: str | None = None
     target_window_handle: int | None = None
+    #: 目标**窗口标题**（工单 M11 AC 7：动作日志要含窗口句柄**与标题**）。
+    target_window_title: str | None = None
     point_x: int | None = None
     point_y: int | None = None
     point_space: str = POINT_SPACE
@@ -269,6 +280,12 @@ class ActionRecord:
     gate_undecidable: tuple[str, ...] = ()
     #: 这一步**是否真的开启了 crop 精定位**（整屏第二遍不算）。
     refine_enabled: bool = False
+    #: **动作前后的状态**（工单 M11 AC 7：动作日志要含「动作前后状态」）。
+    #: 没接校验层时是 ``None``（不假装有状态）。
+    state_before: Mapping[str, Any] | None = None
+    state_after: Mapping[str, Any] | None = None
+    #: **校验结果**（工单 M11）：期望断言 / 默认校验的结论（落盘形状由校验层渲染）。
+    verification_result: Mapping[str, Any] | None = None
     notes: tuple[str, ...] = ()
 
     @property
@@ -289,6 +306,7 @@ class ActionRecord:
                 "rect": list(self.target_rect) if self.target_rect else None,
                 "control_type": self.target_control_type,
                 "window_handle": self.target_window_handle,
+                "window_title": self.target_window_title,
             },
             "point": (
                 {"x": self.point_x, "y": self.point_y, "space": self.point_space}
@@ -312,6 +330,10 @@ class ActionRecord:
                 "decision": self.decision_ms,
                 "execute_verify": self.execute_verify_ms,
             },
+            # 单步的三段**占比**（由上面三个值算出来，不是另一份数据）。
+            "timings_share": _stage_share(
+                self.locate_ms, self.decision_ms, self.execute_verify_ms
+            ),
             "action_timing": dict(self.action_timing) if self.action_timing else None,
             "verification": {
                 "landing_delta_px": self.landing_delta_px,
@@ -348,8 +370,31 @@ class ActionRecord:
             "gate_reasons": list(self.gate_reasons),
             "gate_undecidable": list(self.gate_undecidable),
             "refine_enabled": self.refine_enabled,
+            "state": {
+                "before": dict(self.state_before) if self.state_before is not None else None,
+                "after": dict(self.state_after) if self.state_after is not None else None,
+            },
+            "verification_result": (
+                dict(self.verification_result)
+                if self.verification_result is not None
+                else None
+            ),
             "notes": list(self.notes),
         }
+
+
+def _stage_share(
+    locate_ms: float, decision_ms: float, execute_verify_ms: float
+) -> dict[str, float]:
+    """三段耗时各自的**占比**（单步用；由那三个值算出来，不是另一份数据）。"""
+    total = float(locate_ms) + float(decision_ms) + float(execute_verify_ms)
+    if total <= 0:
+        return {"locate": 0.0, "decision": 0.0, "execute_verify": 0.0}
+    return {
+        "locate": float(locate_ms) / total,
+        "decision": float(decision_ms) / total,
+        "execute_verify": float(execute_verify_ms) / total,
+    }
 
 
 def frame_fields(frame: CapturedFrame | None) -> dict[str, Any]:
@@ -407,6 +452,7 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         target_rect=selected.rect if selected else None,
         target_control_type=selected.control_type if selected else None,
         target_window_handle=selected.window_handle if selected else None,
+        target_window_title=(selected.window_title or None) if selected else None,
         point_x=trace.landing_point[0] if trace.landing_point else None,
         point_y=trace.landing_point[1] if trace.landing_point else None,
         capture_width=trace.capture_width,
@@ -463,6 +509,20 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         gate_reasons=tuple(trace.gate_reasons),
         gate_undecidable=tuple(trace.gate_undecidable),
         refine_enabled=trace.refine_enabled,
+        state_before=(
+            dict(trace.state_before) if trace.state_before is not None else None
+        ),
+        state_after=dict(trace.state_after) if trace.state_after is not None else None,
+        # 动作日志里的「前后状态」**只存一份**：校验结果那份里把状态摘掉。
+        verification_result=(
+            {
+                key: value
+                for key, value in trace.verification_result.items()
+                if key not in ("state_before", "state_after")
+            }
+            if trace.verification_result is not None
+            else None
+        ),
         notes=tuple(result.notes),
     )
 

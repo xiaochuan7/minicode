@@ -48,6 +48,8 @@ from minicode.coord.coordinates import DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX, Coord
 from minicode.redact.config import ModelContextConfig
 from minicode.redact.errors import ChannelUnavailableError
 from minicode.redact.redactor import TreeRedactor
+from minicode.verification.expect import Expectation
+from minicode.verification.layer import Verifier, VerifyRequest
 
 from .capture import CapturePort
 from .errors import ErrorCode, failure_type_of
@@ -143,6 +145,13 @@ class SeamRequest:
     #: **控件类型提示**（``"Button"`` 之类）。定位通道据此发**控件类型条件**下的
     #: 定点查询（目标描述不是控件名时靠它缩小范围；没有它就不退到类型扫描）。
     control_type: str = ""
+    #: **期望**（工单 M11）：动作之后应当成立、可被确定性验证的状态。
+    #: 没有期望时走**默认校验**（界面无变化检测）。
+    expectation: Expectation | None = None
+    #: **决策段耗时**（毫秒）。缝自己不知道决策层有多慢 ——
+    #: 决策层把这一段的耗时告诉缝，缝把它记进追踪记录与动作记录
+    #: （三段耗时必须齐全，架构决策备忘 §2.5 ③）。
+    decision_ms: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -214,6 +223,7 @@ class ActionExecutionSeam:
         visual_admission: VisualAdmissionPort | None = None,
         visual_locator: VisualLocator | None = None,
         zoom_locator: ZoomLocator | None = None,
+        verifier: Verifier | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         #: 缝内唯一的抓屏入口（整屏 / 区域）。
@@ -261,6 +271,10 @@ class ActionExecutionSeam:
         #: **放大通道端口**（工单 M6）。放大是动作协议里的一个动作：
         #: 指定区域**回源重抓**后送模型，模型回答的仍是**整屏坐标**。
         self.zoom_locator = zoom_locator
+        #: **校验端口**（工单 M11）。动作做完后跑一次校验：
+        #: 有期望 → 断言期望；没有期望 → 默认校验（界面无变化检测）。
+        #: 缺省 = 不做校验（这一层是**可选**的）。
+        self.verifier = verifier
 
     # ------------------------------------------------------------------
     # 主流程
@@ -304,6 +318,8 @@ class ActionExecutionSeam:
         visual: VisualLocateResult | None = None
         #: 这一步**走了哪条通道**（``"uia"`` / ``"visual"``）：追踪记录里读得到。
         channel = ""
+        #: 动作**之前**观测到的控件（基线状态；校验层用它判「之前在不在」）。
+        baseline_candidates: tuple[ControlCandidate, ...] = ()
         if self.locator is not None:
             # UIA 通道（工单 M3）：定位、唯一性拒绝、消歧与执行前重读都在通道里。
             located = self.locator.locate(
@@ -380,6 +396,7 @@ class ActionExecutionSeam:
             else:
                 channel = "uia"
                 selected = located.selected
+                baseline_candidates = located.candidates
                 try:
                     # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
                     # 定位通道**已经渲染过**就直接复用（模型侧文本只有一个出口、只渲染一次）。
@@ -412,6 +429,7 @@ class ActionExecutionSeam:
                 # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
                 model_view = self._render_model_view(snapshot.candidates)
                 selected, _ = self._select(snapshot.candidates, request.target_description)
+                baseline_candidates = snapshot.candidates
             except ChannelUnavailableError as exc:
                 locate_ms = (self._clock() - locate_started) * 1000.0
                 return self._fail(
@@ -488,21 +506,47 @@ class ActionExecutionSeam:
 
         # -- 执行 + 校验 ---------------------------------------------------
         action = self._build_action(request, final_point)
+        verify_request = self._verify_request(
+            request, frame, baseline_candidates, selected, final_point
+        )
         execute_started = self._clock()
+        #: **动作之前**取基线观测（工单 M11）：期望判的是**变化**，
+        #: 没有「之前」这一份就判不了「是不是真的变了」。
+        baseline = (
+            self.verifier.begin(verify_request) if self.verifier is not None else None
+        )
         result = self._execute(action, final_point, located)
+        #: **校验**（工单 M11）：动作做完后跑一次 —— 有期望就断言期望，
+        #: 没有期望就做默认校验（界面无变化检测）。
+        #: ⚠️ 动作**本身失败**时不校验（动作压根没发生，验不出什么），
+        #: 也**不覆盖**原来的错误码（一个码一件事）。
+        verification = None
+        if self.verifier is not None and result.ok:
+            verification = self.verifier.verify(
+                replace(verify_request, baseline=baseline)
+            )
         execute_verify_ms = (self._clock() - execute_started) * 1000.0
 
         failures = {name: None for name in FAILURE_FIELDS}
         if not result.ok and result.error_code is not None:
             failures["execute"] = result.error_code.value
+        if verification is not None and verification.failed:
+            # **期望断言失败** → 归「执行失败」（它在「执行+校验」这一段里没达成目标）。
+            # ⚠️ 「界面无变化」**不是**失败：没有期望时的默认校验只给信号
+            # （无变化 ≠ 失败 —— 对已置位控件再点一次就属于那种）。
+            failures["execute"] = ErrorCode.EXPECTATION_FAILED.value
+            result = replace(
+                result,
+                ok=False,
+                error_code=ErrorCode.EXPECTATION_FAILED,
+                error_message=f"期望断言失败：{verification.diff or verification.expected}",
+            )
 
         trace = ActionTrace(
             action=action,
             intent=action.intent,
             target_description=request.target_description,
-            candidates=trace_candidates(
-                located.candidates if located is not None else snapshot.candidates
-            ),
+            candidates=trace_candidates(baseline_candidates),
             selected=_traced_candidate(selected),
             landing_point=final_point,
             **frame_fields(frame),
@@ -511,7 +555,7 @@ class ActionExecutionSeam:
             skipped_capture_sources=tuple(skipped),
             unavailable_capture_sources=dict(self._capture_port.unavailable),
             locate_ms=locate_ms,
-            decision_ms=0.0,
+            decision_ms=request.decision_ms,
             execute_verify_ms=execute_verify_ms,
             failures=failures,
             channel=channel,
@@ -539,6 +583,17 @@ class ActionExecutionSeam:
             gate_reasons=visual.gate_reasons if visual is not None else (),
             gate_undecidable=visual.gate_undecidable if visual is not None else (),
             refine_enabled=visual.refine_enabled if visual is not None else False,
+            verification_result=verification.to_dict() if verification is not None else None,
+            state_before=(
+                dict(verification.state_before)
+                if verification is not None and verification.state_before is not None
+                else None
+            ),
+            state_after=(
+                dict(verification.state_after)
+                if verification is not None and verification.state_after is not None
+                else None
+            ),
             result=result,
             model_view=model_view,
         )
@@ -660,7 +715,7 @@ class ActionExecutionSeam:
             sent_width=frame.width,
             sent_height=frame.height,
             locate_ms=locate_ms,
-            decision_ms=0.0,
+            decision_ms=request.decision_ms,
             execute_verify_ms=execute_verify_ms,
             failures=failures,
             grounding_echoes=(zoom.echo,) if zoom.echo is not None else (),
@@ -709,7 +764,7 @@ class ActionExecutionSeam:
                 self._capture_port.skipped if action.kind is ActionKind.SCREENSHOT else ()
             ),
             locate_ms=0.0,
-            decision_ms=0.0,
+            decision_ms=request.decision_ms,
             execute_verify_ms=execute_verify_ms,
             failures=failures,
             result=result,
@@ -780,6 +835,27 @@ class ActionExecutionSeam:
         if not notes:
             return result
         return replace(result, notes=tuple(result.notes) + tuple(notes))
+
+    def _verify_request(
+        self,
+        request: SeamRequest,
+        frame: CapturedFrame,
+        baseline_candidates: tuple[ControlCandidate, ...],
+        selected: ControlCandidate | None,
+        final_point: tuple[int, int],
+    ) -> VerifyRequest:
+        """拼出**校验请求**（动作前后共用同一份）。
+
+        没接校验端口时也照样拼（调用方自己判断要不要用）。
+        """
+        return VerifyRequest(
+            expectation=request.expectation,
+            baseline_frame=frame,
+            landing_point=final_point,
+            window_handle=selected.window_handle if selected else None,
+            window_title=selected.window_title if selected else "",
+            target_description=request.target_description,
+        )
 
     def _admit_visual(self) -> VisualAdmission | None:
         """问一次「视觉通道现在能不能用」。
@@ -915,7 +991,7 @@ class ActionExecutionSeam:
             skipped_capture_sources=tuple(skipped),
             unavailable_capture_sources=dict(self._capture_port.unavailable),
             locate_ms=locate_ms,
-            decision_ms=0.0,
+            decision_ms=request.decision_ms,
             execute_verify_ms=0.0,
             failures=failures,
             channel=channel,

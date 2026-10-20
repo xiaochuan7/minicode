@@ -314,6 +314,10 @@ class PortShapeTest(unittest.TestCase):
                 "action_kind",
                 "params",
                 "control_type",
+                # 工单 M11：**期望**（动作之后应当成立的状态）与**决策段耗时**。
+                # 两个都是**加字段**（既有实现照旧能用），不改已有字段的含义。
+                "expectation",
+                "decision_ms",
             ],
         )
         self.assertEqual(

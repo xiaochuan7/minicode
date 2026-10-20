@@ -109,6 +109,16 @@ _GET_PROPERTY_INDEX = 10
 UIA_VALUE_PROPERTY_ID = 30045
 UIA_IS_PASSWORD_PROPERTY_ID = 30019
 UIA_HELP_TEXT_PROPERTY_ID = 30013
+#: ``IsEnabled``（控件当前**可用**吗）。工单 M11 的「某个按钮变成不可用」
+#: 要靠它判定（可访问性树查**状态**）。
+#:
+#: ⚠️ 这个 ID 是**在本机实测出来的**（不是抄来的）：2026-10-21 造了两个原生
+#: Win32 按钮（一个可用、一个 ``EnableWindow(FALSE)``），用
+#: ``GetCurrentPropertyValue`` 把 30000~30060 逐个读过去 ——
+#: **30010** 是唯一给出「可用=True / 不可用=False」的 ID
+#: （与 ``IsWindowEnabled`` 的读数一致）。
+#: ⚠️ 头文件里常见的那个号（30022）在本机读出来**恒为 False**（是别的属性）。
+UIA_IS_ENABLED_PROPERTY_ID = 30010
 
 
 def _get_property(ptr: int, property_id: int):
@@ -175,6 +185,14 @@ def _read_help_text(element) -> str:
     except OSError:
         return ""
     return value if isinstance(value, str) else ""
+
+
+def _read_is_enabled(element) -> bool | None:
+    """控件当前**可用**吗。读不出来时返回 ``None``（**读不到 ≠ 不可用**）。"""
+    try:
+        return bool(_get_property(_element_ptr(element), UIA_IS_ENABLED_PROPERTY_ID))
+    except OSError:
+        return None
 
 
 def _has_invoke(element) -> bool:
@@ -254,6 +272,9 @@ class WindowsUiaQueryPort:
         self._live: dict[str, object] = {}
         #: 最近一次定点查询的耗时（毫秒）。
         self.last_query_ms = 0.0
+        #: **窗口标题缓存**（按根窗口句柄）—— 一次查询里的元素多半在同一个窗口上，
+        #: 逐个元素去问系统太浪费（每个元素两次 Win32 调用）。
+        self._titles: dict[int, str] = {}
 
     # -- 端口 -------------------------------------------------------------
 
@@ -307,7 +328,10 @@ class WindowsUiaQueryPort:
             if root is None:
                 return (), 0
             matched, unmatched = self._query(controller, root, request)
-            return self._publish(matched), unmatched
+            # **窗口标题**取锚定窗口的（XAML island 那些元素自己没有窗口句柄，
+            # 标题只在锚定窗口上 —— 工单 M11 AC 7 的动作日志要它）。
+            anchor_title = _window_title(request.anchor.hwnd)
+            return self._publish(matched, anchor_title), unmatched
         finally:
             del controller
 
@@ -361,7 +385,7 @@ class WindowsUiaQueryPort:
         finally:
             _release(condition)
 
-    def _publish(self, elements: list) -> tuple[UiaElement, ...]:
+    def _publish(self, elements: list, anchor_title: str = "") -> tuple[UiaElement, ...]:
         """把 COM 元素转成读数，并**重新生成**元素 id。"""
         for old in self._live.values():
             try:
@@ -375,10 +399,12 @@ class WindowsUiaQueryPort:
         for index, element in enumerate(elements):
             element_id = make_element_id(prefix, index)
             self._live[element_id] = element
-            out.append(self._to_element(element, element_id))
+            out.append(self._to_element(element, element_id, anchor_title))
         return tuple(out)
 
-    def _to_element(self, element, element_id: str) -> UiaElement:
+    def _to_element(
+        self, element, element_id: str, anchor_title: str = ""
+    ) -> UiaElement:
 
         rect_struct = element.bounding_rect
         rect = read_rect(
@@ -392,19 +418,33 @@ class WindowsUiaQueryPort:
         is_password = _read_is_password(element)
         # fail-closed：**读不出 IsPassword 就不读 Value**（宁可当成密码框）。
         sensitive = is_password is not False
+        # 读不出 IsEnabled 时按**可用**算（读不到 ≠ 不可用）。
+        enabled = _read_is_enabled(element)
+        window_handle = int(element.native_window_handle) or None
         return UiaElement(
             name=element.name or "",
             control_type=element.control_type_name,
             class_name=element.class_name or "",
             automation_id=element.automation_id or None,
             rect=rect if rect is not None else (0, 0, 0, 0),
-            window_handle=int(element.native_window_handle) or None,
+            window_handle=window_handle,
             element_id=element_id,
             is_password=bool(sensitive),
             value="" if sensitive else _read_value(element),
             help_text=_read_help_text(element),
             supports_invoke=_has_invoke(element),
+            enabled=True if enabled is None else enabled,
+            window_title=self._title(window_handle) or anchor_title,
         )
+
+    def _title(self, hwnd: int | None) -> str:
+        """窗口标题（**按根窗口缓存**：一次查询里只问系统一次）。"""
+        if not hwnd:
+            return ""
+        root = int(_user32.GetAncestor(wintypes.HWND(int(hwnd)), _GA_ROOT) or int(hwnd))
+        if root not in self._titles:
+            self._titles[root] = _window_title(root)
+        return self._titles[root]
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +589,12 @@ _user32.GetWindowThreadProcessId.argtypes = [
     ctypes.POINTER(wintypes.DWORD),
 ]
 _user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+#: 窗口标题（工单 M11 AC 7：动作日志要含窗口句柄**与标题**）。
+_user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.GetWindowTextW.restype = ctypes.c_int
+#: ``GA_ROOT`` —— 取根窗口（子窗口自己没标题，标题在根窗口上）。
+_user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+_user32.GetAncestor.restype = wintypes.HWND
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 _kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -570,6 +616,26 @@ def _process_id(hwnd: int) -> int:
     pid = wintypes.DWORD()
     _user32.GetWindowThreadProcessId(wintypes.HWND(int(hwnd)), ctypes.byref(pid))
     return int(pid.value)
+
+
+#: ``GetAncestor`` 的 ``GA_ROOT``。
+_GA_ROOT = 2
+
+
+def _window_title(hwnd: int | None) -> str:
+    """窗口标题（读根窗口的；读不到就是空串）。
+
+    工单 M11 AC 7：动作日志要含「目标窗口句柄**与标题**」。
+    """
+    if not hwnd:
+        return ""
+    try:
+        root = int(_user32.GetAncestor(wintypes.HWND(int(hwnd)), _GA_ROOT) or hwnd)
+        buffer = ctypes.create_unicode_buffer(512)
+        length = _user32.GetWindowTextW(wintypes.HWND(root), buffer, 512)
+    except Exception:
+        return ""
+    return buffer.value[:length] if length > 0 else ""
 
 
 def _process_image(pid: int) -> str:

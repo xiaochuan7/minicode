@@ -53,7 +53,57 @@ def _parse_args(argv):
         action="store_true",
         help="接上模型做消歧（工单 M4）：候选不唯一时让模型在候选集内指认",
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "接上校验层（工单 M11）：动作之后跑一次校验"
+            "（没有期望 → 默认校验：界面无变化检测）"
+        ),
+    )
+    parser.add_argument(
+        "--expect",
+        default="",
+        help=(
+            "可判定的期望（工单 M11）：`state:<控件名>:不可用` / `state:<控件名>:可用` / "
+            "`text:<文本>`（出现）/ `text:<文本>:消失`"
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _expectation(text: str | None):
+    """把命令行上的期望写法解析成 :class:`~minicode.verification.expect.Expectation`。
+
+    写法：
+
+    * ``state:<控件名>:不可用`` —— 那个按钮**变成不可用**（工单 AC 1 的例子）；
+    * ``state:<控件名>:可用``；
+    * ``text:<文本>`` —— 那段文本**出现**；
+    * ``text:<文本>:消失`` —— 那段文本**消失**。
+    """
+    from minicode.verification.expect import Expectation, ExpectationKind
+
+    if not text or not text.strip():
+        return None
+    parts = [part.strip() for part in text.split(":", 2)]
+    kind = parts[0]
+    if kind == "state" and len(parts) >= 2:
+        want = parts[2] if len(parts) > 2 else "不可用"
+        return Expectation(
+            ExpectationKind.STATE_CHANGE,
+            parts[1],
+            enabled=want in ("可用", "enabled", "true"),
+        )
+    if kind == "text" and len(parts) >= 2:
+        gone = len(parts) > 2 and parts[2] in ("消失", "disappear", "gone")
+        return Expectation(
+            ExpectationKind.TEXT_DISAPPEARS if gone else ExpectationKind.TEXT_APPEARS,
+            parts[1],
+        )
+    raise SystemExit(
+        f"看不懂的期望写法：{text!r}（例：state:保存:不可用 / text:已保存）"
+    )
 
 
 def _find_window(class_name: str) -> int:
@@ -126,10 +176,13 @@ def _run(args) -> int:
         locator=channel,
         invoker=WindowsElementInvoker(port),
         anchor=anchor,
+        verifier=_verifier(args, port, anchor),
     )
     result = seam.run(
         SeamRequest(
-            target_description=args.target, control_type=args.control_type
+            target_description=args.target,
+            control_type=args.control_type,
+            expectation=_expectation(args.expect),
         )
     )
     trace = sink.traces[-1] if sink.traces else None
@@ -161,6 +214,17 @@ def _run(args) -> int:
             f"｜模型调用={trace.model_calls} 次（UIA 命中时必须是 0）"
         )
         print(f"说明    ：{'；'.join(trace.result.notes) or '（无）'}")
+        if trace.verification_result is not None:
+            verification = trace.verification_result
+            change = verification.get("change") or {}
+            print(
+                f"校验    ：{verification['outcome']}"
+                f"｜期望={verification['expected'] or '（无）'}"
+                f"｜观察={verification['observed'] or '（无）'}"
+                f"｜变化率(峰值)={change.get('change_rate', 0):.4f}"
+                f"｜轮询帧数={change.get('frames', 0)}"
+                f"｜模型调用={verification['model_calls']}（校验层不调模型）"
+            )
         print(
             f"允许切视觉：{trace.allows_visual_fallback}"
             "（只有覆盖失败为真；本单不实现切视觉）"
@@ -192,6 +256,22 @@ def _run(args) -> int:
         print(f"动作记录：{path}")
     print("================================")
     return 0 if result.ok else 1
+
+
+def _verifier(args, port, anchor):
+    """校验层（工单 M11）。没给 ``--verify`` → ``None``（不做校验）。"""
+    if not args.verify:
+        return None
+
+    from minicode.action.capture import CapturePort
+    from minicode.action.windows import WindowsCaptureSource
+    from minicode.uia.observer import UiaStateObserver
+    from minicode.verification.layer import VerificationLayer
+
+    return VerificationLayer(
+        screenshot_port=CapturePort([WindowsCaptureSource()]),
+        observer=UiaStateObserver(port, anchor),
+    )
 
 
 def _disambiguation_ends(args):

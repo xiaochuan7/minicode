@@ -18,15 +18,18 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from minicode.action.errors import FailureType, failure_type_of
 from minicode.action.image import encode_frame_base64
 from minicode.action.program import ProgramOutcome, run_program
 from minicode.model.effort import Effort
 from minicode.model.ports import ModelCaller
 from minicode.model.request_log import count_unset_effort, total_input_tokens
+from minicode.verification.telemetry import TelemetryAccumulator
 
 from .api import ProtocolApi
 from .context import ContextWindow
@@ -75,6 +78,22 @@ def _completion_claims(text: str) -> int:
     return sum(1 for phrase in _COMPLETION_PHRASES if phrase in lowered)
 
 
+def _decision_failure(outcome: ProgramOutcome) -> str | None:
+    """这一步的失败**算不算决策失败**（工单 M11 AC 5 的三类之一）。
+
+    判据只有一份：错误码 → 失败类型（``minicode.action.errors``），
+    **决策失败**（``decision``）的那两个码才算 ——
+    其余（动作执行失败等）由动作自己的追踪记录记进「执行失败」，
+    这里**不重复计数**。
+    """
+    code = outcome.error_code
+    if code is None:
+        return None
+    if failure_type_of(code) is FailureType.DECISION:
+        return code.value
+    return None
+
+
 @dataclass(frozen=True)
 class StepRecord:
     """一步（一次模型请求 + 它带来的执行结果）的记录。"""
@@ -95,6 +114,9 @@ class StepRecord:
     calls: tuple[dict[str, Any], ...] = ()
     asked_human: bool = False
     completion_claims: int = 0
+    #: **决策段耗时**（毫秒）—— 这一步的模型调用花了多久
+    #: （三段耗时里的中间那一段，工单 M11 AC 4）。
+    decision_ms: float = 0.0
 
     @property
     def total_input_tokens(self) -> int | None:
@@ -124,6 +146,7 @@ class StepRecord:
             "calls": list(self.calls),
             "asked_human": self.asked_human,
             "completion_claims": self.completion_claims,
+            "decision_ms": self.decision_ms,
         }
 
 
@@ -177,6 +200,7 @@ class DecisionHarness:
         keep_frames: int = 3,
         max_tokens: int = 4000,
         request_log: Any | None = None,
+        telemetry: TelemetryAccumulator | None = None,
     ):
         self.caller = caller
         self.api = api
@@ -189,6 +213,9 @@ class DecisionHarness:
         #: 太小会出现「HTTP 200 但没有文本输出」）。
         self.max_tokens = int(max_tokens)
         self.request_log = request_log
+        #: **三段耗时与三类失败**的累加器（工单 M11 AC 4 / AC 5）。
+        #: 给了它，整任务的三段占比与三类失败分布就有了。
+        self.telemetry = telemetry
 
     # ------------------------------------------------------------------
     # 主循环
@@ -211,12 +238,17 @@ class DecisionHarness:
         context.add_round(summary="第 0 轮：初始画面（还没做任何动作）", frame=initial)
 
         for round_index in range(1, self.max_rounds + 1):
+            plan_started = time.perf_counter()
             reply = self.caller.complete(
                 build_plan_prompt(goal, context.render()),
                 effort=DECISION_EFFORT[STEP_PLAN],
                 max_tokens=self.max_tokens,
                 images_base64=self._images(context),
             )
+            decision_ms = (time.perf_counter() - plan_started) * 1000.0
+            # 决策段的耗时：报给累加器（整任务的决策段合计），
+            # 并**记在这一轮的第一个动作上**（动作日志里的 decision_ms）。
+            self._record_decision(decision_ms)
             program = extract_program(reply.text)
             outcome = run_program(program, self.api.as_mapping())
             calls = tuple(self.api.calls)
@@ -249,6 +281,7 @@ class DecisionHarness:
                     completion_claims=_completion_claims(
                         reply.text + "\n" + outcome.stdout
                     ),
+                    decision_ms=decision_ms,
                 )
             )
             growth.append((len(steps), steps[-1].total_input_tokens))
@@ -258,12 +291,15 @@ class DecisionHarness:
                 break
             if not outcome.ok:
                 # 反思步：上一轮没跑成 → 高档位复盘，给出下一步。
+                reflect_started = time.perf_counter()
                 reflect = self.caller.complete(
                     build_reflect_prompt(goal, context.render(), outcome.error_message or ""),
                     effort=DECISION_EFFORT[STEP_REFLECT],
                     max_tokens=self.max_tokens,
                     images_base64=self._images(context),
                 )
+                reflect_ms = (time.perf_counter() - reflect_started) * 1000.0
+                self._record_decision(reflect_ms, failure=_decision_failure(outcome))
                 context.add_note(f"反思：{reflect.text.strip()[:600]}")
                 steps.append(
                     StepRecord(
@@ -277,6 +313,7 @@ class DecisionHarness:
                         cache_creation_input_tokens=reflect.cache_creation_input_tokens,
                         program="",
                         completion_claims=_completion_claims(reflect.text),
+                        decision_ms=reflect_ms,
                     )
                 )
                 growth.append((len(steps), steps[-1].total_input_tokens))
@@ -310,6 +347,18 @@ class DecisionHarness:
         if not records:
             return 0
         return count_unset_effort(records)
+
+    def _record_decision(
+        self, decision_ms: float, failure: str | None = None
+    ) -> None:
+        """记一次决策：累加器收**决策段耗时**；接口面收**这一轮的第一个动作**。
+
+        决策耗时是**轮级**的量：它只记在轮内第一个动作上，
+        整任务的三段合计因此**不重复计数**。
+        """
+        if self.telemetry is not None:
+            self.telemetry.add_decision(decision_ms, failure)
+        self.api.begin_decision(decision_ms)
 
 
 def _summarize(

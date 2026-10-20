@@ -23,6 +23,7 @@ import json
 import sys
 from pathlib import Path
 
+from minicode.action.capture import CapturePort
 from minicode.action.fakes import FakeCaptureSource, FakeInputInjector
 from minicode.action.ports import WindowAnchor
 from minicode.action.records import ListTraceSink, build_record
@@ -42,8 +43,11 @@ from minicode.uia.fakes import (
     FakeUnblocker,
     ScriptedRead,
 )
+from minicode.uia.observer import UiaStateObserver
 from minicode.uia.pointer import ModelCandidatePointer
 from minicode.uia.ports import TreeAssessment
+from minicode.verification.layer import VerificationLayer
+from minicode.verification.telemetry import TelemetryAccumulator
 
 from .api import ProtocolApi
 from .harness import DecisionHarness
@@ -153,20 +157,38 @@ def main(argv=None) -> int:
         locator=channel,
         model_context_config=context_config,
         trace_sink=trace_sink,
+        # **校验层**（工单 M11）：动作之后跑一次校验
+        # （没有期望 → 默认校验：界面无变化检测）。
+        verifier=VerificationLayer(
+            screenshot_port=CapturePort([capture]),
+            observer=UiaStateObserver(query, anchor),
+        ),
     )
     api = ProtocolApi(seam=seam, locator=channel, anchor=anchor)
+    #: **三段耗时与三类失败**的累加器（工单 M11 AC 4 / AC 5）。
+    telemetry = TelemetryAccumulator()
     harness = DecisionHarness(
         caller=client,
         api=api,
         max_rounds=args.rounds,
         keep_frames=args.keep_frames,
         request_log=request_log,
+        telemetry=telemetry,
     )
 
     report = harness.run(args.goal)
+    # 动作层的埋点（定位段 / 执行+校验段 / 定位失败 / 执行失败）从追踪记录里取。
+    for trace in trace_sink.traces:
+        telemetry.add_trace(trace)
+    telemetry_report = telemetry.report()
 
     (out_dir / "decision-report.json").write_text(
-        json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(
+            {**report.to_dict(), "telemetry": telemetry_report.to_dict()},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
     with (out_dir / "model-requests.jsonl").open("w", encoding="utf-8") as handle:
         for record in request_log.records:
@@ -198,6 +220,26 @@ def main(argv=None) -> int:
     for call in report.calls:
         print(f"  {call}")
     print(f"注入事件  ：{injector.events}")
+    print(
+        "三段耗时  ："
+        f"定位={telemetry_report.stages_ms['locate']:.1f}ms "
+        f"决策={telemetry_report.stages_ms['decision']:.1f}ms "
+        f"执行+校验={telemetry_report.stages_ms['execute_verify']:.1f}ms｜占比="
+        + "、".join(
+            f"{name}={share:.0%}" for name, share in telemetry_report.stage_share.items()
+        )
+    )
+    print(
+        "三类失败  ："
+        + "、".join(
+            f"{name}={count}" for name, count in telemetry_report.failures.items()
+        )
+        + "｜占比="
+        + "、".join(
+            f"{name}={share:.0%}"
+            for name, share in telemetry_report.failure_share.items()
+        )
+    )
     print("========================================")
     return 0
 

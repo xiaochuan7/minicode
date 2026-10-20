@@ -49,6 +49,36 @@ class ProtocolApi:
         self.asked_human_reason = ""
         #: 最近一次截图拿到的帧（供上下文窗口留完整图）。
         self.last_frame: CapturedFrame | None = None
+        #: 本轮的**决策耗时**（毫秒）与「还没记到动作上」的标记。
+        #:
+        #: 决策耗时是**轮级**的量（一次规划调用 → 一轮），
+        #: 因此它**只记在这一轮的第一个动作上** —— 同一轮的后续动作记 0。
+        #: 这样整任务的三段耗时合计 = 各段真实耗时之和（**不重复计数**）。
+        #:
+        #: ⚠️ 多次 :meth:`begin_decision` 是**累加**的：反思步的耗时也要落到
+        #: 某个动作记录上（否则单步与整任务的两份数字对不上）。
+        self._decision_ms = 0.0
+        self._decision_pending = False
+
+    # ------------------------------------------------------------------
+    # 决策耗时（工单 M11：三段耗时必须齐全）
+    # ------------------------------------------------------------------
+
+    def begin_decision(self, decision_ms: float) -> None:
+        """告诉接口面「决策花了这么久」。
+
+        下一条动作记录会**带上**它（只带一次，见 :meth:`_take_decision_ms`）。
+        多次调用是**累加**的（规划步 + 反思步）。
+        """
+        self._decision_ms += float(decision_ms)
+        self._decision_pending = True
+
+    def _take_decision_ms(self) -> float:
+        """取本轮的决策耗时（**只给第一个动作**）。"""
+        if not self._decision_pending:
+            return 0.0
+        self._decision_pending = False
+        return self._decision_ms
 
     # ------------------------------------------------------------------
     # 暴露给程序的接口
@@ -76,10 +106,12 @@ class ProtocolApi:
 
     def click(self, target: str) -> dict[str, Any]:
         """按目标描述定位并点击（走动作执行缝）。"""
+        decision_ms = self._take_decision_ms()
         result = self._seam.run(
             SeamRequest(
                 target_description=str(target),
                 action_kind=ActionKind.CLICK,
+                decision_ms=decision_ms,
             )
         )
         record: dict[str, Any] = {
@@ -148,11 +180,13 @@ class ProtocolApi:
 
     def wait(self, ms: int) -> dict[str, Any]:
         """等待若干毫秒（**走动作执行缝**：等待是「不需要定位目标」的动作）。"""
+        decision_ms = self._take_decision_ms()
         result = self._seam.run(
             SeamRequest(
                 target_description="等待",
                 action_kind=ActionKind.WAIT,
                 params={"ms": int(ms)},
+                decision_ms=decision_ms,
             )
         )
         return self._record_action("wait", result.result, detail=str(ms))

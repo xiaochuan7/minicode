@@ -119,6 +119,15 @@ class ErrorCode(StrEnum):
     #: **零动作下发** —— 被拒的程序一个动作都没做。
     PROGRAM_REJECTED = "program_rejected"
 
+    # -- 校验（工单 M11）--
+    #: **期望断言失败**：动作做完了，但界面**没有**变成期望的样子。
+    #: 归「**执行失败**」—— 动作在「执行+校验」这一段里没达成目标
+    #: （架构决策备忘 §2.5 ③ 的三类失败之一）。
+    #:
+    #: ⚠️ 「界面无变化」**不是**这个错：没有期望时的默认校验只给**信号**
+    #: （「无变化 ≠ 失败」—— 对已置位控件再点一次就属于那种）。
+    EXPECTATION_FAILED = "expectation_failed"
+
 
 class ActionError(Exception):
     """带错误码的动作异常。"""
@@ -168,6 +177,9 @@ FAILURE_TYPE_BY_CODE: Mapping[ErrorCode, FailureType] = {
     ErrorCode.CURSOR_MISMATCH: FailureType.EXECUTION,
     ErrorCode.CURSOR_SENTINEL: FailureType.EXECUTION,
     ErrorCode.LANDING_MISMATCH: FailureType.EXECUTION,
+    #: **期望断言失败**（工单 M11）：动作做了但界面没变成期望的样子
+    #: → 归「执行失败」（它在「执行+校验」这一段里没达成目标）。
+    ErrorCode.EXPECTATION_FAILED: FailureType.EXECUTION,
     # -- 通道级失败：这一层整体不可用 → 禁止切视觉 -----------------------
     ErrorCode.QUERY_TIMEOUT: FailureType.CHANNEL,
     ErrorCode.CHANNEL_DISABLED: FailureType.CHANNEL,
