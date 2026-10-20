@@ -14,18 +14,12 @@
 from __future__ import annotations
 
 import argparse
-import locale
-import subprocess
 import sys
 from pathlib import Path
 
+from minicode.lock import acquire, release
+
 __all__ = ["main"]
-
-#: 仓库根目录（锁脚本与 ``.scratch/`` 都在它下面）。
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-#: 真机占用锁的**唯一**实现（判定规则只有这一份，CLI 不另写一套）。
-LOCK_SCRIPT = REPO_ROOT / "scripts" / "desktop_lock.py"
 
 
 def _parse_args(argv):
@@ -62,33 +56,6 @@ def _parse_args(argv):
     return parser.parse_args(argv)
 
 
-def _acquire_lock(ticket: str) -> bool:
-    """动真机前拿锁：**复用** ``scripts/desktop_lock.py``（判定规则只有那一份）。
-
-    返回 ``True`` 表示**本进程是锁的持有者**（原来没有锁 → 本进程拿的 →
-    用完要释放）；原来就有锁（agent 持有）→ 不是本进程拿的，不释放。
-    """
-    lock_path = REPO_ROOT / ".scratch" / "desktop.lock"
-    existed = lock_path.exists()
-    # 锁脚本的控制台输出按**本机代码页**编码（中文 Windows 是 GBK），
-    # 这里跟着本机走，别写死 UTF-8（写死会把中文读成乱码）。
-    encoding = locale.getpreferredencoding() or "utf-8"
-    result = subprocess.run(
-        [sys.executable, str(LOCK_SCRIPT), "acquire", "--ticket", ticket],
-        capture_output=True,
-        text=True,
-        encoding=encoding,
-        errors="replace",
-    )
-    if result.returncode != 0:
-        raise SystemExit(
-            (result.stderr or result.stdout).strip()
-            or "拒绝动真机：拿不到真机占用锁"
-        )
-    print(result.stdout.strip())
-    return not existed
-
-
 def _find_window(class_name: str) -> int:
     """按类名找窗口（用 ``FindWindowW``，不枚举——枚举会漏掉任务栏）。"""
     import ctypes
@@ -105,18 +72,12 @@ def _find_window(class_name: str) -> int:
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
-    holds_lock = _acquire_lock(args.ticket)
+    holds_lock = acquire(args.ticket)
     try:
         return _run(args)
     finally:
         if holds_lock:
-            subprocess.run(
-                [sys.executable, str(LOCK_SCRIPT), "release"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            release()
 
 
 def _run(args) -> int:
@@ -194,6 +155,10 @@ def _run(args) -> int:
         print(
             f"三段耗时：定位={trace.locate_ms:.1f}ms 决策={trace.decision_ms:.1f}ms "
             f"执行+校验={trace.execute_verify_ms:.1f}ms"
+        )
+        print(
+            f"端到端  ：{(trace.locate_ms + trace.decision_ms + trace.execute_verify_ms):.1f} ms"
+            f"｜模型调用={trace.model_calls} 次（UIA 命中时必须是 0）"
         )
         print(f"说明    ：{'；'.join(trace.result.notes) or '（无）'}")
         print(

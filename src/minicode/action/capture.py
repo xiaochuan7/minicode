@@ -31,21 +31,32 @@ class CapturePort:
 
     * 依次尝试各截图源，**跳过只拿到 0×0 画面的源**；
     * 给了区域时，只用**支持区域抓取**的源（其余源跳过）；
-    * 最近一次被跳过的源名记在 :attr:`skipped`（观测数据，进追踪记录）。
+    * 最近一次被跳过的源名记在 :attr:`skipped`（观测数据，进追踪记录）；
+    * **被标记为不可用的源**记在 :attr:`unavailable`（源名 → 原因）——
+      工单 M9 AC 6：「跳过该捕获源」之外，还要能读出**它被标记为不可用**。
     """
 
     def __init__(self, sources: Sequence[CaptureSource]):
         self.sources = tuple(sources)
         self.skipped: tuple[str, ...] = ()
+        #: 名字对不上的源**不算**跳过（它们本来就没参与这次抓取）。
+        self.unavailable: dict[str, str] = {}
 
     def screenshot(self, region: tuple[int, int, int, int] | None = None) -> CapturedFrame:
         skipped: list[str] = []
+        # 不可用是**这一次抓取**的状态：每次抓屏重新记
+        # （否则上一轮标过的「不可用」会出现在后续每一步的记录里 ——
+        #  追踪记录是「一次定位过程产生的观测数据」，不是累计账本）。
+        self.unavailable = {}
         for source in self.sources:
             if region is not None and not isinstance(source, RegionCaptureSource):
                 continue
             frame = source.capture() if region is None else source.capture_region(region)
             if frame.is_empty:
-                skipped.append(getattr(source, "name", type(source).__name__))
+                name = getattr(source, "name", type(source).__name__)
+                skipped.append(name)
+                # 标记为不可用（工单 M9 AC 6）：不点虚空，也不假装它还在。
+                self.unavailable[name] = "0×0 画面"
                 continue
             self.skipped = tuple(skipped)
             return frame

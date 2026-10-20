@@ -41,6 +41,9 @@ class ScriptedRead:
     timed_out: bool = False
     #: 这一读里树有没有节点（0 节点 = 静默退化）。
     nodes: bool = True
+    #: 条件查询找到、却没与名字条件对上的候选数（工单 M9 AC 2 的
+    #: 「名称匹配不上」场景）。缺省 0 = 树里确实没有这个目标。
+    unmatched: int = 0
 
 
 class FakeUiaQueryPort:
@@ -74,7 +77,9 @@ class FakeUiaQueryPort:
         if read.timed_out:
             raise UiaQueryTimeout(f"查询超时（第 {self.calls} 次读树）")
         elements = rename_elements(read.elements, f"obs{self.calls}")
-        return UiaFindResult(elements=elements, elapsed_ms=1.0)
+        return UiaFindResult(
+            elements=elements, elapsed_ms=1.0, unmatched_count=read.unmatched
+        )
 
     def has_nodes(self, anchor: WindowAnchor) -> bool:
         self.has_nodes_calls += 1

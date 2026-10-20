@@ -166,7 +166,9 @@ class SeamLevelRedactionTest(unittest.TestCase):
         seam, injector = self._build(ModelContextConfig(), sink)
         result = seam.run(SeamRequest(target_description="确定"))
         self.assertFalse(result.ok)
-        self.assertEqual(result.result.error_code, ErrorCode.LOCATE_FAILED)
+        # **通道被拒绝启用**（不是「找不到」）：候选其实已经找到了，
+        # 是脱敏闸门把这条通道拦下了 → 禁止切视觉（工单 M9 AC 7）。
+        self.assertEqual(result.result.error_code, ErrorCode.CHANNEL_DISABLED)
         self.assertIn("脱敏", result.result.error_message)
         self.assertEqual(injector.events, [])
         self.assertIsNone(sink.traces[-1].model_view)

@@ -441,7 +441,7 @@ class GateInstrumentationTests(unittest.TestCase):
                 return LocateResult(
                     error_code=ErrorCode.TARGET_NOT_FOUND,
                     error_message="控件树里找不到这个目标",
-                    allows_visual_fallback=True,
+                    failure_type="coverage",
                 )
 
         class _AllowingAdmission:
@@ -556,7 +556,7 @@ class ChannelSwitchTests(unittest.TestCase):
                 return LocateResult(
                     error_code=ErrorCode.AMBIGUOUS_TARGET,
                     error_message="候选不唯一",
-                    allows_visual_fallback=False,
+                    failure_type="selection",
                 )
 
         class _ExplodingVisualLocator:

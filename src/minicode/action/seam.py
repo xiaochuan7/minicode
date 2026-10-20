@@ -50,7 +50,7 @@ from minicode.redact.errors import ChannelUnavailableError
 from minicode.redact.redactor import TreeRedactor
 
 from .capture import CapturePort
-from .errors import ErrorCode
+from .errors import ErrorCode, failure_type_of
 from .executor import ActionExecutor, DoubleClickParams, TimingPolicy
 from .geometry import VirtualDesktop
 from .ports import (
@@ -302,6 +302,8 @@ class ActionExecutionSeam:
         model_view: ModelTreeView | None = None
         located = None
         visual: VisualLocateResult | None = None
+        #: 这一步**走了哪条通道**（``"uia"`` / ``"visual"``）：追踪记录里读得到。
+        channel = ""
         if self.locator is not None:
             # UIA 通道（工单 M3）：定位、唯一性拒绝、消歧与执行前重读都在通道里。
             located = self.locator.locate(
@@ -315,6 +317,7 @@ class ActionExecutionSeam:
                 )
             )
             if located.error_code is not None:
+                channel = "uia"
                 locate_ms = (self._clock() - locate_started) * 1000.0
                 # **覆盖失败**是唯一允许切视觉的情形（架构决策备忘 §2.5 ①）：
                 # 这时才问视觉通道的准入判定（工单 M5 的硬闸门）。
@@ -332,10 +335,12 @@ class ActionExecutionSeam:
                         frame=frame,
                         query_scope=located.query_scope,
                         selection_echo=located.selection_echo,
-                        allows_visual_fallback=located.allows_visual_fallback,
                         candidate_limit=located.candidate_limit,
                         candidate_limit_source=located.candidate_limit_source,
                         visual_admission=admission,
+                        channel=channel,
+                        model_calls=located.model_calls,
+                        failure_type=located.failure_type,
                     )
                 # 闸门放行才走视觉通道（工单 M6 的两级 grounding）。
                 # **没接判定端口 = 闸门没开**（fail-closed）：视觉通道不可达。
@@ -359,17 +364,21 @@ class ActionExecutionSeam:
                         frame=frame,
                         query_scope=located.query_scope,
                         selection_echo=located.selection_echo,
-                        allows_visual_fallback=located.allows_visual_fallback,
                         candidate_limit=located.candidate_limit,
                         candidate_limit_source=located.candidate_limit_source,
                         visual_admission=admission,
                         visual=visual,
+                        channel="visual" if visual is not None else channel,
+                        model_calls=located.model_calls,
+                        failure_type=located.failure_type,
                     )
                 # 视觉通道的落点直接就是最终落点（**只在 crop 尺度上产生**）。
                 selected = None
                 px, py = float(visual.landing_point[0]), float(visual.landing_point[1])
                 final_point = visual.landing_point
+                channel = "visual"
             else:
+                channel = "uia"
                 selected = located.selected
                 try:
                     # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
@@ -381,7 +390,9 @@ class ActionExecutionSeam:
                     locate_ms = (self._clock() - locate_started) * 1000.0
                     return self._fail(
                         request,
-                        ErrorCode.LOCATE_FAILED,
+                        # **通道被拒绝启用**（不是「找不到」）：候选其实已经找到了，
+                        # 是脱敏闸门把这条通道拦下了 → 禁止切视觉（工单 M4 AC 7）。
+                        ErrorCode.CHANNEL_DISABLED,
                         str(exc),
                         locate_ms=locate_ms,
                         skipped=skipped,
@@ -390,6 +401,8 @@ class ActionExecutionSeam:
                 px, py = float(located.landing_point[0]), float(located.landing_point[1])
                 final_point = located.landing_point
         else:
+            # M0 的老路径：读控件树快照 + 名字匹配（没有注入定位端口时走它）。
+            channel = "uia"
             try:
                 snapshot = (
                     request.tree_snapshot
@@ -403,7 +416,8 @@ class ActionExecutionSeam:
                 locate_ms = (self._clock() - locate_started) * 1000.0
                 return self._fail(
                     request,
-                    ErrorCode.LOCATE_FAILED,
+                    # 同上：**通道被拒绝启用**（脱敏闸门），不是「找不到」。
+                    ErrorCode.CHANNEL_DISABLED,
                     str(exc),
                     locate_ms=locate_ms,
                     skipped=skipped,
@@ -495,15 +509,22 @@ class ActionExecutionSeam:
             sent_width=frame.width,
             sent_height=frame.height,
             skipped_capture_sources=tuple(skipped),
+            unavailable_capture_sources=dict(self._capture_port.unavailable),
             locate_ms=locate_ms,
             decision_ms=0.0,
             execute_verify_ms=execute_verify_ms,
             failures=failures,
+            channel=channel,
+            #: 这一步**定位阶段**的失败类型：UIA 阶段失败 → UIA 那次的失败类型
+            #: （切视觉成功时也记着 —— 那正是切视觉的理由，工单 M9 AC 1）；
+            #: UIA 成功 → 后续阶段的失败类型；都没失败 → 空串。
+            failure_type=located.failure_type if located is not None else "",
+            model_calls=(
+                (located.model_calls if located is not None else 0)
+                + (visual.model_calls if visual is not None else 0)
+            ),
             query_scope=located.query_scope if located is not None else "",
             selection_echo=located.selection_echo if located is not None else None,
-            allows_visual_fallback=(
-                located.allows_visual_fallback if located is not None else False
-            ),
             candidate_limit=located.candidate_limit if located is not None else 0,
             candidate_limit_source=(
                 located.candidate_limit_source if located is not None else ""
@@ -843,13 +864,20 @@ class ActionExecutionSeam:
         query_scope: str = "",
         failure_field: str = "",
         selection_echo: SelectionEcho | None = None,
-        allows_visual_fallback: bool = False,
         candidate_limit: int = 0,
         candidate_limit_source: str = "",
         visual_admission: VisualAdmission | None = None,
         visual: VisualLocateResult | None = None,
+        channel: str = "",
+        model_calls: int = 0,
+        failure_type: str = "",
     ) -> SeamResult:
-        """失败路径：产出一条失败记录，**不下发任何动作**。"""
+        """失败路径：产出一条失败记录，**不下发任何动作**。
+
+        ``failure_type`` = 这一步**定位阶段**的失败类型（默认由错误码推导）。
+        UIA 阶段失败时**由调用方给**（那一阶段的失败类型比错误码更具体：
+        覆盖失败这一类允许切视觉，其余一律不允许）。
+        """
         failures = {name: None for name in FAILURE_FIELDS}
         if failure_field:
             # 调用方指名归哪一类（三类失败分开记，架构备忘 §2.5 ③）。
@@ -860,6 +888,9 @@ class ActionExecutionSeam:
             ErrorCode.TOO_MANY_CANDIDATES,
             ErrorCode.LOCATE_FAILED,
             ErrorCode.RELOCATE_FAILED,
+            ErrorCode.QUERY_TIMEOUT,
+            ErrorCode.INVALID_GEOMETRY,
+            ErrorCode.NAME_MISMATCH,
             ErrorCode.CLIPPED_BY_DESKTOP,
             ErrorCode.CHANNEL_DISABLED,
             ErrorCode.INVALID_TARGET,
@@ -882,13 +913,19 @@ class ActionExecutionSeam:
             sent_width=frame.width if frame else None,
             sent_height=frame.height if frame else None,
             skipped_capture_sources=tuple(skipped),
+            unavailable_capture_sources=dict(self._capture_port.unavailable),
             locate_ms=locate_ms,
             decision_ms=0.0,
             execute_verify_ms=0.0,
             failures=failures,
+            channel=channel,
+            #: **失败类型**（工单 M9 AC 7）：由错误码推导 —— 映射只有一处
+            #: (:func:`~minicode.action.errors.failure_type_of`)；
+            #: UIA 阶段失败时用那一阶段的类型（更具体）。
+            failure_type=failure_type or failure_type_of(code).value,
+            model_calls=model_calls + (visual.model_calls if visual is not None else 0),
             query_scope=query_scope,
             selection_echo=selection_echo,
-            allows_visual_fallback=allows_visual_fallback,
             candidate_limit=candidate_limit,
             candidate_limit_source=candidate_limit_source,
             visual_admission=visual_admission,

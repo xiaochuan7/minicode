@@ -100,7 +100,12 @@ class UniqueCandidateTest(unittest.TestCase):
 
 
 class InvalidRectTest(unittest.TestCase):
-    """AC 4：全 0 / 零面积的候选被丢弃。"""
+    """AC 4：全 0 / 零面积的候选被丢弃。
+
+    ⚠️ **工单 M9 改过这里**：丢掉之后**不能**当成「目标不在树里」。
+    候选**在**树里（名字对得上），只是控件框读不成 —— 那是**选择失败**
+    （禁止切视觉，架构决策备忘 §2.5 ①），不是覆盖失败。
+    """
 
     def test_an_all_zero_candidate_is_dropped(self):
         channel = _channel(
@@ -109,7 +114,9 @@ class InvalidRectTest(unittest.TestCase):
         result = channel.locate(
             LocateRequest(target_description="开始", anchor=_ANCHOR)
         )
-        self.assertEqual(result.error_code, ErrorCode.TARGET_NOT_FOUND)
+        self.assertEqual(result.error_code, ErrorCode.INVALID_GEOMETRY)
+        self.assertEqual(result.failure_type, "selection")
+        self.assertFalse(result.allows_visual_fallback)
         self.assertIsNone(result.landing_point)
         self.assertIsNone(result.selected)
 
@@ -120,7 +127,7 @@ class InvalidRectTest(unittest.TestCase):
         result = channel.locate(
             LocateRequest(target_description="开始", anchor=_ANCHOR)
         )
-        self.assertEqual(result.error_code, ErrorCode.TARGET_NOT_FOUND)
+        self.assertEqual(result.error_code, ErrorCode.INVALID_GEOMETRY)
         self.assertIsNone(result.landing_point)
 
     def test_no_landing_point_at_the_origin_is_produced(self):
@@ -290,11 +297,17 @@ class ChannelFailureTest(unittest.TestCase):
         self.assertNotEqual(result.error_code, ErrorCode.TARGET_NOT_FOUND)
 
     def test_a_timeout_is_also_a_channel_level_failure(self):
+        """超时 = **通道级失败**，**不是**覆盖失败（工单 M9）。
+
+        我们并不知道目标在不在树里 → 不许因此切视觉。
+        """
         channel = _channel([ScriptedRead(timed_out=True)])
         result = channel.locate(
             LocateRequest(target_description="开始", anchor=_ANCHOR)
         )
-        self.assertEqual(result.error_code, ErrorCode.LOCATE_FAILED)
+        self.assertEqual(result.error_code, ErrorCode.QUERY_TIMEOUT)
+        self.assertNotEqual(result.error_code, ErrorCode.LOCATE_FAILED)
+        self.assertFalse(result.allows_visual_fallback)
         self.assertIsNone(result.landing_point)
 
     def test_a_channel_failure_costs_no_model_call(self):

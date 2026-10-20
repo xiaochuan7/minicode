@@ -170,7 +170,7 @@ class _CoverageFailureLocator:
         return LocateResult(
             error_code=ErrorCode.TARGET_NOT_FOUND,
             error_message="控件树里没有这个目标",
-            allows_visual_fallback=True,
+            failure_type="coverage",
         )
 
 

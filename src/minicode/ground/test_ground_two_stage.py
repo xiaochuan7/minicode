@@ -317,7 +317,7 @@ class FallbackTests(unittest.TestCase):
                 return LocateResult(
                     error_code=ErrorCode.TARGET_NOT_FOUND,
                     error_message="控件树里找不到这个目标",
-                    allows_visual_fallback=True,
+                    failure_type="coverage",
                 )
 
         class _AllowingAdmission:
@@ -591,7 +591,7 @@ class TraceTests(unittest.TestCase):
                 return LocateResult(
                     error_code=ErrorCode.TARGET_NOT_FOUND,
                     error_message="控件树里找不到这个目标",
-                    allows_visual_fallback=True,
+                    failure_type="coverage",
                     query_scope="window-anchored",
                 )
 
@@ -638,7 +638,7 @@ class TraceTests(unittest.TestCase):
                 return LocateResult(
                     error_code=ErrorCode.TARGET_NOT_FOUND,
                     error_message="控件树里找不到这个目标",
-                    allows_visual_fallback=True,
+                    failure_type="coverage",
                 )
 
         model = _StubModel(_reply(390.625, 500.0), _reply(200.0, 300.0))

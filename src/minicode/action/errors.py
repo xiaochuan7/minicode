@@ -1,13 +1,45 @@
 """动作协议 v1 的错误码。
 
 错误码是协议的一部分：**同一件事只有一个码**，上层按码分流，不解析错误文本。
+
+**失败分类**（工单 M9 AC 7）：错误码 → **失败类型** → **能不能切视觉**。
+
+* 映射只有一份：:data:`FAILURE_TYPE_BY_CODE`（错误码 → 失败类型）；
+* 红线只有一处：:func:`allows_visual_fallback`（**只有覆盖失败允许切视觉**，
+  架构决策备忘 §2.5 ①）。
+
+失败类型（**定位阶段**那一维；工单 AC 7 点的三类之外另加两类，
+理由见 `docs/reviews/M9.md` §8）：
+
+===========================  ========================================  ============
+失败类型                      含义                                      允许切视觉
+===========================  ========================================  ============
+``coverage``（覆盖失败）       通道**产不出任何候选**                      ✅ 是
+``selection``（选择失败）     候选里有，但**选不出**唯一选中项            ❌ 否
+``execution``（执行失败）     定位到了，**动作执行不了**                  ❌ 否
+``channel``（通道级失败）     这一层**整体不可用**（查询超时 / 被拒启用）  ❌ 否
+``decision``（决策失败）       **决策层**的产出被拒（程序被拒 / 决策失败）  ❌ 否
+===========================  ========================================  ============
+
+⚠️ **别和另一套「三类失败」混**（``CONTEXT.md`` 的词条）：
+那一套是**埋点轴**（定位失败 / 决策失败 / 执行失败，记在追踪记录的
+``failures`` 里），本模块这套是**定位阶段的分类轴**（失败类型）。
+两套正交，**不許混着说**。
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 
-__all__ = ["ErrorCode", "ActionError"]
+__all__ = [
+    "ErrorCode",
+    "ActionError",
+    "FailureType",
+    "FAILURE_TYPE_BY_CODE",
+    "failure_type_of",
+    "allows_visual_fallback",
+]
 
 
 class ErrorCode(StrEnum):
@@ -17,16 +49,29 @@ class ErrorCode(StrEnum):
     OK = "ok"
 
     # -- 定位失败（三类失败里的「定位失败」）--
-    #: 目标描述在控件树里找不到任何候选。
+    #: 目标描述在控件树里找不到任何候选。**覆盖失败** → 允许切视觉。
     TARGET_NOT_FOUND = "target_not_found"
-    #: 候选不唯一 —— 唯一性拒绝：拒绝执行并回报候选集。
+    #: 候选不唯一 —— 唯一性拒绝：拒绝执行并回报候选集。**选择失败**。
     AMBIGUOUS_TARGET = "ambiguous_target"
-    #: 候选数超过上限（默认 8）：直接拒绝，**不调模型**，回报候选集。
+    #: 候选数超过上限（默认 8）：直接拒绝，**不调模型**，回报候选集。**选择失败**。
     TOO_MANY_CANDIDATES = "too_many_candidates"
-    #: 控件树读取本身失败（超时、通道不可用）。
+    #: 控件树读取本身失败（**通道产不出候选**：0 节点 / 门控解不开 / 没有 provider）。
+    #: **覆盖失败** —— 通道根本产不出候选（架构决策备忘 §2.5 ① 的「无 provider /
+    #: 树被门控」两条）。⚠️ 「0 节点」是**原因**，「覆盖失败」是**失败类型**——
+    #: 两者不是一回事，别混着说。
     LOCATE_FAILED = "locate_failed"
     #: 执行前重读树时找不到原来的那个控件了：宁可不动作，也不点相似的另一个。
+    #: **选择失败**。
     RELOCATE_FAILED = "relocate_failed"
+    #: **查询超时**（约 5 秒阈值）。**通道级失败** —— 不是覆盖失败：
+    #: 我们并不知道目标在不在树里，**不许**因此切视觉。
+    QUERY_TIMEOUT = "query_timeout"
+    #: **候选尺寸异常**：名字对得上，但控件框读不成合法矩形（全 0 / 零面积）。
+    #: **选择失败** —— 候选在那儿，只是定不下来（架构决策备忘 §2.5 ①）。
+    INVALID_GEOMETRY = "invalid_geometry"
+    #: **名称匹配不上**：条件查询找到了候选，却没有一个与目标描述对得上。
+    #: **选择失败** —— 候选集非空但选不出（架构决策备忘 §2.5 ①）。
+    NAME_MISMATCH = "name_mismatch"
 
     # -- 定位阶段的另外三种「不是覆盖失败也不是选择失败」--
     #: **通道被拒绝启用**（硬闸门拦下，如脱敏未上线）。
@@ -82,3 +127,70 @@ class ActionError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class FailureType(StrEnum):
+    """**失败类型**（工单 M9 AC 7）：定位阶段的失败分类。
+
+    它是「切视觉」这条红线的判据维度 —— **标识不同、互不混淆**。
+    """
+
+    #: 覆盖失败：通道产不出任何候选。**允许切视觉**。
+    COVERAGE = "coverage"
+    #: 选择失败：候选里有，但选不出唯一选中项。**禁止切视觉**。
+    SELECTION = "selection"
+    #: 执行失败：定位到了，动作执行不了。**禁止切视觉**。
+    EXECUTION = "execution"
+    #: 通道级失败：这一层整体不可用（查询超时 / 通道被拒绝启用）。**禁止切视觉**。
+    CHANNEL = "channel"
+    #: 决策失败：决策层的产出被拒（动作程序被受控环境拒绝 / 决策失败）。**禁止切视觉**。
+    DECISION = "decision"
+
+
+#: **错误码 → 失败类型**（唯一一处映射）。
+#:
+#: 上层按码分流，不解析错误文本；这张表是「哪一类失败」的唯一真值来源。
+FAILURE_TYPE_BY_CODE: Mapping[ErrorCode, FailureType] = {
+    # -- 覆盖失败：通道产不出候选 → 允许切视觉 ---------------------------
+    ErrorCode.TARGET_NOT_FOUND: FailureType.COVERAGE,
+    ErrorCode.LOCATE_FAILED: FailureType.COVERAGE,
+    # -- 选择失败：候选里有但选不出 → 禁止切视觉 -------------------------
+    ErrorCode.AMBIGUOUS_TARGET: FailureType.SELECTION,
+    ErrorCode.TOO_MANY_CANDIDATES: FailureType.SELECTION,
+    ErrorCode.RELOCATE_FAILED: FailureType.SELECTION,
+    ErrorCode.INVALID_GEOMETRY: FailureType.SELECTION,
+    ErrorCode.NAME_MISMATCH: FailureType.SELECTION,
+    # -- 执行失败：定位到了但动作执行不了 → 禁止切视觉 -------------------
+    ErrorCode.EXECUTE_FAILED: FailureType.EXECUTION,
+    ErrorCode.CLIPPED_BY_DESKTOP: FailureType.EXECUTION,
+    ErrorCode.CAPTURE_EMPTY: FailureType.EXECUTION,
+    ErrorCode.INJECTION_BLOCKED: FailureType.EXECUTION,
+    ErrorCode.CURSOR_MISMATCH: FailureType.EXECUTION,
+    ErrorCode.CURSOR_SENTINEL: FailureType.EXECUTION,
+    ErrorCode.LANDING_MISMATCH: FailureType.EXECUTION,
+    # -- 通道级失败：这一层整体不可用 → 禁止切视觉 -----------------------
+    ErrorCode.QUERY_TIMEOUT: FailureType.CHANNEL,
+    ErrorCode.CHANNEL_DISABLED: FailureType.CHANNEL,
+    ErrorCode.INVALID_TARGET: FailureType.CHANNEL,
+    ErrorCode.VISUAL_CHANNEL_UNAVAILABLE: FailureType.CHANNEL,
+    ErrorCode.ACTION_NOT_IMPLEMENTED: FailureType.CHANNEL,
+    # -- 决策失败：决策层的产出被拒 → 禁止切视觉 -------------------------
+    ErrorCode.DECIDE_FAILED: FailureType.DECISION,
+    ErrorCode.PROGRAM_REJECTED: FailureType.DECISION,
+}
+
+
+def failure_type_of(code: ErrorCode) -> FailureType:
+    """这个错误码属于**哪一类失败**（未知码归「通道级」，不静默放过）。"""
+    return FAILURE_TYPE_BY_CODE.get(code, FailureType.CHANNEL)
+
+
+def allows_visual_fallback(failure_type: FailureType | str) -> bool:
+    """**切视觉的红线**（架构决策备忘 §2.5 ①）：**只有覆盖失败**允许切视觉。
+
+    候选不唯一、被遮挡、尺寸异常、查询超时、名称匹配不上 ——
+    这些一律禁止切视觉，必须走校验与纠错层的错误处理。
+    """
+    if isinstance(failure_type, str):
+        failure_type = FailureType(failure_type)
+    return failure_type is FailureType.COVERAGE

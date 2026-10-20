@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from minicode.redact.patterns import PASSWORD_PLACEHOLDER
 
+from .errors import allows_visual_fallback
 from .ports import (
     CapturedFrame,
     ControlCandidate,
@@ -90,7 +91,22 @@ class ActionTrace:
     sent_height: int | None = None
     #: 图像来源（捕获源 | 后端）。
     image_source: str | None = None
+    #: **被跳过的捕获源**（名字）。
     skipped_capture_sources: tuple[str, ...] = ()
+    #: **被标记为不可用的捕获源**（名字 → 原因）。工单 M9 AC 6：
+    #: 抓屏拿到 0×0 画面时**跳过**该捕获源，并把它**标记为不可用**
+    #: （可读出「哪个源不可用、为什么」）。
+    unavailable_capture_sources: Mapping[str, str] = field(default_factory=dict)
+    #: 这一步**走了哪条通道**（``"uia"`` / ``"visual"``；空 = 没走通道定位）。
+    channel: str = ""
+    #: 这一步**定位阶段**的失败类型（工单 M9 AC 7）：
+    #: ``"coverage"`` / ``"selection"`` / ``"execution"`` / ``"channel"`` /
+    #: ``"decision"``；没失败时是空串。切视觉成功时记的是 UIA 通道那次
+    #: **覆盖失败** —— 那正是切视觉的理由。
+    failure_type: str = ""
+    #: 这一步的**模型调用次数**（UIA 消歧 + 视觉 grounding）。
+    #: 工单 M9 AC 3：UIA 命中时它是 **0**，而且是**可被计数证明**的 0。
+    model_calls: int = 0
     #: 三段耗时（毫秒）：定位 / 决策 / 执行+校验。
     locate_ms: float = 0.0
     decision_ms: float = 0.0
@@ -106,8 +122,6 @@ class ActionTrace:
     #: **每步回显**（消歧时才有）：模型发出的选择结果 + 实际发送的图片尺寸。
     #: **不含坐标** —— UIA 通道的消歧不产坐标（工单 M4 AC 9）。
     selection_echo: SelectionEcho | None = None
-    #: **允许切视觉**吗？只有覆盖失败为真（架构决策备忘 §2.5 ①）。
-    allows_visual_fallback: bool = False
     #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
     candidate_limit: int = 0
     candidate_limit_source: str = ""
@@ -135,6 +149,17 @@ class ActionTrace:
     #: 这一步**是否真的开启了 crop 精定位**（整屏第二遍不算）。
     refine_enabled: bool = False
     result: ActionResult = field(default_factory=lambda: ActionResult(ok=True))
+
+    @property
+    def allows_visual_fallback(self) -> bool:
+        """**能不能切视觉** —— 由失败类型推导（红线只有一处）。
+
+        只有**覆盖失败**允许切视觉（架构决策备忘 §2.5 ①）。
+        它是**推导值**，不是另一份数据 —— 两处数据就不可能各说各话。
+        """
+        if not self.failure_type:
+            return False
+        return allows_visual_fallback(self.failure_type)
 
 
 @runtime_checkable
@@ -208,8 +233,16 @@ class ActionRecord:
     #: **每步回显**（消歧时才有）：模型发出的选择结果 + 实际发送的图片尺寸。
     #: **不含坐标**（UIA 通道的消歧不产坐标，工单 M4 AC 9）。
     selection_echo: Mapping[str, Any] | None = None
-    #: **允许切视觉**吗？只有覆盖失败为真（架构决策备忘 §2.5 ①）。
-    allows_visual_fallback: bool = False
+    #: 这一步**走了哪条通道**（``"uia"`` / ``"visual"``；空 = 没走通道定位）。
+    channel: str = ""
+    #: 这一步**定位阶段**的失败类型（工单 M9 AC 7）：``"coverage"`` /
+    #: ``"selection"`` / ``"execution"`` / ``"channel"`` / ``"decision"``；
+    #: 没失败时是空串。
+    failure_type: str = ""
+    #: 这一步的**模型调用次数**（UIA 消歧 + 视觉 grounding）。UIA 命中时是 0。
+    model_calls: int = 0
+    #: **被标记为不可用的捕获源**（名字 → 原因）。
+    unavailable_capture_sources: Mapping[str, str] = field(default_factory=dict)
     #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
     candidate_limit: int = 0
     candidate_limit_source: str = ""
@@ -237,6 +270,13 @@ class ActionRecord:
     #: 这一步**是否真的开启了 crop 精定位**（整屏第二遍不算）。
     refine_enabled: bool = False
     notes: tuple[str, ...] = ()
+
+    @property
+    def allows_visual_fallback(self) -> bool:
+        """**能不能切视觉** —— 由失败类型推导（红线只有一处）。"""
+        if not self.failure_type:
+            return False
+        return allows_visual_fallback(self.failure_type)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -289,6 +329,10 @@ class ActionRecord:
                 dict(self.selection_echo) if self.selection_echo is not None else None
             ),
             "allows_visual_fallback": self.allows_visual_fallback,
+            "channel": self.channel,
+            "failure_type": self.failure_type,
+            "model_calls": self.model_calls,
+            "unavailable_capture_sources": dict(self.unavailable_capture_sources),
             "candidate_limit": self.candidate_limit,
             "candidate_limit_source": self.candidate_limit_source,
             "visual_admission": (
@@ -401,7 +445,9 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         selection_echo=(
             trace.selection_echo.to_dict() if trace.selection_echo is not None else None
         ),
-        allows_visual_fallback=trace.allows_visual_fallback,
+        channel=trace.channel,        failure_type=trace.failure_type,
+        model_calls=trace.model_calls,
+        unavailable_capture_sources=dict(trace.unavailable_capture_sources),
         candidate_limit=trace.candidate_limit,
         candidate_limit_source=trace.candidate_limit_source,
         visual_admission=(

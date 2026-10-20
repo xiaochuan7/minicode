@@ -261,10 +261,12 @@ class WindowsUiaQueryPort:
         if not request.has_condition:
             raise UnconditionalQueryError("无条件全树查询被拒绝（只做定点查询）")
         started = time.perf_counter()
-        elements = _with_deadline(lambda: self._find(request), self.timeout_s)
+        elements, unmatched = _with_deadline(lambda: self._find(request), self.timeout_s)
         elapsed = (time.perf_counter() - started) * 1000.0
         self.last_query_ms = elapsed
-        return UiaFindResult(elements=elements, elapsed_ms=elapsed)
+        return UiaFindResult(
+            elements=elements, elapsed_ms=elapsed, unmatched_count=unmatched
+        )
 
     def has_nodes(self, anchor: WindowAnchor) -> bool:
         """树里有没有节点（取第一个节点，不是全树遍历）。"""
@@ -296,20 +298,20 @@ class WindowsUiaQueryPort:
         finally:
             del controller
 
-    def _find(self, request: UiaFindRequest) -> tuple[UiaElement, ...]:
+    def _find(self, request: UiaFindRequest) -> tuple[tuple[UiaElement, ...], int]:
         from minicode.exec import uia
 
         controller = uia.UIA()
         try:
             root = controller.element_from_handle(request.anchor.hwnd)
             if root is None:
-                return ()
-            found = self._query(controller, root, request)
-            return self._publish(found)
+                return (), 0
+            matched, unmatched = self._query(controller, root, request)
+            return self._publish(matched), unmatched
         finally:
             del controller
 
-    def _query(self, controller, root, request: UiaFindRequest) -> list:
+    def _query(self, controller, root, request: UiaFindRequest) -> tuple[list, int]:
         """定点查询：**一条属性条件**一次查询（名字在 Python 侧过滤）。
 
         ⚠️ **不做 AND 条件**（名字 + 控件类型合成一个条件）：
@@ -320,6 +322,10 @@ class WindowsUiaQueryPort:
         1. 自动化标识（给了才查）；
         2. 精确名字条件；
         3. 控件类型条件（精确名字查不到时的退路）。
+
+        返回 ``(与名字对上的元素, 名字没对上的元素数)`` —— 第二个数把
+        「名称匹配不上」与「目标不在树里」分开（工单 M9 AC 2）：
+        前者是**选择失败**（禁止切视觉），后者是**覆盖失败**（允许切视觉）。
         """
         attempts: list[dict] = []
         if request.automation_id:
@@ -329,6 +335,7 @@ class WindowsUiaQueryPort:
         type_id = _control_type_id(request.control_type)
         if type_id is not None:
             attempts.append({"control_type": type_id})
+        unmatched = 0
         for kwargs in attempts:
             found = self._find_with(controller, root, kwargs)
             matched = [
@@ -339,9 +346,10 @@ class WindowsUiaQueryPort:
             for element in found:
                 if element not in matched:
                     element.release()
+            unmatched += len(found) - len(matched)
             if matched:
-                return matched
-        return []
+                return matched, unmatched
+        return [], unmatched
 
     def _find_with(self, controller, root, kwargs: dict) -> list:
         """按**一条**属性条件查一次（控件类型 / 名字 / 自动化标识）。"""

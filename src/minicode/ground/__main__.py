@@ -23,11 +23,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import locale
-import subprocess
 import sys
 from pathlib import Path
 
+from minicode.lock import acquire, release
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.effort import Effort
@@ -37,32 +36,6 @@ from .bench import BenchReport, collect_targets, measure, summarize
 from .gate import GateMode
 
 __all__ = ["main"]
-
-#: 仓库根目录（锁脚本与 ``.scratch/`` 都在它下面）。
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-#: 真机占用锁的**唯一**实现（判定规则只有这一份，CLI 不另写一套）。
-LOCK_SCRIPT = REPO_ROOT / "scripts" / "desktop_lock.py"
-
-
-def _acquire_lock(ticket: str) -> bool:
-    """动真机前拿锁。返回 ``True`` 表示本进程是持有者（用完要释放）。"""
-    lock_path = REPO_ROOT / ".scratch" / "desktop.lock"
-    existed = lock_path.exists()
-    encoding = locale.getpreferredencoding() or "utf-8"
-    result = subprocess.run(
-        [sys.executable, str(LOCK_SCRIPT), "acquire", "--ticket", ticket],
-        capture_output=True,
-        text=True,
-        encoding=encoding,
-        errors="replace",
-    )
-    if result.returncode != 0:
-        raise SystemExit(
-            (result.stderr or result.stdout).strip() or "拒绝动真机：拿不到真机占用锁"
-        )
-    print(result.stdout.strip())
-    return not existed
 
 
 def _find_window(class_name: str) -> int:
@@ -129,18 +102,12 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    holds_lock = _acquire_lock(args.ticket)
+    holds_lock = acquire(args.ticket)
     try:
         return _run(args)
     finally:
         if holds_lock:
-            subprocess.run(
-                [sys.executable, str(LOCK_SCRIPT), "release"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            release()
 
 
 def _run(args) -> int:

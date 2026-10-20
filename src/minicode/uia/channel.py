@@ -4,8 +4,22 @@
 
 1. **能力表** —— 这个应用（+版本）的 UIA 能不能用？不可用 → 通道级失败；
 2. **定点查询** —— 只发**带属性条件**的查询；0 节点 / 超时 → 通道级失败；
-3. **丢无效候选** —— 控件框全 0 或零面积的候选不进候选集；
-4. **名字匹配** —— 匹配不到 → **覆盖失败**；
+3. **丢无效候选** —— 控件框全 0 或零面积的候选不进候选集
+   （架构决策备忘 §2.6 C-08）；**丢掉之后不算「找不到」**（见第 4 步）；
+4. **名字匹配** —— 匹配不到时**四态**判定（工单 M9 AC 2）：
+
+   =======================  =========================  ==============
+   情形                     错误码                     失败类型
+   =======================  =========================  ==============
+   名字对得上、控件框读不成   ``INVALID_GEOMETRY``       选择失败
+   条件查询找到候选但名字     ``NAME_MISMATCH``         选择失败
+   全对不上
+   树里一个节点都没有         ``LOCATE_FAILED``         覆盖失败
+   （0 节点 = 静默退化）
+   树能读、也查过了，就是没有   ``TARGET_NOT_FOUND``       覆盖失败
+   =======================  =========================  ==============
+
+   **只有覆盖失败允许切视觉**（架构决策备忘 §2.5 ①）；
 5. **唯一性** —— 候选唯一 → 零模型调用；不唯一 → **先做消歧**
    （模型只在候选集内指认；指认必须落在候选集内且恰好一个）；
    候选数超过上限 → 直接拒绝，**不调模型**；
@@ -22,7 +36,7 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from minicode.action.errors import ErrorCode
+from minicode.action.errors import ErrorCode, failure_type_of
 from minicode.action.ports import (
     ControlCandidate,
     LocateRequest,
@@ -87,11 +101,6 @@ def candidate_limit_source(max_candidates: int) -> str:
         f"调用方覆盖（默认值 {DEFAULT_MAX_CANDIDATES} 的来源：{CANDIDATE_LIMIT_SOURCE}）"
     )
 
-#: **覆盖失败**的错误码：候选集为空（无 provider / 树被门控 / 目标不在树里）。
-#: 只有它允许切视觉（架构决策备忘 §2.5 ①）；选择失败与「通道被拒绝启用」都不允许。
-_COVERAGE_FAILURES = frozenset({ErrorCode.LOCATE_FAILED, ErrorCode.TARGET_NOT_FOUND})
-
-
 class _ChannelRefused(Exception):
     """**通道被拒绝启用**（硬闸门拦下，如脱敏未上线）。
 
@@ -150,7 +159,7 @@ class UiaChannel:
 
         observations = 0
         try:
-            elements, observations = self._observe(request, description, observations)
+            elements, unmatched, observations = self._observe(request, description, observations)
         except UiaError as exc:
             return _failure(exc.code, exc.message, observations=observations)
 
@@ -158,7 +167,9 @@ class UiaChannel:
         usable = [element for element in elements if is_valid_rect(element.rect)]
         matched = [element for element in usable if _name_matches(element, description)]
         if not matched:
-            return self._no_candidate(request, description, matched, observations)
+            return self._no_candidate(
+                request, description, elements, usable, unmatched, observations
+            )
         if len(matched) > self.max_candidates:
             return _failure(
                 ErrorCode.TOO_MANY_CANDIDATES,
@@ -217,7 +228,7 @@ class UiaChannel:
 
         # -- 执行前重读：重读一遍树再定位一次 ---------------------------
         try:
-            second, observations = self._observe(request, description, observations)
+            second, _unmatched, observations = self._observe(request, description, observations)
         except UiaError as exc:
             return _failure(
                 exc.code,
@@ -252,7 +263,6 @@ class UiaChannel:
             observations=observations,
             query_scope=QUERY_SCOPE_WINDOW_ANCHORED,
             selection_echo=selection_echo,
-            allows_visual_fallback=False,
             candidate_limit=self.max_candidates,
             candidate_limit_source=self.candidate_limit_source,
         )
@@ -265,20 +275,55 @@ class UiaChannel:
         self,
         request: LocateRequest,
         description: str,
-        candidates: Sequence[UiaElement],
+        found: Sequence[UiaElement],
+        usable: Sequence[UiaElement],
+        unmatched: int,
         observations: int,
     ) -> LocateResult:
-        """没有匹配候选时的**两态**判定。
+        """名字条件没选出候选时的**四态**判定（工单 M9 AC 2）。
 
-        树里**一个节点都没有** → **通道级失败**（0 节点 = 静默退化，
-        不是「目标不存在」，架构决策备忘 §2.6 C-09）；
-        树能读但没有这个目标 → **覆盖失败**。
+        ==========================  ==========================  ==================
+        情形                        错误码                      失败类型
+        ==========================  ==========================  ==================
+        名字对得上、控件框读不成     ``INVALID_GEOMETRY``        选择失败
+        条件查询找到候选但没有一      ``NAME_MISMATCH``          选择失败
+        个与描述对得上
+        树里一个节点都没有            ``LOCATE_FAILED``          覆盖失败
+        （0 节点 = 静默退化）
+        树能读、也查过了，就是没有    ``TARGET_NOT_FOUND``        覆盖失败
+        ==========================  ==========================  ==================
+
+        ⚠️ **只有后两种允许切视觉**（架构决策备忘 §2.5 ①）：
+        前两种是「候选在那儿但定不下来」，切视觉等于把「选不出」
+        伪装成「找不到」—— 那会让切视觉从罕见事件退化成每步都付 1.5~5 秒。
         """
+        if found and not usable:
+            # 名字对得上，但控件框全 0 / 零面积 → 候选被丢掉（架构决策备忘
+            # §2.6 C-08：bbox 全 0 的候选必须被丢弃，而不是当作「在原点」）。
+            # 丢掉之后**不能**当成「目标不在树里」—— 那是**选择失败**。
+            return _failure(
+                ErrorCode.INVALID_GEOMETRY,
+                f"候选尺寸异常：匹配到「{description}」的 {len(found)} 个候选"
+                "控件框都读不成合法矩形（全 0 / 零面积），定不下来",
+                observations=observations,
+                limit=self.max_candidates,
+                limit_source=self.candidate_limit_source,
+            )
+        if unmatched > 0:
+            # 条件查询**找到了候选**，却没有一个与目标描述对得上 →
+            # 候选集非空但选不出 = 选择失败（禁止切视觉）。
+            return _failure(
+                ErrorCode.NAME_MISMATCH,
+                f"名称匹配不上：条件查询找到 {unmatched} 个候选，"
+                f"没有一个与「{description}」对得上",
+                observations=observations,
+                limit=self.max_candidates,
+                limit_source=self.candidate_limit_source,
+            )
         if not self.query.has_nodes(request.anchor):
             return _failure(
                 ErrorCode.LOCATE_FAILED,
                 f"通道不可用：控件树读不出节点（查询「{description}」返回 0 节点）",
-                candidates=candidates,
                 observations=observations,
                 limit=self.max_candidates,
                 limit_source=self.candidate_limit_source,
@@ -286,7 +331,6 @@ class UiaChannel:
         return _failure(
             ErrorCode.TARGET_NOT_FOUND,
             f"覆盖失败：控件树里没有与「{description}」匹配的候选",
-            candidates=candidates,
             observations=observations,
             limit=self.max_candidates,
             limit_source=self.candidate_limit_source,
@@ -294,8 +338,13 @@ class UiaChannel:
 
     def _observe(
         self, request: LocateRequest, description: str, observations: int
-    ) -> tuple[tuple[UiaElement, ...], int]:
-        """读一次树（**定点查询**：带属性条件）。"""
+    ) -> tuple[tuple[UiaElement, ...], int, int]:
+        """读一次树（**定点查询**：带属性条件）。
+
+        返回 ``(元素, 名字没匹配上的候选数, 读树次数)``。
+        第二个数 > 0 说明「条件查询找到了候选，但名字对不上」——
+        它把「名称匹配不上」与「目标不在树里」分开（工单 M9 AC 2）。
+        """
         find_request = UiaFindRequest(
             anchor=request.anchor,
             name=description,
@@ -305,7 +354,7 @@ class UiaChannel:
         observations += 1
         if result.timed_out:
             raise UiaQueryTimeout("查询超时（约 5 秒阈值）")
-        return tuple(result.elements), observations
+        return tuple(result.elements), result.unmatched_count, observations
 
     def _relocate(
         self,
@@ -426,10 +475,13 @@ def _failure(
 ) -> LocateResult:
     """失败结果：**零动作下发**，并带上要回报的候选集。
 
-    ``allows_visual_fallback`` 由**错误码**决定：只有覆盖失败
-    （候选集为空）为真；选择失败与「通道被拒绝启用」都不许切视觉
-    （架构决策备忘 §2.5 ①）。
+    ``failure_type``（哪一类失败）与 ``allows_visual_fallback``
+    （能不能切视觉）**都由错误码推导**（映射只有一处：
+    :func:`~minicode.action.errors.failure_type_of`；红线只有一处：
+    :func:`~minicode.action.errors.allows_visual_fallback`）——
+    只有**覆盖失败**允许切视觉（架构决策备忘 §2.5 ①）。
     """
+    failure_type = failure_type_of(code)
     return LocateResult(
         error_code=code,
         error_message=message,
@@ -438,7 +490,7 @@ def _failure(
         observations=observations,
         query_scope=QUERY_SCOPE_WINDOW_ANCHORED,
         selection_echo=selection_echo,
-        allows_visual_fallback=code in _COVERAGE_FAILURES,
+        failure_type=failure_type.value,
         candidate_limit=limit,
         candidate_limit_source=limit_source,
     )

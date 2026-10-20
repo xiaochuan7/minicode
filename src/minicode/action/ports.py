@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from .errors import ErrorCode
+from .errors import ErrorCode, allows_visual_fallback
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注（运行期不导入，避免两个业务包互相咬住）
     from minicode.redact.redactor import ModelTreeView
@@ -357,13 +357,18 @@ class LocateRequest:
 class LocateResult:
     """控件定位的输出。
 
-    三类失败分开报（错误码即分类）：
+    失败**分类**（工单 M9 AC 7：标识不同、互不混淆）—— 错误码即分类，
+    失败类型见 :attr:`failure_type`：
 
-    * **通道级失败** → ``LOCATE_FAILED``（树读不出来：0 节点 / 超时 / 门控解不开）；
-    * **覆盖失败** → ``TARGET_NOT_FOUND``（树能读，但产不出这个目标的候选）；
-    * **选择失败** → ``AMBIGUOUS_TARGET`` / ``TOO_MANY_CANDIDATES``。
+    * **覆盖失败**（``coverage``）→ ``TARGET_NOT_FOUND`` / ``LOCATE_FAILED``：
+      通道产不出任何候选（树读不出来 / 目标不在树里）—— **只有它允许切视觉**；
+    * **选择失败**（``selection``）→ ``AMBIGUOUS_TARGET`` / ``TOO_MANY_CANDIDATES`` /
+      ``RELOCATE_FAILED`` / ``INVALID_GEOMETRY`` / ``NAME_MISMATCH``：
+      候选里有，但选不出 —— **禁止切视觉**；
+    * **通道级失败**（``channel``）→ ``QUERY_TIMEOUT`` / ``CHANNEL_DISABLED`` /
+      ``INVALID_TARGET``：这一层整体不可用 —— **禁止切视觉**。
 
-    三类都归「定位失败」（动作协议 v1 的三类失败字段）。
+    它们都归「定位失败」（动作协议 v1 的三类失败字段）。
 
     **不变量**：``error_code is None`` ⇔ 有选中项**且**有落点
     （构造时就检查，调用方不必再判空）。
@@ -391,9 +396,12 @@ class LocateResult:
     query_scope: str = ""
     #: **每步回显**（消歧时才有）：模型发出的选择结果 + 实际发送的图片尺寸。
     selection_echo: SelectionEcho | None = None
-    #: **允许切视觉**吗？只有**覆盖失败**（候选集为空）为真；
-    #: 选择失败与「通道被拒绝启用」一律为假（架构决策备忘 §2.5 ①）。
-    allows_visual_fallback: bool = False
+    #: **失败类型**（工单 M9 AC 7）：``"coverage"`` / ``"selection"`` /
+    #: ``"execution"`` / ``"channel"`` / ``"decision"``；定位成功时为空串。
+    #:
+    #: **能不能切视觉由它推导**（:attr:`allows_visual_fallback`）——
+    #: 红线只有一处，两处数据就不可能各说各话。
+    failure_type: str = ""
     #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
     candidate_limit: int = 0
     candidate_limit_source: str = ""
@@ -401,6 +409,27 @@ class LocateResult:
     def __post_init__(self) -> None:
         if self.error_code is None and (self.selected is None or self.landing_point is None):
             raise ValueError("定位成功就必须有选中项与落点（否则是失败结果）")
+        if self.error_code is None:
+            if self.failure_type:
+                raise ValueError("定位成功就没有失败类型")
+            return
+        if not self.failure_type:
+            raise ValueError(
+                f"定位失败必须报失败类型（错误码 {self.error_code.value}）"
+                "—— 失败类型要分得开（工单 M9 AC 7）"
+            )
+        # 值域由红线函数把关：写错的名字在这里就炸（fail-closed）。
+        allows_visual_fallback(self.failure_type)
+
+    @property
+    def allows_visual_fallback(self) -> bool:
+        """**能不能切视觉** —— 由失败类型推导（红线只有一处）。
+
+        只有**覆盖失败**允许切视觉（架构决策备忘 §2.5 ①）。
+        """
+        if not self.failure_type:
+            return False
+        return allows_visual_fallback(self.failure_type)
 
     @property
     def ok(self) -> bool:
