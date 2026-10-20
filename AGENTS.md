@@ -55,6 +55,7 @@ minicode = Windows 桌面 computer-use agent。架构定稿见 `docs/research/01
 - **评测脚本的坐标口径**：内部一律原图像素，出口按目标脚本转一次；口径表与出处见 `docs/adr/0008-eval-script-coordinate-formats.md`（转换的唯一一处是 `src/minicode/eval/formats.py`）。
 - 三个原型已验证、冻结不改：`src/minicode/coord`、`src/minicode/exec`、`src/minicode/verify`。
 - 业务代码在 `src/minicode/action`（M0 新增）：动作协议 v1、动作执行缝、动作记录。
+- **决策层在 `src/minicode/decision`（M10 新增）**：产出形态是**一段动作程序**（不是逐条动作），在**受控环境**里执行（`src/minicode/action/program.py`：程序只能调用动作协议暴露的动作，任意系统调用与文件写入在执行前被拒）。**协议里没有「完成」**——终止只由 harness 侧的停止条件承载。
 
 ```powershell
 cd src/minicode\coord  && python -m unittest test_coordinates
@@ -68,4 +69,7 @@ python -m pytest
 $env:PYTHONPATH="src"; python -m minicode.action --target "开始" --out runs
 # 同一套接线走假实现（CI 可跑，不碰真桌面）
 $env:PYTHONPATH="src"; python -m minicode.action --fake --out runs
+
+# M10 决策层 harness 的端到端评测（真模型 + 假桌面，不碰真桌面）
+$env:PYTHONPATH="src"; python -m minicode.decision --goal "点开名为「开始」的控件" --capture-size 2560x1600 --out runs/decision
 ```

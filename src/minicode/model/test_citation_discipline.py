@@ -1,6 +1,6 @@
-"""引用纪律 **C-14** 的全库扫描（M1 的验收项之一）。
+"""引用纪律的**全库扫描**（C-14 是 M1 的验收项之一，C-13 是 M10 的验收项之一）。
 
-规矩：任何地方写厂商自评的 **61.7**，必须同时标注
+**C-14**：任何地方写厂商自评的 **61.7**，必须同时标注
 「**partial score · 厂商自评 · 官方榜无该模型条目**」，
 且不与 binary 口径的成绩并列；对外背书只用上一代 M3 的官方榜成绩。
 
@@ -11,12 +11,19 @@
   （例如变更记录、检查项定义、映射表里的「61.7 口径」）；
 * 其余 → 不达标。
 
+**C-13**：harness 增益只许引用官方仓库 README 正文里的两组数
+（换 harness **+19.6 / −53%**、代码执行 vs 同等 GUI+CLI **+6.1 / −14.8%**）。
+另有一组更宽的区间（**+15.5~+33.6 分 / 步数 −55~63%**）**不在 README 正文**，
+属禁止引用的一档：全库检索该区间，**除「禁用/未核」说明句外**，
+每一处都必须带论文消融表的**表号**（arXiv 2610.22200）。
+
 **底稿目录**（``docs/research/bottom-drafts/``）豁免：它是**证据记录**，
 口径在同一章的专章里统一交代，逐行加标注会改写证据本身。
 """
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -30,6 +37,33 @@ _CALIBER_MARKERS = ("partial", "部分分")
 _SELF_REPORT_MARKERS = ("自评",)
 _LEADERBOARD_MARKERS = ("官方榜", "无条目", "无榜", "无独立条目")
 _RULE_MARKERS = ("口径", "标注", "必带")
+
+# -- C-13：被禁引用的那组区间 ------------------------------------------------
+
+#: 区间特征串（两种写法都算命中：波浪号与连字符）。
+_RANGE_NEEDLES = ("15.5", "33.6", "55~63", "55-63", "55–63")
+#: 「禁用/未核」说明句的标志 —— 出现在区间所在行即达标。
+_PROHIBITION_MARKERS = (
+    "不在",
+    "禁止",
+    "禁用",
+    "未核",
+    "0 命中",
+    "必须先回查",
+    "说明句",
+    "引用纪律",
+    "无法判定",
+    "不许引",
+)
+#: 真要引用这组区间时必须带的出处：论文编号 + 消融表号。
+_PAPER_ID = "2610.22200"
+_TABLE_NUMBER_RE = re.compile(r"(表|Table)\s*\d")
+#: 「带增益的写法」—— ``+19.6 分`` / ``−53%`` 这类。
+_GAIN_RE = re.compile(r"[+＋]\s?\d+(?:\.\d+)?\s*(?:分|points?)|−\s?\d+(?:\.\d+)?\s*%")
+#: README 正文可核的两组数里出现的那几个数字。
+_README_NUMBERS = ("19.6", "6.1", "53", "14.8")
+#: 「在讲换 harness 的增益」的上下文标志（讲别的项目的数字不算）。
+_HARNESS_GAIN_CONTEXT = ("OpenGCUA", "换 harness", "同 harness", "只换")
 
 
 def _text_files() -> list[Path]:
@@ -104,6 +138,78 @@ class CitationDisciplineTest(unittest.TestCase):
                 if "官方榜" not in line and "MiniMax M3" not in line and "M3 " not in line:
                     problems.append(f"{path.relative_to(_REPO_ROOT)}:{index}: {line.strip()[:120]}")
         self.assertEqual(problems, [], "75.19 没标官方榜出处：\n" + "\n".join(problems))
+
+
+class HarnessGainCitationDisciplineTest(unittest.TestCase):
+    """**C-13**：harness 增益的引用纪律（工单 M10 AC 2）。
+
+    只许引用官方仓库 README 正文里的两组数；另有一组更宽的区间
+    （**+15.5~+33.6 分 / 步数 −55~63%**）**不在 README 正文**，
+    属禁止引用的一档 —— 全库检索该区间：**除「禁用/未核」说明句外**，
+    每一处都必须带论文消融表的**表号**。
+    """
+
+    def test_repo_contains_the_forbidden_range_at_all(self):
+        """守卫：扫描器本身没坏（仓库里确实还有这组区间的引用）。"""
+        hits = [
+            path
+            for path in _text_files()
+            if any(needle in path.read_text(encoding="utf-8", errors="replace")
+                   for needle in _RANGE_NEEDLES)
+        ]
+        self.assertTrue(hits, "全库扫不到那组区间了，扫描规则可能失效")
+
+    def test_every_mention_is_a_prohibition_or_carries_a_table_number(self):
+        problems: list[str] = []
+        for path in _text_files():
+            for index, line in enumerate(
+                path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+            ):
+                if not any(needle in line for needle in _RANGE_NEEDLES):
+                    continue
+                prohibition = any(marker in line for marker in _PROHIBITION_MARKERS)
+                cited_with_table = (
+                    _PAPER_ID in line and _TABLE_NUMBER_RE.search(line) is not None
+                )
+                if not (prohibition or cited_with_table):
+                    problems.append(
+                        f"{path.relative_to(_REPO_ROOT)}:{index}: {line.strip()[:120]}"
+                    )
+        self.assertEqual(
+            problems,
+            [],
+            "这组区间只能出现在「禁用/未核」说明句里，或带 arXiv 2610.22200 的消融表号：\n"
+            + "\n".join(problems),
+        )
+
+    def test_readme_numbers_are_the_only_cited_ones(self):
+        """讲 harness 增益的行必须落在 README 可核的两组数上。
+
+        README 正文只给两组：**换 harness +19.6 / 步数 −53%**、
+        **代码执行 vs 同等 GUI+CLI +6.1 分 / 步数 −14.8%**。
+        本检查只管**OpenGCUA 的 harness 增益**（讲的是别的项目的数字不管）。
+        """
+        problems: list[str] = []
+        for path in _text_files():
+            for index, line in enumerate(
+                path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+            ):
+                if "harness" not in line.lower():
+                    continue
+                if any(needle in line for needle in _RANGE_NEEDLES):
+                    continue  # 上一条判据管这一档
+                if not any(marker in line for marker in _HARNESS_GAIN_CONTEXT):
+                    continue  # 不是在讲换 harness 的增益
+                if not _GAIN_RE.search(line):
+                    continue
+                if any(number in line for number in _README_NUMBERS):
+                    continue
+                problems.append(f"{path.relative_to(_REPO_ROOT)}:{index}: {line.strip()[:120]}")
+        self.assertEqual(
+            problems,
+            [],
+            "讲 harness 增益的行必须落在 README 可核的两组数上：\n" + "\n".join(problems),
+        )
 
 
 if __name__ == "__main__":

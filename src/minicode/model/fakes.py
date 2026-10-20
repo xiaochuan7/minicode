@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from .client import ModelReply
@@ -61,6 +62,7 @@ class FakeModelClient:
         effort: Effort | str | None = None,
         max_tokens: int = 2000,
         image_base64: str | None = None,
+        images_base64: Sequence[str] = (),
         thinking_disabled: bool = False,
     ) -> ModelReply:
         if effort is None:
@@ -74,6 +76,7 @@ class FakeModelClient:
                 "effort": effort,
                 "max_tokens": max_tokens,
                 "image_base64": image_base64,
+                "images_base64": tuple(images_base64),
                 "thinking_disabled": thinking_disabled,
             }
         )

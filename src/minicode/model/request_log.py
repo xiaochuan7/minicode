@@ -24,6 +24,7 @@ __all__ = [
     "JsonlRequestLog",
     "build_request_log",
     "count_unset_effort",
+    "total_input_tokens",
 ]
 
 
@@ -39,10 +40,40 @@ class RequestLog:
     input_tokens: int | None = None
     output_tokens: int | None = None
     thinking_tokens: int | None = None
+    #: 提示词缓存：命中（读）与写入（建）分别多少输入 token。
+    #: 上下文总大小 = 三个输入 token 相加（工单 M10 的成本曲线按这个口径看）。
+    cache_read_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def total_input_tokens(self) -> int | None:
+        """上下文总大小（见 :func:`total_input_tokens`）。"""
+        return total_input_tokens(
+            self.input_tokens,
+            self.cache_read_input_tokens,
+            self.cache_creation_input_tokens,
+        )
+
+
+def total_input_tokens(
+    input_tokens: int | None,
+    cache_read_input_tokens: int | None,
+    cache_creation_input_tokens: int | None,
+) -> int | None:
+    """上下文总大小 = 三个输入 token 相加。**本仓的口径定义**（唯一一处）。
+
+    服务端把「本次新算的」「命中缓存读到的」「写进缓存的」分开报；
+    只看其中一个会看漏「上下文变大了」（工单 M10 AC 5 的成本曲线按总大小看）。
+    三个都没报 → ``None``（不编一个 0）。
+    """
+    parts = (input_tokens, cache_read_input_tokens, cache_creation_input_tokens)
+    if all(part is None for part in parts):
+        return None
+    return sum(part or 0 for part in parts)
 
 
 class RequestLogSink(Protocol):
@@ -85,6 +116,8 @@ def build_request_log(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     thinking_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+    cache_creation_input_tokens: int | None = None,
     error: str | None = None,
 ) -> RequestLog:
     """构造一条请求日志（纯函数）。"""
@@ -97,6 +130,8 @@ def build_request_log(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         thinking_tokens=thinking_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
         error=error,
     )
 

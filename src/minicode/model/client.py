@@ -22,7 +22,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,6 +73,11 @@ class ModelReply:
     input_tokens: int | None = None
     output_tokens: int | None = None
     thinking_tokens: int | None = None
+    #: **命中提示词缓存**的那部分输入 token（服务端把它与 ``input_tokens`` 分开报）。
+    #: 上下文总大小 = ``input_tokens`` + ``cache_read_input_tokens``
+    #: + ``cache_creation_input_tokens``（工单 M10 的成本曲线按这个口径看）。
+    cache_read_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
     raw_content: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
 
     def json_payload(self) -> Any:
@@ -140,6 +145,7 @@ def build_request_body(
     effort: Effort | str | None,
     max_tokens: int,
     image_base64: str | None = None,
+    images_base64: Sequence[str] = (),
     thinking_disabled: bool = False,
 ) -> dict[str, Any]:
     """构造请求体（纯函数）。
@@ -150,14 +156,20 @@ def build_request_body(
       只给诊断用的回归脚本用；客户端的调用入口不允许走到这里；
     * ``thinking_disabled=True`` 会带上 ``{"thinking": {"type": "disabled"}}``，
       **只为回归坑③存在**（服务端会回 HTTP 400，客户端必须如实回传）。
+
+    **图片可以有多张**（工单 M10 的上下文窗口要把最近几张完整图一起带上）：
+    ``image_base64`` 是那张主图，``images_base64`` 是追加的那几张，
+    顺序即发送顺序。
     """
     body: dict[str, Any] = {}
     content: list[dict[str, Any]] = []
-    if image_base64:
+    for data in (image_base64, *images_base64):
+        if not data:
+            continue
         content.append(
             {
                 "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": image_base64},
+                "source": {"type": "base64", "media_type": "image/png", "data": data},
             }
         )
     content.append({"type": "text", "text": prompt})
@@ -180,13 +192,20 @@ def text_of(data: Mapping[str, Any]) -> str:
 
 
 def usage_of(data: Mapping[str, Any]) -> dict[str, Any]:
-    """用量明细：输入 / 输出 / 思考 token。**用量解析的唯一一处定义。**"""
+    """用量明细：输入 / 输出 / 思考 token。**用量解析的唯一一处定义。**
+
+    提示词缓存的命中与写入**分开报**（``cache_read_input_tokens`` /
+    ``cache_creation_input_tokens``）——上下文总大小要三个数加起来看，
+    只看 ``input_tokens`` 会把「上下文变大了」看漏（工单 M10 AC 5）。
+    """
     usage = data.get("usage") or {}
     details = usage.get("output_tokens_details") or {}
     return {
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
         "thinking_tokens": details.get("thinking_tokens"),
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
     }
 
 
@@ -255,6 +274,8 @@ def parse_response(
         input_tokens=usage["input_tokens"],
         output_tokens=usage["output_tokens"],
         thinking_tokens=usage["thinking_tokens"],
+        cache_read_input_tokens=usage["cache_read_input_tokens"],
+        cache_creation_input_tokens=usage["cache_creation_input_tokens"],
         raw_content=tuple(blocks),
     )
 
@@ -288,6 +309,7 @@ class ModelClient:
         effort: Effort | str | None = None,
         max_tokens: int = 2000,
         image_base64: str | None = None,
+        images_base64: Sequence[str] = (),
         thinking_disabled: bool = False,
     ) -> ModelReply:
         """发一次请求并返回结果。
@@ -303,6 +325,7 @@ class ModelClient:
             effort=selected,
             max_tokens=max_tokens,
             image_base64=image_base64,
+            images_base64=images_base64,
             thinking_disabled=thinking_disabled,
         )
 
@@ -339,6 +362,8 @@ class ModelClient:
                 input_tokens=usage.get("input_tokens"),
                 output_tokens=usage.get("output_tokens"),
                 thinking_tokens=usage.get("thinking_tokens"),
+                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
                 error=exc.message,
             )
             raise
@@ -351,6 +376,8 @@ class ModelClient:
             input_tokens=reply.input_tokens,
             output_tokens=reply.output_tokens,
             thinking_tokens=reply.thinking_tokens,
+            cache_read_input_tokens=reply.cache_read_input_tokens,
+            cache_creation_input_tokens=reply.cache_creation_input_tokens,
             error=None,
         )
         return reply
@@ -392,6 +419,8 @@ class ModelClient:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         thinking_tokens: int | None = None,
+        cache_read_input_tokens: int | None = None,
+        cache_creation_input_tokens: int | None = None,
         error: str | None = None,
     ) -> None:
         self.request_log.write(
@@ -404,6 +433,8 @@ class ModelClient:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 thinking_tokens=thinking_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
                 error=error,
             )
         )

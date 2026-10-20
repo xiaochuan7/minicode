@@ -68,6 +68,12 @@ class ErrorCode(StrEnum):
     #: 该动作种类本单不实现（放大 / 读控件树 / 执行代码 / 请求人工）。
     ACTION_NOT_IMPLEMENTED = "action_not_implemented"
 
+    # -- 动作程序（工单 M10）--
+    #: 动作程序在**执行前**被拒：它要做的事超出受控执行环境允许的范围
+    #: （任意系统调用 / 任意文件写入 / 不许暴露的接口名）。
+    #: **零动作下发** —— 被拒的程序一个动作都没做。
+    PROGRAM_REJECTED = "program_rejected"
+
 
 class ActionError(Exception):
     """带错误码的动作异常。"""
