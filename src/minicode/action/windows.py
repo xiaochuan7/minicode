@@ -52,6 +52,12 @@ _user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
 _user32.FindWindowW.restype = wintypes.HWND
 _user32.GetDoubleClickTime.argtypes = []
 _user32.GetDoubleClickTime.restype = wintypes.UINT
+_user32.OpenClipboard.argtypes = [wintypes.HWND]
+_user32.OpenClipboard.restype = wintypes.BOOL
+_user32.CloseClipboard.argtypes = []
+_user32.CloseClipboard.restype = wintypes.BOOL
+_user32.EnumClipboardFormats.argtypes = [wintypes.UINT]
+_user32.EnumClipboardFormats.restype = wintypes.UINT
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +262,17 @@ _BUTTON_FLAGS = {
     ("middle", False): "MOUSEEVENTF_MIDDLEUP",
 }
 
+#: 剪贴板里的「非文本用户内容」格式：图片、文件列表等。
+#: 这些内容没法用 EmptyClipboard 之外的手段还原，所以一旦存在就不走粘贴通道。
+_CF_BITMAP = 2
+_CF_ENHMETAFILE = 14
+_CF_METAFILEPICT = 3
+_CF_PALETTE = 9
+_CF_HDROP = 15
+_NON_TEXT_CLIPBOARD_FORMATS = frozenset(
+    {_CF_BITMAP, _CF_ENHMETAFILE, _CF_METAFILEPICT, _CF_PALETTE, _CF_HDROP}
+)
+
 
 class WindowsInputInjector:
     """``SendInput`` 注入（复用冻结原型的结构体与 API 绑定）。
@@ -381,6 +398,24 @@ class WindowsInputInjector:
         finally:
             win_input.user32.CloseClipboard()
 
+    def has_non_text_clipboard_content(self) -> bool:
+        """剪贴板里有没有非文本内容（图片、文件列表等）。
+
+        只看「用户内容」格式：系统自带的伴随格式（Shell IDList Array 等）
+        跟着文本走，不算非文本内容。
+        """
+        if not _user32.OpenClipboard(None):
+            return False
+        try:
+            fmt = _user32.EnumClipboardFormats(0)
+            while fmt:
+                if fmt in _NON_TEXT_CLIPBOARD_FORMATS:
+                    return True
+                fmt = _user32.EnumClipboardFormats(fmt)
+            return False
+        finally:
+            _user32.CloseClipboard()
+
     @staticmethod
     def _button_flag(button: str, down: bool) -> int:
         win_input = WindowsInputInjector._win_input()
@@ -407,6 +442,13 @@ class WindowsWindowController:
     def foreground_window(self) -> int | None:
         hwnd = _user32.GetForegroundWindow()
         return int(hwnd) if hwnd else None
+
+    def is_foreground(self, hwnd: int) -> bool:
+        """目标窗口此刻是不是前台窗口（子窗口按它的根窗口算）。"""
+        foreground = self.foreground_window()
+        if foreground is None:
+            return False
+        return self._root(foreground) == self._root(int(hwnd))
 
     def is_occluded(self, hwnd: int, point: tuple[int, int] = (0, 0)) -> bool:
         """目标窗口在 ``point`` 处是否被别的窗口压住。

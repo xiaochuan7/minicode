@@ -17,7 +17,7 @@ from minicode.action.fakes import (
     FakeWindowController,
 )
 from minicode.action.geometry import VirtualDesktop
-from minicode.action.ports import ControlCandidate
+from minicode.action.ports import ControlCandidate, ControlTreeSnapshot
 from minicode.action.records import ActionLog
 from minicode.action.runner import run_minimal_loop
 from minicode.action.selfcheck import InjectionSelfCheck, StartupSelfCheck
@@ -66,6 +66,19 @@ class StartupSelfCheckTest(unittest.TestCase):
         result = StartupSelfCheck(metrics, FakeCaptureSource(width=0, height=0)).run()
         self.assertFalse(result.ok)
         self.assertIn("capture-size", result.failures)
+
+    def test_a_capture_backend_that_raises_gives_a_structured_failure(self):
+        class ExplodingCapture:
+            name = "exploding"
+
+            def capture(self):
+                raise OSError("抓屏失败")
+
+        metrics = FakeMetrics()
+        result = StartupSelfCheck(metrics, ExplodingCapture()).run()
+        self.assertFalse(result.ok)
+        self.assertIn("capture-error", result.failures)
+        self.assertIn("抓屏失败", result.error)
 
 
 class InjectionSelfCheckTest(unittest.TestCase):
@@ -151,6 +164,37 @@ class MinimalLoopTest(unittest.TestCase):
             self._run(tmp)
             for path in Path(tmp).iterdir():
                 self.assertFalse(path.name.lower().endswith((".png", ".jpg", ".bmp", ".gif")))
+
+    def test_the_landing_point_is_verified_against_a_second_tree_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome = self._run(tmp)
+            self.assertTrue(outcome.verification.ok)
+            # 落点是控件框中心的取整值，偏差最多 1 px（容差 2 px）。
+            self.assertLessEqual(outcome.verification.delta_px, 1.0)
+            record = ActionLog(tmp).records()[0]
+            self.assertEqual(record["verification"]["landing_delta_px"], outcome.verification.delta_px)
+            self.assertTrue(record["verification"]["landing_verified"])
+
+    def test_a_verification_that_cannot_find_the_target_fails_the_run_and_the_record(self):
+        class VanishingTree:
+            """动作前有目标，动作后（复验时）没有了。"""
+
+            def __init__(self):
+                self.calls = 0
+
+            def snapshot(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return ControlTreeSnapshot((_CANDIDATE,))
+                return ControlTreeSnapshot(())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outcome = self._run(tmp, tree=VanishingTree())
+            self.assertFalse(outcome.ok)
+            self.assertFalse(outcome.verification.ok)
+            record = ActionLog(tmp).records()[0]
+            self.assertFalse(record["result"]["ok"])
+            self.assertEqual(record["result"]["error_code"], "landing_mismatch")
 
 
 class StdlibOnlyTest(unittest.TestCase):

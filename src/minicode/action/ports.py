@@ -161,13 +161,31 @@ class InputInjector(Protocol):
         """写剪贴板；``None`` 表示清空。"""
         ...
 
+    def has_non_text_clipboard_content(self) -> bool:
+        """剪贴板里有没有**非文本**内容（图片、文件列表等）。
+
+        有的话就不能走粘贴通道：剪贴板通道改写的是文本格式，
+        而「把文本格式还原成没有」在 Win32 里做不到（只能 ``EmptyClipboard``
+        清掉全部格式），非文本内容会被一起清掉。
+        这种情况下改走 Unicode 注入通道，压根不碰剪贴板。
+        """
+        ...
+
 
 @runtime_checkable
 class WindowController(Protocol):
     """窗口控制（置前 / 查前台窗口）。"""
 
     def foreground_window(self) -> int | None:
-        """当前前台窗口句柄。"""
+        """当前前台窗口句柄（顶层窗口）。"""
+        ...
+
+    def is_foreground(self, hwnd: int) -> bool:
+        """目标窗口此刻**是不是**前台窗口。
+
+        句柄口径由实现统一（子窗口按它的根窗口算），
+        否则拿子窗口句柄去比前台窗口的顶层句柄，永远不相等。
+        """
         ...
 
     def is_occluded(self, hwnd: int, point: tuple[int, int]) -> bool:

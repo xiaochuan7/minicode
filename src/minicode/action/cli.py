@@ -16,13 +16,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import replace
 from pathlib import Path
 
-__all__ = ["main", "LANDING_TOLERANCE_PX"]
+from .runner import LANDING_TOLERANCE_PX
 
-#: 落点与控件框中心的允许偏差（物理像素）。验收项 6：≤2 px。
-LANDING_TOLERANCE_PX = 2
+__all__ = ["main", "LANDING_TOLERANCE_PX"]
 
 #: 默认验收目标：任务栏「开始」按钮。
 #: 它的**名称稳定**（不像任务栏天气控件的名字会随天气变），
@@ -110,23 +108,6 @@ def _run_real(args):
         log_directory=args.out,
         double_click_params=system_double_click_params(),
     )
-    # 独立复验：动作之后再读一次控件树，落点与复验框中心的距离必须 ≤2 物理像素。
-    # **这一步是判定，不是打印**——超差就不能声称闭环打通。
-    if outcome.ok and outcome.result and outcome.result.final_point:
-        landing = outcome.result.final_point
-        snapshot = tree.snapshot()
-        for candidate in snapshot.candidates:
-            if candidate.name.strip() == args.target.strip():
-                cx, cy = candidate.center
-                delta = max(abs(landing[0] - cx), abs(landing[1] - cy))
-                verdict = "通过" if delta <= LANDING_TOLERANCE_PX else "超差"
-                print(
-                    f"落点复验：落点={landing} 复验框中心=({cx}, {cy}) "
-                    f"偏差={delta:.1f} px（要求 ≤{LANDING_TOLERANCE_PX} px）→ {verdict}"
-                )
-                if delta > LANDING_TOLERANCE_PX:
-                    outcome = replace(outcome, ok=False, message=f"落点复验超差：偏差 {delta:.1f} px")
-                break
     return outcome
 
 
@@ -141,9 +122,19 @@ def main(argv=None) -> int:
     if outcome.result:
         print(f"动作结果：ok={outcome.result.ok} 落点={outcome.result.final_point}")
         print(f"意图    ：{outcome.result.intent}")
+        if outcome.result.result.cursor_delta_px is not None:
+            print(f"回读偏差：{outcome.result.result.cursor_delta_px} px（验收要求 0）")
         if outcome.result.result.error_code:
             print(f"错误码  ：{outcome.result.result.error_code.value}")
             print(f"错误信息：{outcome.result.result.error_message}")
+    if outcome.verification is not None:
+        verdict = "通过" if outcome.verification.ok else "不通过"
+        delta = outcome.verification.delta_px
+        print(
+            f"落点复验：偏差={delta if delta is None else f'{delta:.1f}'} px"
+            f"（要求 ≤{LANDING_TOLERANCE_PX} px）→ {verdict}"
+            + (f"｜{outcome.verification.message}" if outcome.verification.message else "")
+        )
     if outcome.record:
         print(f"动作记录：{Path(args.out) / 'action-records.jsonl'}")
         print(json.dumps(outcome.record.to_dict(), ensure_ascii=False, indent=2))

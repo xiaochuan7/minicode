@@ -234,13 +234,16 @@ class ActionExecutionSeam:
         if self.window_controller is not None and selected.window_handle:
             if self.window_controller.is_occluded(selected.window_handle, final_point):
                 raised = self.window_controller.bring_to_front(selected.window_handle)
-                now = self.window_controller.foreground_window()
-                if not raised or now != selected.window_handle:
+                # 句柄口径由窗口控制统一（子窗口按根窗口算），
+                # 这里不能拿子窗口句柄去比顶层的前台窗口句柄。
+                if not raised or not self.window_controller.is_foreground(
+                    selected.window_handle
+                ):
                     return self._fail(
                         request,
                         ErrorCode.EXECUTE_FAILED,
                         f"目标窗口 {selected.window_handle} 置前失败"
-                        f"（当前前台窗口 {now}）",
+                        f"（当前前台窗口 {self.window_controller.foreground_window()}）",
                         locate_ms=locate_ms,
                         selected=selected,
                         skipped=skipped,

@@ -148,6 +148,14 @@ class ActionExecutor:
             return ActionResult(
                 ok=False, error_code=exc.code, error_message=exc.message
             )
+        except (OSError, ValueError) as exc:
+            # 端口实现抛出来的运行时错误（如剪贴板打不开、键名不认识、
+            # SendInput 报 OSError）：记成执行失败，**不许崩掉整个进程**。
+            return ActionResult(
+                ok=False,
+                error_code=ErrorCode.EXECUTE_FAILED,
+                error_message=f"{type(exc).__name__}: {exc}",
+            )
         raise ActionError(  # pragma: no cover - 枚举全覆盖
             ErrorCode.EXECUTE_FAILED, f"未处理的动作种类：{kind!r}"
         )
@@ -171,7 +179,15 @@ class ActionExecutor:
                 "本单不写死这两个值。",
             )
         # 两次按下的间隔必须**小于**系统双击时间；位移为 0（两次点在同一个位置）。
-        gap_s = min(0.080, params.time_ms / 2000.0)
+        # 预算里要算上第二次点击序列自带的停顿与按住：
+        # 实测的「按下→按下」间隔 = 第一次的按住 + 我们请求的间隔 + 第二次的停顿。
+        budget_s = params.time_ms / 1000.0 - self.timing.hold_s - self.timing.settle_s
+        if budget_s <= 0:
+            raise ActionError(
+                ErrorCode.EXECUTE_FAILED,
+                f"系统的双击时间 {params.time_ms} ms 放不下一次点击序列，做不出双击",
+            )
+        gap_s = min(0.080, budget_s / 2.0)
         _first, first_pressed_at, _ = self._click_sequence(x, y, "left")
         self._sleep(gap_s)
         second, second_pressed_at, _ = self._click_sequence(x, y, "left")
@@ -229,10 +245,18 @@ class ActionExecutor:
 
     def _type_text(self, action: Action) -> ActionResult:
         text = str(action.params.get("text", ""))
+        notes: list[str] = []
+        # 剪贴板里有非文本内容（图片、文件列表）时**不走粘贴通道**：
+        # 剪贴板通道改写文本格式，而「把文本格式还原成没有」只能 EmptyClipboard，
+        # 会把那些非文本内容一起清掉 —— 那是破坏用户环境。
+        if self.injector.has_non_text_clipboard_content():
+            self.injector.type_unicode(text)
+            notes.append("注入通道=unicode")
+            notes.append("剪贴板含非文本内容，改走 Unicode 注入通道（不碰用户的剪贴板）")
+            return ActionResult(ok=True, notes=tuple(notes))
         backup: str | None = None
         backup_read = False
         channel = "clipboard"
-        notes: list[str] = []
         try:
             backup = self.injector.read_clipboard()
             backup_read = True

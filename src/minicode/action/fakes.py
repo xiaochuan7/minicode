@@ -105,6 +105,7 @@ class FakeInputInjector:
         fail_paste: bool = False,
         readback_override: tuple[int, int] | None = None,
         journal: list | None = None,
+        non_text_clipboard: bool = False,
     ):
         self.journal = journal if journal is not None else []
         self.events: list[tuple] = self.journal
@@ -115,6 +116,7 @@ class FakeInputInjector:
         self._fail_paste = fail_paste
         self._readback_override = readback_override
         self._clipboard: str | None = None
+        self._non_text_clipboard = non_text_clipboard
 
     # -- 探针 -------------------------------------------------------------
 
@@ -169,6 +171,9 @@ class FakeInputInjector:
     def write_clipboard(self, text: str | None) -> None:
         self._clipboard = text
 
+    def has_non_text_clipboard_content(self) -> bool:
+        return self._non_text_clipboard
+
     # -- 内部 -------------------------------------------------------------
 
     def _guard(self) -> None:
@@ -177,16 +182,33 @@ class FakeInputInjector:
 
 
 class FakeWindowController:
-    """假窗口控制：记录前台窗口的变更。"""
+    """假窗口控制：记录前台窗口的变更。
 
-    def __init__(self, foreground: int | None = None, bring_fails: bool = False, journal=None):
+    ``root_of`` 建模「候选句柄是子窗口、置前后台窗口是它的根窗口」：
+    子窗口句柄与顶层的前台窗口句柄**本来就不相等**，
+    只有按同一个口径（根窗口）比，才判得出「已经是前台窗口」。
+    """
+
+    def __init__(
+        self,
+        foreground: int | None = None,
+        bring_fails: bool = False,
+        journal=None,
+        root_of: dict[int, int] | None = None,
+    ):
         self._foreground = foreground
         self._bring_fails = bring_fails
         self.brought: list[int] = []
         self.journal = journal if journal is not None else []
+        self.root_of = dict(root_of or {})
 
     def foreground_window(self) -> int | None:
         return self._foreground
+
+    def is_foreground(self, hwnd: int) -> bool:
+        if self._foreground is None:
+            return False
+        return self._foreground == self.root_of.get(int(hwnd), int(hwnd))
 
     def is_occluded(self, hwnd: int, point: tuple[int, int] = (0, 0)) -> bool:
         """前台窗口不是目标窗口时，假定目标被遮挡。"""
@@ -197,7 +219,7 @@ class FakeWindowController:
         self.journal.append(("bring_to_front", int(hwnd)))
         if self._bring_fails:
             return False
-        self._foreground = int(hwnd)
+        self._foreground = self.root_of.get(int(hwnd), int(hwnd))
         return True
 
 

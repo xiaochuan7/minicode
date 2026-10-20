@@ -265,6 +265,24 @@ class WindowFrontTest(unittest.TestCase):
         injected = [e for e in injector.events if e[0] in ("move", "button_down", "button_up")]
         self.assertEqual(injected, [])
 
+    def test_a_child_window_candidate_is_not_mistaken_for_a_failed_raise(self):
+        """候选句柄是子窗口时，前台窗口是它的根窗口——句柄口径不同但并不算失败。"""
+        controller = FakeWindowController(
+            foreground=11111, journal=[], root_of={2001: 1000}
+        )
+        injector = FakeInputInjector(journal=controller.journal)
+        candidate = ControlCandidate(
+            name="开始", control_type="Button", rect=(1016, 1528, 1083, 1600), window_handle=2001
+        )
+        seam, _, controller, _ = _build_seam(
+            candidates=(candidate,), injector=injector, controller=controller
+        )
+        result = seam.run(SeamRequest(target_description="开始"))
+        self.assertTrue(result.ok)
+        self.assertEqual(controller.brought, [2001])
+        injected = [e for e in injector.events if e[0] in ("move", "button_down", "button_up")]
+        self.assertEqual(len(injected), 3)
+
 
 class InjectionBlockedTest(unittest.TestCase):
     """验收项 20：已知欠账如实写进记录。"""

@@ -188,6 +188,67 @@ class DoubleClickTest(unittest.TestCase):
         gap_ms = self.clock.sleeps[2] * 1000.0
         self.assertGreater(gap_ms, self.params.time_ms)
 
+    def test_double_click_stays_inside_a_short_system_threshold(self):
+        """间隔预算要算上点击序列自带的停顿与按住，否则会超过系统阈值。"""
+        params = DoubleClickParams(time_ms=150, distance_px=4)
+        clock = VirtualClock()
+        injector = FakeInputInjector()
+        executor = ActionExecutor(
+            injector,
+            sleeper=clock.sleep,
+            clock=clock.time,
+            double_click_params=params,
+        )
+        result = executor.execute(
+            Action(
+                kind=ActionKind.DOUBLE_CLICK,
+                params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]),
+                intent="双击",
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertLess(result.timing["double_click_gap_ms"], params.time_ms)
+
+    def test_a_system_threshold_too_short_for_one_click_sequence_fails_cleanly(self):
+        params = DoubleClickParams(time_ms=90, distance_px=4)
+        clock = VirtualClock()
+        injector = FakeInputInjector()
+        executor = ActionExecutor(
+            injector,
+            sleeper=clock.sleep,
+            clock=clock.time,
+            double_click_params=params,
+        )
+        result = executor.execute(
+            Action(
+                kind=ActionKind.DOUBLE_CLICK,
+                params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]),
+                intent="双击",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+
+    def test_a_runtime_error_from_the_port_becomes_an_execution_failure(self):
+        """端口实现抛出的运行时错误不许崩掉整个进程。"""
+        injector = FakeInputInjector()
+        executor = ActionExecutor(
+            injector,
+            sleeper=self.clock.sleep,
+            clock=self.clock.time,
+            double_click_params=DoubleClickParams(time_ms=500, distance_px=4),
+        )
+
+        def boom(combo):
+            raise ValueError("未知按键名：'super'")
+
+        injector.press_combo = boom
+        result = executor.execute(
+            Action(kind=ActionKind.KEY, params=dict(_PARAMS[ActionKind.KEY]), intent="按键")
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+
 
 class ScrollTest(unittest.TestCase):
     """滚动量以「行」为对外单位（验收项 15）。"""
@@ -266,4 +327,17 @@ class TypeTextTest(unittest.TestCase):
         self._executor(injector).execute(
             Action(kind=ActionKind.TYPE_TEXT, params=dict(_PARAMS[ActionKind.TYPE_TEXT]), intent="输入")
         )
+        self.assertEqual(injector.read_clipboard(), "用户原来的内容")
+
+    def test_a_clipboard_holding_non_text_content_is_never_touched(self):
+        """剪贴板里有图片/文件时，粘贴通道会把它们清掉 —— 改走 Unicode 通道。"""
+        injector = FakeInputInjector(non_text_clipboard=True)
+        injector.write_clipboard("用户原来的内容")
+        result = self._executor(injector).execute(
+            Action(kind=ActionKind.TYPE_TEXT, params=dict(_PARAMS[ActionKind.TYPE_TEXT]), intent="输入")
+        )
+        self.assertTrue(result.ok)
+        kinds = [e[0] for e in injector.events]
+        self.assertIn("type_unicode", kinds)
+        self.assertNotIn("press_combo", kinds)
         self.assertEqual(injector.read_clipboard(), "用户原来的内容")

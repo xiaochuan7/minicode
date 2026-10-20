@@ -32,6 +32,9 @@ class ErrorCode(StrEnum):
     # -- 执行失败（三类失败里的「执行失败」）--
     #: 落点越出虚拟桌面超过越界容差，被桌面裁切。**不夹取、不挪屏。**
     CLIPPED_BY_DESKTOP = "clipped_by_desktop"
+    #: 落点复验没过：动作后重读控件树，落点与控件框中心的距离超过容差，
+    #: 或者复验时根本找不到目标（不能声称闭环打通）。
+    LANDING_MISMATCH = "landing_mismatch"
     #: 注入被拦下（SendInput 返回值 != 注入条数，典型是 UIPI 完整性级别拦截）。
     INJECTION_BLOCKED = "injection_blocked"
     #: 光标回读落在哨兵值 (−32000,−32000)。

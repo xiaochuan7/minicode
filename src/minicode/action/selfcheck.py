@@ -77,6 +77,8 @@ class StartupCheckResult:
     device_caps_dpi: int | None = None
     capture_size: tuple[int, int] | None = None
     failures: tuple[str, ...] = ()
+    #: 抓屏后端抛出来的原始错误（结构化失败，不崩进程）。
+    error: str = ""
 
     def describe(self) -> str:
         parts = [
@@ -87,6 +89,8 @@ class StartupCheckResult:
         ]
         if self.failures:
             parts.append("失败项=" + ",".join(self.failures))
+        if self.error:
+            parts.append(f"错误={self.error}")
         return " | ".join(parts)
 
 
@@ -120,13 +124,19 @@ class StartupSelfCheck:
 
         # 抓屏：拿到 0×0 画面的捕获源直接跳过（哨兵值一条）。
         capture_size: tuple[int, int] | None = None
+        capture_error = ""
         for source in self.sources:
-            frame = source.capture()
+            try:
+                frame = source.capture()
+            except Exception as exc:  # 抓屏后端炸了也要给出结构化失败，不许崩进程
+                failures.append("capture-error")
+                capture_error = f"{type(exc).__name__}: {exc}"
+                break
             if frame.is_empty:
                 continue
             capture_size = (frame.width, frame.height)
             break
-        if capture_size != expected_physical:
+        if capture_size != expected_physical and "capture-error" not in failures:
             failures.append("capture-size")
 
         return StartupCheckResult(
@@ -136,6 +146,7 @@ class StartupSelfCheck:
             device_caps_dpi=int(dpi),
             capture_size=capture_size,
             failures=tuple(failures),
+            error=capture_error,
         )
 
 

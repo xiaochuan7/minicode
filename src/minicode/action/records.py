@@ -129,6 +129,10 @@ class ActionRecord:
     execute_verify_ms: float = 0.0
     #: 动作自身的实测时序（毫秒）：pre_move / hold / total 等。
     action_timing: Mapping[str, Any] | None = None
+    #: 落点复验：动作后重读控件树得到的偏差（物理像素）。
+    landing_delta_px: float | None = None
+    #: 落点复验是否真的做成了（复验时找不到目标就是 False）。
+    landing_verified: bool | None = None
     failure_locate: str | None = None
     failure_decision: str | None = None
     failure_execute: str | None = None
@@ -169,6 +173,10 @@ class ActionRecord:
                 "execute_verify": self.execute_verify_ms,
             },
             "action_timing": dict(self.action_timing) if self.action_timing else None,
+            "verification": {
+                "landing_delta_px": self.landing_delta_px,
+                "landing_verified": self.landing_verified,
+            },
             "failures": {
                 "locate": self.failure_locate,
                 "decision": self.failure_decision,
