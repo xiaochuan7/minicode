@@ -307,7 +307,14 @@ class PortShapeTest(unittest.TestCase):
     def test_request_and_result_keep_their_public_fields(self):
         self.assertEqual(
             [f.name for f in dataclasses.fields(SeamRequest)],
-            ["target_description", "frame", "tree_snapshot", "action_kind", "params"],
+            [
+                "target_description",
+                "frame",
+                "tree_snapshot",
+                "action_kind",
+                "params",
+                "control_type",
+            ],
         )
         self.assertEqual(
             [f.name for f in dataclasses.fields(SeamResult)],

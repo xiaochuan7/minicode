@@ -41,7 +41,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from minicode.coord.coordinates import CoordinateOutOfBounds
@@ -56,9 +56,14 @@ from .ports import (
     CapturedFrame,
     CaptureSource,
     ControlCandidate,
+    ControlLocator,
     ControlTree,
     ControlTreeSnapshot,
+    ElementInvoker,
     InputInjector,
+    LocateRequest,
+    LocateResult,
+    WindowAnchor,
     WindowController,
 )
 from .protocol import POINT_KINDS, Action, ActionKind, ActionResult
@@ -94,6 +99,9 @@ class SeamRequest:
     action_kind: ActionKind = ActionKind.CLICK
     #: 动作的额外参数（如 scroll 的 lines）。
     params: Mapping[str, Any] = field(default_factory=dict)
+    #: **控件类型提示**（``"Button"`` 之类）。定位通道据此发**控件类型条件**下的
+    #: 定点查询（目标描述不是控件名时靠它缩小范围；没有它就不退到类型扫描）。
+    control_type: str = ""
 
     def __post_init__(self) -> None:
         if self.action_kind not in POINT_KINDS:
@@ -154,6 +162,9 @@ class ActionExecutionSeam:
         trace_sink: TraceSink | None = None,
         capture_to_physical_scale: float = 1.0,
         model_context_config: ModelContextConfig | None = None,
+        locator: ControlLocator | None = None,
+        invoker: ElementInvoker | None = None,
+        anchor: WindowAnchor | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         self.tree = tree
@@ -178,6 +189,14 @@ class ActionExecutionSeam:
         self._redactor = (
             TreeRedactor(model_context_config) if model_context_config is not None else None
         )
+        #: **控件定位端口**（UIA 通道，工单 M3）。给了它，定位走这一条：
+        #: 定点查询 → 唯一定位 → 执行前重读 → 落点直接取控件框的物理像素中心。
+        #: 缺省 = 用本单自己的控件树快照 + 名字匹配（M0 的老路径）。
+        self.locator = locator
+        #: **Invoke 通道**（UIA 的 InvokePattern）。Invoke 优先于坐标点击。
+        self.invoker = invoker
+        #: 定位用的窗口锚点（能力表的键 + 查询的根）。
+        self.anchor = anchor or WindowAnchor(hwnd=0)
 
     # ------------------------------------------------------------------
     # 主流程
@@ -210,47 +229,89 @@ class ActionExecutionSeam:
         # -- 定位 ---------------------------------------------------------
         locate_started = self._clock()
         model_view: ModelTreeView | None = None
-        try:
-            snapshot = (
-                request.tree_snapshot
-                if request.tree_snapshot is not None
-                else self.tree.snapshot()
+        located = None
+        if self.locator is not None:
+            # UIA 通道（工单 M3）：定位、唯一性拒绝、消歧与执行前重读都在通道里。
+            located = self.locator.locate(
+                LocateRequest(
+                    target_description=request.target_description,
+                    anchor=self.anchor,
+                    control_type=request.control_type,
+                )
             )
-            # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
-            model_view = self._render_model_view(snapshot.candidates)
-            selected, _ = self._select(snapshot.candidates, request.target_description)
-        except ChannelUnavailableError as exc:
-            locate_ms = (self._clock() - locate_started) * 1000.0
-            return self._fail(
-                request,
-                ErrorCode.LOCATE_FAILED,
-                str(exc),
-                locate_ms=locate_ms,
-                skipped=skipped,
-                frame=frame,
-            )
-        except _SelectionFailure as exc:
-            locate_ms = (self._clock() - locate_started) * 1000.0
-            return self._fail(
-                request,
-                exc.code,
-                exc.message,
-                locate_ms=locate_ms,
-                rejected=exc.candidates,
-                skipped=skipped,
-                frame=frame,
-                model_view=model_view,
-            )
-        locate_ms = (self._clock() - locate_started) * 1000.0
+            if located.error_code is not None:
+                locate_ms = (self._clock() - locate_started) * 1000.0
+                return self._fail(
+                    request,
+                    located.error_code,
+                    located.error_message,
+                    locate_ms=locate_ms,
+                    rejected=located.candidates,
+                    skipped=skipped,
+                    frame=frame,
+                    query_scope=located.query_scope,
+                )
+            selected = located.selected
+            try:
+                # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
+                # 定位通道**已经渲染过**就直接复用（模型侧文本只有一个出口、只渲染一次）。
+                model_view = located.model_view or self._render_model_view(
+                    located.candidates
+                )
+            except ChannelUnavailableError as exc:
+                locate_ms = (self._clock() - locate_started) * 1000.0
+                return self._fail(
+                    request,
+                    ErrorCode.LOCATE_FAILED,
+                    str(exc),
+                    locate_ms=locate_ms,
+                    skipped=skipped,
+                    frame=frame,
+                )
+            px, py = float(located.landing_point[0]), float(located.landing_point[1])
+            final_point = located.landing_point
+        else:
+            try:
+                snapshot = (
+                    request.tree_snapshot
+                    if request.tree_snapshot is not None
+                    else self.tree.snapshot()
+                )
+                # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
+                model_view = self._render_model_view(snapshot.candidates)
+                selected, _ = self._select(snapshot.candidates, request.target_description)
+            except ChannelUnavailableError as exc:
+                locate_ms = (self._clock() - locate_started) * 1000.0
+                return self._fail(
+                    request,
+                    ErrorCode.LOCATE_FAILED,
+                    str(exc),
+                    locate_ms=locate_ms,
+                    skipped=skipped,
+                    frame=frame,
+                )
+            except _SelectionFailure as exc:
+                locate_ms = (self._clock() - locate_started) * 1000.0
+                return self._fail(
+                    request,
+                    exc.code,
+                    exc.message,
+                    locate_ms=locate_ms,
+                    rejected=exc.candidates,
+                    skipped=skipped,
+                    frame=frame,
+                    model_view=model_view,
+                )
 
-        # -- 落点（截图像素空间 → 物理表面空间）-----------------------------
-        capture_rect = surface.rect_to_capture(selected.rect)
-        landing_capture = (
-            (capture_rect[0] + capture_rect[2]) / 2.0,
-            (capture_rect[1] + capture_rect[3]) / 2.0,
-        )
-        px, py = surface.capture_to_physical(*landing_capture)
-        final_point = (math.floor(px), math.floor(py))
+            # -- 落点（截图像素空间 → 物理表面空间）-------------------------
+            capture_rect = surface.rect_to_capture(selected.rect)
+            landing_capture = (
+                (capture_rect[0] + capture_rect[2]) / 2.0,
+                (capture_rect[1] + capture_rect[3]) / 2.0,
+            )
+            px, py = surface.capture_to_physical(*landing_capture)
+            final_point = (math.floor(px), math.floor(py))
+        locate_ms = (self._clock() - locate_started) * 1000.0
 
         try:
             surface.assert_within_surface(px, py)
@@ -290,7 +351,7 @@ class ActionExecutionSeam:
         # -- 执行 + 校验 ---------------------------------------------------
         action = self._build_action(request, final_point)
         execute_started = self._clock()
-        result = self.executor.execute(action)
+        result = self._execute(action, final_point, located)
         execute_verify_ms = (self._clock() - execute_started) * 1000.0
 
         failures = {name: None for name in FAILURE_FIELDS}
@@ -301,7 +362,9 @@ class ActionExecutionSeam:
             action=action,
             intent=action.intent,
             target_description=request.target_description,
-            candidates=trace_candidates(snapshot.candidates),
+            candidates=trace_candidates(
+                located.candidates if located is not None else snapshot.candidates
+            ),
             selected=_traced_candidate(selected),
             landing_point=final_point,
             capture_width=frame.width,
@@ -315,6 +378,7 @@ class ActionExecutionSeam:
             decision_ms=0.0,
             execute_verify_ms=execute_verify_ms,
             failures=failures,
+            query_scope=located.query_scope if located is not None else "",
             result=result,
             model_view=model_view,
         )
@@ -329,6 +393,37 @@ class ActionExecutionSeam:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    def _execute(
+        self,
+        action: Action,
+        final_point: tuple[int, int],
+        located: LocateResult | None,
+    ) -> ActionResult:
+        """执行动作。**Invoke 优先**：控件支持 Invoke 时走 InvokePattern；
+        不支持（或 Invoke 失败）时改用坐标点击，并**记一条改用事件**。
+
+        没走 UIA 通道（``located`` 是 ``None``）时就是 M0 的老路径：直接坐标点击。
+        """
+        if located is None:
+            return self.executor.execute(action)
+        notes: list[str] = []
+        if located.invokable and self.invoker is not None:
+            if self.invoker.invoke(located.selected.element_id):
+                return ActionResult(
+                    ok=True,
+                    landing_point=final_point,
+                    notes=("Invoke：走 UIA 的 InvokePattern（不是坐标点击）",),
+                )
+            notes.append("Invoke 失败，改用坐标点击")
+        elif located.invokable:
+            notes.append("没有 Invoke 通道，改用坐标点击")
+        else:
+            notes.append("控件不支持 Invoke，改用坐标点击")
+        result = self.executor.execute(action)
+        if not notes:
+            return result
+        return replace(result, notes=tuple(result.notes) + tuple(notes))
 
     def _render_model_view(
         self, candidates: Sequence[ControlCandidate]
@@ -407,13 +502,16 @@ class ActionExecutionSeam:
         skipped: Sequence[str] = (),
         frame: CapturedFrame | None = None,
         model_view: ModelTreeView | None = None,
+        query_scope: str = "",
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。"""
         failures = {name: None for name in FAILURE_FIELDS}
         if code in (
             ErrorCode.TARGET_NOT_FOUND,
             ErrorCode.AMBIGUOUS_TARGET,
+            ErrorCode.TOO_MANY_CANDIDATES,
             ErrorCode.LOCATE_FAILED,
+            ErrorCode.RELOCATE_FAILED,
             ErrorCode.CLIPPED_BY_DESKTOP,
         ):
             # 定位层：没找到 / 找不唯一 / 通道不可用 / 落点不可用。
@@ -439,6 +537,7 @@ class ActionExecutionSeam:
             decision_ms=0.0,
             execute_verify_ms=0.0,
             failures=failures,
+            query_scope=query_scope,
             result=result,
             model_view=model_view,
         )

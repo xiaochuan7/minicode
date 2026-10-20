@@ -83,6 +83,10 @@ class ActionTrace:
     failures: Mapping[str, str | None] = field(
         default_factory=lambda: {name: None for name in FAILURE_FIELDS}
     )
+    #: **查询口径**（``"window-anchored"`` / ``"desktop-level"`` / 空）。
+    #: 工单 M3 AC 8：验收记录里要写明用的是窗口锚定还是桌面级查询
+    #: （416 ms 与 8 秒两个口径不许混用）。
+    query_scope: str = ""
     result: ActionResult = field(default_factory=lambda: ActionResult(ok=True))
 
 
@@ -143,6 +147,9 @@ class ActionRecord:
     landing_delta_px: float | None = None
     #: 落点复验是否真的做成了（复验时找不到目标就是 False）。
     landing_verified: bool | None = None
+    #: **查询口径**：``"window-anchored"``（窗口锚定）/ ``"desktop-level"``（桌面级）
+    #: / 空（这条通道不查控件树）。工单 M3 AC 8 要求写明，不许两种口径混用。
+    query_scope: str = ""
     failure_locate: str | None = None
     failure_decision: str | None = None
     failure_execute: str | None = None
@@ -190,6 +197,7 @@ class ActionRecord:
                 "landing_delta_px": self.landing_delta_px,
                 "landing_verified": self.landing_verified,
             },
+            "query_scope": self.query_scope,
             "failures": {
                 "locate": self.failure_locate,
                 "decision": self.failure_decision,
@@ -253,6 +261,8 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
                 "name": candidate.name,
                 "control_type": candidate.control_type,
                 "rect": list(candidate.rect),
+                # 元素 id：同名候选之间的**可区分标识**（每次观测重新生成）。
+                "element_id": candidate.element_id,
             }
             for candidate in trace.rejected_candidates
         ),
@@ -263,6 +273,7 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         failure_locate=failures.get("locate"),
         failure_decision=failures.get("decision"),
         failure_execute=failures.get("execute"),
+        query_scope=trace.query_scope,
         redaction=(
             trace.model_view.report.to_dict() if trace.model_view is not None else None
         ),

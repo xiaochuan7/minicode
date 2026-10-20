@@ -21,8 +21,12 @@ class ErrorCode(StrEnum):
     TARGET_NOT_FOUND = "target_not_found"
     #: 候选不唯一 —— 唯一性拒绝：拒绝执行并回报候选集。
     AMBIGUOUS_TARGET = "ambiguous_target"
+    #: 候选数超过上限（默认 8）：直接拒绝，**不调模型**，回报候选集。
+    TOO_MANY_CANDIDATES = "too_many_candidates"
     #: 控件树读取本身失败（超时、通道不可用）。
     LOCATE_FAILED = "locate_failed"
+    #: 执行前重读树时找不到原来的那个控件了：宁可不动作，也不点相似的另一个。
+    RELOCATE_FAILED = "relocate_failed"
 
     # -- 决策失败（本单没有模型参与，恒不出现）--
     #: 决策失败。决策层（L3）不在动作执行缝内，本单用不上；

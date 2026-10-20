@@ -16,7 +16,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from .errors import ErrorCode
+
+if TYPE_CHECKING:  # pragma: no cover - 只为类型标注（运行期不导入，避免两个业务包互相咬住）
+    from minicode.redact.redactor import ModelTreeView
 
 __all__ = [
     "CapturedFrame",
@@ -27,6 +32,11 @@ __all__ = [
     "ControlTree",
     "InputInjector",
     "WindowController",
+    "WindowAnchor",
+    "LocateRequest",
+    "LocateResult",
+    "ControlLocator",
+    "ElementInvoker",
 ]
 
 
@@ -82,6 +92,9 @@ class ControlCandidate:
     rect: tuple[int, int, int, int] = (0, 0, 0, 0)
     window_handle: int | None = None
     automation_id: str | None = None
+    #: 元素 id —— **每次观测重新生成**（工单 M3）。
+    #: 它只在**本次观测**里有效：拿上一次观测的 id 来重定位必然失败。
+    element_id: str = ""
     #: 控件的值（编辑框正文、密码框字符、组合框选中项……）。
     value: str = ""
     #: 帮助文本。
@@ -217,3 +230,101 @@ class WindowController(Protocol):
     def bring_to_front(self, hwnd: int) -> bool:
         """把目标窗口置前；置前成功后它就是前台窗口。"""
         ...
+
+
+# ---------------------------------------------------------------------------
+# 控件定位（UIA 通道，工单 M3）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WindowAnchor:
+    """UIA 查询的**窗口锚点**：查询的根 + 能力表的键。
+
+    * ``hwnd`` —— 查询的根窗口；
+    * ``app`` / ``version`` —— **能力表的键**（「应用 + 版本」）。
+
+    能力表按应用**逐个**探测并缓存，因此键里必须有版本：
+    「Chromium 一律失效」「UWP 一律可用」这类**类别级结论**是错的。
+    """
+
+    hwnd: int
+    app: str = ""
+    version: str = ""
+
+
+@dataclass(frozen=True)
+class LocateRequest:
+    """控件定位的输入。"""
+
+    target_description: str
+    anchor: WindowAnchor
+    #: 控件类型提示（``"Button"`` 之类）。给了它，通道才能在**控件类型条件**下
+    #: 做名字匹配（自然语言描述不是控件名时需要）。
+    control_type: str = ""
+
+
+@dataclass(frozen=True)
+class LocateResult:
+    """控件定位的输出。
+
+    三类失败分开报（错误码即分类）：
+
+    * **通道级失败** → ``LOCATE_FAILED``（树读不出来：0 节点 / 超时 / 门控解不开）；
+    * **覆盖失败** → ``TARGET_NOT_FOUND``（树能读，但产不出这个目标的候选）；
+    * **选择失败** → ``AMBIGUOUS_TARGET`` / ``TOO_MANY_CANDIDATES``。
+
+    三类都归「定位失败」（动作协议 v1 的三类失败字段）。
+
+    **不变量**：``error_code is None`` ⇔ 有选中项**且**有落点
+    （构造时就检查，调用方不必再判空）。
+    """
+
+    selected: ControlCandidate | None = None
+    #: 最终落点（**物理表面空间**）：选中项控件框的中心。
+    landing_point: tuple[int, int] | None = None
+    error_code: ErrorCode | None = None
+    error_message: str = ""
+    #: 本次定位考虑过的候选集（拒绝执行时回报给上层的就是它）。
+    candidates: tuple[ControlCandidate, ...] = ()
+    #: 送进模型上下文的那份界面状态（**已脱敏**）。
+    #: 定位通道已经渲染过时就带在这里（模型侧文本**只有一个出口**）。
+    model_view: ModelTreeView | None = None
+    #: 选中项支不支持 Invoke（UIA 的 InvokePattern）。
+    invokable: bool = False
+    #: 本次定位的模型调用次数（**消歧**才会调模型；候选唯一时是 0）。
+    model_calls: int = 0
+    #: 读树次数（执行前重读 → 至少 2）。
+    observations: int = 0
+    #: **查询口径**：``"window-anchored"``（窗口锚定）还是 ``"desktop-level"``
+    #: （桌面级）。工单 M3 AC 8 要求验收记录里写明用的是哪一种
+    #: （416 ms 与 8 秒两个口径不许混用）。
+    query_scope: str = ""
+
+    def __post_init__(self) -> None:
+        if self.error_code is None and (self.selected is None or self.landing_point is None):
+            raise ValueError("定位成功就必须有选中项与落点（否则是失败结果）")
+
+    @property
+    def ok(self) -> bool:
+        return self.error_code is None
+
+
+@runtime_checkable
+class ControlLocator(Protocol):
+    """控件定位端口：**一句目标描述 → 一个选中项 + 一个物理像素落点**。
+
+    决策层不在缝内：定位通道不产生模型调用（消歧时的**指认**除外）。
+    """
+
+    def locate(self, request: LocateRequest) -> LocateResult:
+        ...
+
+
+@runtime_checkable
+class ElementInvoker(Protocol):
+    """按元素 id 触发 InvokePattern（**Invoke 优先**于坐标点击）。"""
+
+    def invoke(self, element_id: str) -> bool:
+        ...
+
