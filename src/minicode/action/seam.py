@@ -67,12 +67,18 @@ from .ports import (
     SelectionEcho,
     VisualAdmission,
     VisualAdmissionPort,
+    VisualLocateRequest,
+    VisualLocateResult,
+    VisualLocator,
     WindowAnchor,
     WindowController,
+    ZoomLocator,
+    ZoomRequest,
 )
 from .protocol import (
     BUTTON_RIGHT,
     CLICK_DOUBLE,
+    OBSERVATION_KINDS,
     POINT_KINDS,
     STANDALONE_KINDS,
     Action,
@@ -139,9 +145,13 @@ class SeamRequest:
     control_type: str = ""
 
     def __post_init__(self) -> None:
-        if self.action_kind not in POINT_KINDS and self.action_kind not in STANDALONE_KINDS:
+        if (
+            self.action_kind not in POINT_KINDS
+            and self.action_kind not in STANDALONE_KINDS
+            and self.action_kind not in OBSERVATION_KINDS
+        ):
             raise ValueError(
-                f"动作执行缝只处理需要一个落点的动作种类或截图/等待，"
+                f"动作执行缝只处理需要一个落点的动作种类、截图/等待或观察型动作（放大），"
                 f"收到 {self.action_kind.value!r}；"
                 "输入文本 / 按键等动作请直接用动作执行器。"
             )
@@ -202,6 +212,8 @@ class ActionExecutionSeam:
         invoker: ElementInvoker | None = None,
         anchor: WindowAnchor | None = None,
         visual_admission: VisualAdmissionPort | None = None,
+        visual_locator: VisualLocator | None = None,
+        zoom_locator: ZoomLocator | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         #: 缝内唯一的抓屏入口（整屏 / 区域）。
@@ -240,8 +252,15 @@ class ActionExecutionSeam:
         #: **视觉通道准入判定端口**（工单 M5）。给了它，UIA 通道出现
         #: **覆盖失败**（唯一允许切视觉的情形）时，缝会先问这条判定：
         #: 视觉通道不可用 → 报明确错误码、零动作下发（**不猜一个标度继续跑**）。
-        #: 缺省 = 不做判定（视觉通道本身是 M6 的活）。
+        #: 缺省 = 不做判定。
         self.visual_admission = visual_admission
+        #: **视觉通道端口**（工单 M6 的两级 grounding）。给了它，UIA 通道
+        #: **覆盖失败**且准入判定放行时，定位改走视觉通道
+        #: （整屏粗定位 → 裁剪 → crop 内精定位）。
+        self.visual_locator = visual_locator
+        #: **放大通道端口**（工单 M6）。放大是动作协议里的一个动作：
+        #: 指定区域**回源重抓**后送模型，模型回答的仍是**整屏坐标**。
+        self.zoom_locator = zoom_locator
 
     # ------------------------------------------------------------------
     # 主流程
@@ -252,6 +271,9 @@ class ActionExecutionSeam:
         if request.action_kind in STANDALONE_KINDS:
             # 截图 / 等待不需要定位目标：没有最终落点，但返回形状一样。
             return self._run_standalone(request)
+        if request.action_kind is ActionKind.ZOOM:
+            # 放大是**观察型**动作：回源重抓区域送模型，模型报整屏坐标。
+            return self._run_zoom(request)
         skipped: list[str] = []
         frame = request.frame
         if frame is None:
@@ -279,6 +301,7 @@ class ActionExecutionSeam:
         locate_started = self._clock()
         model_view: ModelTreeView | None = None
         located = None
+        visual: VisualLocateResult | None = None
         if self.locator is not None:
             # UIA 通道（工单 M3）：定位、唯一性拒绝、消歧与执行前重读都在通道里。
             located = self.locator.locate(
@@ -314,40 +337,58 @@ class ActionExecutionSeam:
                         candidate_limit_source=located.candidate_limit_source,
                         visual_admission=admission,
                     )
-                return self._fail(
-                    request,
-                    located.error_code,
-                    located.error_message,
-                    locate_ms=locate_ms,
-                    rejected=located.candidates,
-                    skipped=skipped,
-                    frame=frame,
-                    query_scope=located.query_scope,
-                    selection_echo=located.selection_echo,
-                    allows_visual_fallback=located.allows_visual_fallback,
-                    candidate_limit=located.candidate_limit,
-                    candidate_limit_source=located.candidate_limit_source,
-                    visual_admission=admission,
+                # 闸门放行才走视觉通道（工单 M6 的两级 grounding）。
+                # **没接判定端口 = 闸门没开**（fail-closed）：视觉通道不可达。
+                visual = (
+                    self._locate_visual(request, frame)
+                    if admission is not None and admission.available
+                    else None
                 )
-            selected = located.selected
-            try:
-                # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
-                # 定位通道**已经渲染过**就直接复用（模型侧文本只有一个出口、只渲染一次）。
-                model_view = located.model_view or self._render_model_view(
-                    located.candidates
-                )
-            except ChannelUnavailableError as exc:
-                locate_ms = (self._clock() - locate_started) * 1000.0
-                return self._fail(
-                    request,
-                    ErrorCode.LOCATE_FAILED,
-                    str(exc),
-                    locate_ms=locate_ms,
-                    skipped=skipped,
-                    frame=frame,
-                )
-            px, py = float(located.landing_point[0]), float(located.landing_point[1])
-            final_point = located.landing_point
+                if visual is None or not visual.ok or visual.landing_point is None:
+                    return self._fail(
+                        request,
+                        visual.error_code
+                        if visual is not None and visual.error_code is not None
+                        else located.error_code,
+                        located.error_message
+                        if visual is None
+                        else f"视觉通道也没定位到：{visual.error_message}",
+                        locate_ms=locate_ms,
+                        rejected=located.candidates,
+                        skipped=skipped,
+                        frame=frame,
+                        query_scope=located.query_scope,
+                        selection_echo=located.selection_echo,
+                        allows_visual_fallback=located.allows_visual_fallback,
+                        candidate_limit=located.candidate_limit,
+                        candidate_limit_source=located.candidate_limit_source,
+                        visual_admission=admission,
+                        visual=visual,
+                    )
+                # 视觉通道的落点直接就是最终落点（**只在 crop 尺度上产生**）。
+                selected = None
+                px, py = float(visual.landing_point[0]), float(visual.landing_point[1])
+                final_point = visual.landing_point
+            else:
+                selected = located.selected
+                try:
+                    # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
+                    # 定位通道**已经渲染过**就直接复用（模型侧文本只有一个出口、只渲染一次）。
+                    model_view = located.model_view or self._render_model_view(
+                        located.candidates
+                    )
+                except ChannelUnavailableError as exc:
+                    locate_ms = (self._clock() - locate_started) * 1000.0
+                    return self._fail(
+                        request,
+                        ErrorCode.LOCATE_FAILED,
+                        str(exc),
+                        locate_ms=locate_ms,
+                        skipped=skipped,
+                        frame=frame,
+                    )
+                px, py = float(located.landing_point[0]), float(located.landing_point[1])
+                final_point = located.landing_point
         else:
             try:
                 snapshot = (
@@ -406,7 +447,12 @@ class ActionExecutionSeam:
             )
 
         # -- 置前（目标窗口被遮挡时）--------------------------------------
-        if self.window_controller is not None and selected.window_handle:
+        # 视觉通道没有「选中控件」，也就没有窗口句柄可置前（那个窗口本来就是前景）。
+        if (
+            self.window_controller is not None
+            and selected is not None
+            and selected.window_handle
+        ):
             if self.window_controller.is_occluded(selected.window_handle, final_point):
                 raised = self.window_controller.bring_to_front(selected.window_handle)
                 # 句柄口径由窗口控制统一（子窗口按根窗口算），
@@ -462,6 +508,11 @@ class ActionExecutionSeam:
             candidate_limit_source=(
                 located.candidate_limit_source if located is not None else ""
             ),
+            coarse_point=visual.coarse_point if visual is not None else None,
+            crop_plan=visual.crop_plan if visual is not None else None,
+            grounding_echoes=visual.echoes if visual is not None else (),
+            fallback=visual.fallback if visual is not None else False,
+            fallback_reason=visual.fallback_reason if visual is not None else "",
             result=result,
             model_view=model_view,
         )
@@ -476,6 +527,126 @@ class ActionExecutionSeam:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    def _locate_visual(
+        self, request: SeamRequest, frame: CapturedFrame
+    ) -> VisualLocateResult | None:
+        """走视觉通道（工单 M6 的两级 grounding）。
+
+        没有注入视觉通道端口 → ``None``（调用方据此按原通道的失败码回报）。
+        """
+        if self.visual_locator is None:
+            return None
+        desktop = self.virtual_desktop
+        return self.visual_locator.locate(
+            VisualLocateRequest(
+                target_description=request.target_description,
+                frame=frame,
+                surface=(desktop.left, desktop.top, desktop.right, desktop.bottom),
+            )
+        )
+
+    def _run_zoom(self, request: SeamRequest) -> SeamResult:
+        """放大：指定区域**回源重抓**后送模型，模型回答的仍是**整屏坐标**（工单 M6）。
+
+        放大是**观察**：不注入任何输入；落点是模型给的整屏坐标换算出来的。
+        与裁剪路径的契约区别：这里**不加任何裁剪原点偏移**。
+        """
+        region = request.params.get("region")
+        try:
+            rect = tuple(int(value) for value in region)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            rect = ()
+        if len(rect) != 4:
+            return self._fail(
+                request,
+                ErrorCode.INVALID_TARGET,
+                f"放大的 region 参数非法（要 4 个整数 left/top/right/bottom）：{region!r}",
+                failure_field="execute",
+            )
+        if not self.virtual_desktop.contains_rect(
+            rect, tolerance_px=DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX
+        ):
+            # 越界不夹取（架构备忘 §3）：宁可报错，也不给一块不是用户要的画面。
+            return self._fail(
+                request,
+                ErrorCode.CLIPPED_BY_DESKTOP,
+                f"放大的 region {rect} 越出虚拟桌面（越界不夹取）",
+                failure_field="execute",
+            )
+        if self.zoom_locator is None:
+            return self._fail(
+                request,
+                ErrorCode.CHANNEL_DISABLED,
+                "放大动作需要放大通道（本缝没有注入放大通道端口）",
+                failure_field="execute",
+            )
+        # **回源重抓**：重新抓那块区域（不是从已抓的整屏帧上裁一块）。
+        frame = self._capture_port.screenshot(rect)
+        if frame.is_empty:
+            return self._fail(
+                request,
+                ErrorCode.CAPTURE_EMPTY,
+                "回源重抓拿到 0×0 画面",
+                failure_field="execute",
+            )
+        desktop = self.virtual_desktop
+        locate_started = self._clock()
+        zoom = self.zoom_locator.locate(
+            ZoomRequest(
+                target_description=request.target_description,
+                region=rect,
+                region_frame=frame,
+                full_screen_size=(desktop.width, desktop.height),
+                surface=(desktop.left, desktop.top, desktop.right, desktop.bottom),
+            )
+        )
+        locate_ms = (self._clock() - locate_started) * 1000.0
+        if not zoom.ok or zoom.landing_point is None:
+            return self._fail(
+                request,
+                zoom.error_code or ErrorCode.LOCATE_FAILED,
+                zoom.error_message or "放大没拿到坐标",
+                locate_ms=locate_ms,
+                skipped=(),
+                frame=frame,
+            )
+        action = Action(
+            kind=ActionKind.ZOOM,
+            params={
+                "region": list(rect),
+                "x": zoom.landing_point[0],
+                "y": zoom.landing_point[1],
+                "space": POINT_SPACE,
+            },
+            intent=f"放大「{request.target_description}」区域 {rect}",
+        )
+        execute_started = self._clock()
+        result = self.executor.execute(action)
+        execute_verify_ms = (self._clock() - execute_started) * 1000.0
+        failures = {name: None for name in FAILURE_FIELDS}
+        trace = ActionTrace(
+            action=action,
+            intent=action.intent,
+            target_description=request.target_description,
+            landing_point=zoom.landing_point,
+            **frame_fields(frame),
+            sent_width=frame.width,
+            sent_height=frame.height,
+            locate_ms=locate_ms,
+            decision_ms=0.0,
+            execute_verify_ms=execute_verify_ms,
+            failures=failures,
+            grounding_echoes=(zoom.echo,) if zoom.echo is not None else (),
+            result=result,
+        )
+        self._emit(trace)
+        return SeamResult(
+            action=action,
+            final_point=zoom.landing_point,
+            intent=action.intent,
+            result=result,
+        )
 
     def _run_standalone(self, request: SeamRequest) -> SeamResult:
         """跑一个**不需要定位目标**的动作（截图 / 等待）。
@@ -671,6 +842,7 @@ class ActionExecutionSeam:
         candidate_limit: int = 0,
         candidate_limit_source: str = "",
         visual_admission: VisualAdmission | None = None,
+        visual: VisualLocateResult | None = None,
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。"""
         failures = {name: None for name in FAILURE_FIELDS}
@@ -715,6 +887,11 @@ class ActionExecutionSeam:
             candidate_limit=candidate_limit,
             candidate_limit_source=candidate_limit_source,
             visual_admission=visual_admission,
+            coarse_point=visual.coarse_point if visual is not None else None,
+            crop_plan=visual.crop_plan if visual is not None else None,
+            grounding_echoes=visual.echoes if visual is not None else (),
+            fallback=visual.fallback if visual is not None else False,
+            fallback_reason=visual.fallback_reason if visual is not None else "",
             result=result,
             model_view=model_view,
         )
@@ -730,3 +907,4 @@ class ActionExecutionSeam:
     def _emit(self, trace: ActionTrace) -> None:
         if self.trace_sink is not None:
             self.trace_sink.emit(trace)
+

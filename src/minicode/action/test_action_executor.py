@@ -38,6 +38,8 @@ _PARAMS = {
     ActionKind.TYPE: {"text": "你好"},
     ActionKind.KEY: {"combo": ["ctrl", "s"]},
     ActionKind.WAIT: {"ms": 100},
+    # 放大是观察型动作：模型给的整屏坐标（工单 M6）。
+    ActionKind.ZOOM: {"region": [0, 0, 100, 100], "x": 50, "y": 60},
 }
 
 #: 双击：`click` 的参数（**不是**独立动作种类）。
@@ -97,7 +99,7 @@ class ActionSetTest(unittest.TestCase):
         kwargs.setdefault("screenshot_port", CapturePort((FakeCaptureSource(2560, 1600),)))
         return ActionExecutor(injector, sleeper=self.clock.sleep, clock=self.clock.time, **kwargs)
 
-    def test_all_eight_executable_kinds_run_without_error(self):
+    def test_all_executable_kinds_run_without_error(self):
         for kind in EXECUTABLE_KINDS:
             with self.subTest(kind=kind.value):
                 injector = FakeInputInjector()
@@ -108,7 +110,21 @@ class ActionSetTest(unittest.TestCase):
                 if kind in POINT_KINDS:
                     self.assertIsNotNone(result.landing_point)
 
-    def test_the_four_deferred_kinds_return_an_explicit_error_code(self):
+    def test_zoom_is_an_observation_and_injects_nothing(self):
+        """放大是观察型动作：模型报整屏坐标，但**一个输入都不注入**（工单 M6）。"""
+        injector = FakeInputInjector()
+        result = self._executor(injector).execute(
+            Action(
+                kind=ActionKind.ZOOM,
+                params=dict(_PARAMS[ActionKind.ZOOM]),
+                intent="放大",
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.landing_point, (50, 60))
+        self.assertEqual(injector.events, [])
+
+    def test_the_deferred_kinds_return_an_explicit_error_code(self):
         for kind in DEFERRED_KINDS:
             with self.subTest(kind=kind.value):
                 injector = FakeInputInjector()

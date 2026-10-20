@@ -26,7 +26,13 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from minicode.redact.patterns import PASSWORD_PLACEHOLDER
 
-from .ports import CapturedFrame, ControlCandidate, SelectionEcho, VisualAdmission
+from .ports import (
+    CapturedFrame,
+    ControlCandidate,
+    GroundingEcho,
+    SelectionEcho,
+    VisualAdmission,
+)
 from .protocol import PROTOCOL_VERSION, Action, ActionResult
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入（避免循环依赖）
@@ -108,6 +114,16 @@ class ActionTrace:
     #: **视觉通道准入判定**（工单 M5）。UIA 通道覆盖失败、而切视觉这条路
     #: 要走判定时才带它；带它就说明「切视觉这条路被看过」。
     visual_admission: VisualAdmission | None = None
+    #: 视觉通道的**粗定位点**（物理表面空间）。走视觉通道时才有。
+    coarse_point: tuple[float, float] | None = None
+    #: 视觉通道的**裁剪计划**（落盘形状）。含「目标是否完整包含」。
+    crop_plan: Mapping[str, Any] | None = None
+    #: 视觉通道的**每步回显**（模型发出的坐标 + 实际发送尺寸 + 图像来源）。
+    grounding_echoes: tuple[GroundingEcho, ...] = ()
+    #: 视觉通道**是否回落**到粗定位结果（精定位失败时为真）。
+    fallback: bool = False
+    #: 回落到粗定位结果的**原因**（没回落时为空）。
+    fallback_reason: str = ""
     result: ActionResult = field(default_factory=lambda: ActionResult(ok=True))
 
 
@@ -190,6 +206,16 @@ class ActionRecord:
     #: **视觉通道准入判定**（工单 M5）：可用吗 / 判定标度 / 标度判定 /
     #: 落点等价 / 等价标度列表。没走过判定时是 ``None``。
     visual_admission: Mapping[str, Any] | None = None
+    #: 视觉通道的**粗定位点**（物理表面空间）。
+    coarse_point: tuple[float, float] | None = None
+    #: 视觉通道的**裁剪计划**（落盘形状）。
+    crop_plan: Mapping[str, Any] | None = None
+    #: 视觉通道的**每步回显**（模型发出的坐标 + 实际发送尺寸）。
+    grounding_echoes: tuple[Mapping[str, Any], ...] = ()
+    #: 视觉通道**是否回落**到粗定位结果（精定位失败时为真）。
+    fallback: bool = False
+    #: 回落到粗定位结果的**原因**（没回落时为空）。
+    fallback_reason: str = ""
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -248,6 +274,11 @@ class ActionRecord:
             "visual_admission": (
                 dict(self.visual_admission) if self.visual_admission is not None else None
             ),
+            "coarse_point": list(self.coarse_point) if self.coarse_point else None,
+            "crop_plan": dict(self.crop_plan) if self.crop_plan is not None else None,
+            "grounding_echoes": [dict(echo) for echo in self.grounding_echoes],
+            "fallback": self.fallback,
+            "fallback_reason": self.fallback_reason,
             "notes": list(self.notes),
         }
 
@@ -351,6 +382,11 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         visual_admission=(
             trace.visual_admission.to_dict() if trace.visual_admission is not None else None
         ),
+        coarse_point=trace.coarse_point,
+        crop_plan=dict(trace.crop_plan) if trace.crop_plan is not None else None,
+        grounding_echoes=tuple(echo.to_dict() for echo in trace.grounding_echoes),
+        fallback=trace.fallback,
+        fallback_reason=trace.fallback_reason,
         notes=tuple(result.notes),
     )
 

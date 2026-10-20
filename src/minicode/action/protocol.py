@@ -27,6 +27,7 @@ __all__ = [
     "EXECUTABLE_KINDS",
     "DEFERRED_KINDS",
     "POINT_KINDS",
+    "OBSERVATION_KINDS",
     "STANDALONE_KINDS",
     "BUTTON_LEFT",
     "BUTTON_RIGHT",
@@ -76,7 +77,7 @@ class ActionKind(StrEnum):
     WAIT = "wait"
 
     # -- 本单不实现：先返回明确错误码，不做半实现 --
-    #: 放大（回源重抓，模型仍按整屏坐标回答）。
+    #: 放大（回源重抓，模型仍按整屏坐标回答）—— 工单 M6 接线。
     ZOOM = "zoom"
     #: 读控件树。
     INSPECT = "inspect"
@@ -97,13 +98,13 @@ EXECUTABLE_KINDS = frozenset(
         ActionKind.KEY,
         ActionKind.SCROLL,
         ActionKind.WAIT,
+        ActionKind.ZOOM,
     }
 )
 
 #: 本单不实现的动作种类 —— 由后续工单按协议 v1 扩展启用。
 DEFERRED_KINDS = frozenset(
     {
-        ActionKind.ZOOM,
         ActionKind.INSPECT,
         ActionKind.EXECUTE_CODE,
         ActionKind.ASK_USER,
@@ -119,6 +120,10 @@ POINT_KINDS = frozenset(
         ActionKind.SCROLL,
     }
 )
+
+#: **观察型**动作种类：产出一个落点，但**不注入任何输入**（工单 M6 的放大）。
+#: 它与 :data:`POINT_KINDS` 分开：点一下要动指针，放大只是「看清楚」。
+OBSERVATION_KINDS = frozenset({ActionKind.ZOOM})
 
 #: **不需要定位目标**的动作种类（截图 / 等待）：它们没有最终落点。
 STANDALONE_KINDS = frozenset({ActionKind.SCREENSHOT, ActionKind.WAIT})

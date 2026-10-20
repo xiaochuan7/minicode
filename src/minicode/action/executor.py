@@ -156,6 +156,8 @@ class ActionExecutor:
                 return self._key(action)
             if kind is ActionKind.SCREENSHOT:
                 return self._screenshot(action)
+            if kind is ActionKind.ZOOM:
+                return self._zoom(action)
             if kind is ActionKind.WAIT:
                 return self._wait(action)
         except InjectionBlocked as exc:
@@ -328,6 +330,20 @@ class ActionExecutor:
                 error_message="截图拿到 0×0 画面",
             )
         return ActionResult(ok=True, captured=frame)
+
+    def _zoom(self, action: Action) -> ActionResult:
+        """放大：**观察型**动作（工单 M6）。
+
+        回源重抓与模型调用在**动作执行缝**里做完（那里才有截图端口与模型端口）；
+        执行器这一侧**不注入任何输入**，因此没有光标回读可做（指针根本没动过）。
+        落点是模型给的整屏坐标换算出来的。
+        """
+        x, y = self._point(action)
+        return ActionResult(
+            ok=True,
+            landing_point=(x, y),
+            notes=("放大：回源重抓区域送模型，未注入任何输入",),
+        )
 
     def _wait(self, action: Action) -> ActionResult:
         """显式等待。等待时长**可注入**（``ms``）—— 单测里压到 0 即可。"""

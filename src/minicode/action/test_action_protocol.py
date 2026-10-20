@@ -64,23 +64,37 @@ class ProtocolShapeTest(unittest.TestCase):
         self.assertIn(ActionKind.TYPE, set(ActionKind))
         self.assertEqual(ActionKind.TYPE.value, "type")
 
-    def test_twelve_kinds_split_into_eight_executable_and_four_deferred(self):
+    def test_twelve_kinds_split_into_nine_executable_and_three_deferred(self):
+        """**12 个动作种类**是锁死的（防漂移闸门）；「哪些已接线」会随工单推进。
+
+        工单 M6 接上了 `zoom`（放大），所以已接线 9 个、待接线 3 个。
+        """
         self.assertEqual(len(ActionKind), 12)
         self.assertEqual(EXECUTABLE_KINDS | DEFERRED_KINDS, set(ActionKind))
         self.assertEqual(EXECUTABLE_KINDS & DEFERRED_KINDS, set())
-        self.assertEqual(len(EXECUTABLE_KINDS), 8)
-        self.assertEqual(len(DEFERRED_KINDS), 4)
+        self.assertEqual(len(EXECUTABLE_KINDS), 9)
+        self.assertEqual(len(DEFERRED_KINDS), 3)
 
-    def test_the_executable_kinds_are_the_eight_that_are_wired(self):
+    def test_the_executable_kinds_are_the_nine_that_are_wired(self):
         self.assertEqual(
             {kind.value for kind in EXECUTABLE_KINDS},
-            {"screenshot", "click", "move", "drag", "type", "key", "scroll", "wait"},
+            {
+                "screenshot",
+                "click",
+                "move",
+                "drag",
+                "type",
+                "key",
+                "scroll",
+                "wait",
+                "zoom",
+            },
         )
 
-    def test_the_deferred_kinds_are_exactly_the_four_this_ticket_does_not_implement(self):
+    def test_the_deferred_kinds_are_exactly_the_three_not_implemented_yet(self):
         self.assertEqual(
             DEFERRED_KINDS,
-            {ActionKind.ZOOM, ActionKind.INSPECT, ActionKind.EXECUTE_CODE, ActionKind.ASK_USER},
+            {ActionKind.INSPECT, ActionKind.EXECUTE_CODE, ActionKind.ASK_USER},
         )
 
     def test_the_click_parameters_carry_the_button_and_the_click_count(self):

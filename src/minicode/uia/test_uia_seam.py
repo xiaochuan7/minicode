@@ -89,22 +89,33 @@ class SeamZeroModelCallTest(unittest.TestCase):
     """AC 1：零模型调用 + 追踪记录里没有视觉通道的产物。"""
 
     def test_the_trace_has_no_visual_channel_fields(self):
+        """走 UIA 通道时追踪记录里**没有视觉通道的产物**。
+
+        工单 M6 起这些字段在追踪记录里存在了（视觉通道要往里写），
+        但走 UIA 通道时它们必须是空的。
+        """
         sink = ListTraceSink()
         injector = FakeInputInjector()
         seam = _seam(_channel([ScriptedRead(elements=(_element(),))]), injector, sink)
         seam.run(SeamRequest(target_description="开始"))
         trace = sink.traces[0]
-        for field in ("scale", "coarse_point", "crop_plan", "标度", "粗定位点", "裁剪计划"):
+        self.assertIsNone(trace.coarse_point)
+        self.assertIsNone(trace.crop_plan)
+        self.assertEqual(trace.grounding_echoes, ())
+        for field in ("scale", "标度"):
             self.assertFalse(hasattr(trace, field), field)
 
     def test_the_record_has_no_visual_channel_fields(self):
+        from minicode.action.records import build_record
+
         sink = ListTraceSink()
         injector = FakeInputInjector()
         seam = _seam(_channel([ScriptedRead(elements=(_element(),))]), injector, sink)
         seam.run(SeamRequest(target_description="开始"))
-        payload = sink.traces[0].result.to_dict()
-        for key in ("scale", "coarse_point", "crop_plan"):
-            self.assertNotIn(key, payload)
+        payload = build_record(sink.traces[0]).to_dict()
+        self.assertIsNone(payload["coarse_point"])
+        self.assertIsNone(payload["crop_plan"])
+        self.assertEqual(payload["grounding_echoes"], [])
 
     def test_a_unique_candidate_costs_no_model_call(self):
         sink = ListTraceSink()

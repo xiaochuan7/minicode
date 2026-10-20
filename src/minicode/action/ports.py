@@ -44,6 +44,13 @@ __all__ = [
     "ElementInvoker",
     "VisualAdmission",
     "VisualAdmissionPort",
+    "GroundingEcho",
+    "VisualLocateRequest",
+    "VisualLocateResult",
+    "VisualLocator",
+    "ZoomRequest",
+    "ZoomResult",
+    "ZoomLocator",
 ]
 
 
@@ -471,5 +478,149 @@ class VisualAdmissionPort(Protocol):
     """
 
     def admit(self) -> VisualAdmission:
+        ...
+
+
+# ---------------------------------------------------------------------------
+# 视觉通道（两级 grounding，工单 M6）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GroundingEcho:
+    """**每步回显**（视觉通道）：模型自己发出的坐标 + 实际发送的图片尺寸。
+
+    与 :class:`SelectionEcho`（UIA 通道的消歧回显）同一条规矩：回显的是
+    「模型自己发出的东西 + 实际发送尺寸」，让模型能对账自己的坐标。
+
+    * ``stage`` —— 哪一级（``"coarse"`` 粗定位 / ``"refine"`` 精定位 / ``"zoom"`` 放大）；
+    * ``raw_x`` / ``raw_y`` —— **模型发出的原始数值**（不换算、不解释）；
+    * ``sent_width`` / ``sent_height`` —— **模型实际看到的那张图**的尺寸
+      （服务端可能把大图缩小：本机实测 2560 宽 → 约 2048 宽）——
+      报这个尺寸模型才能对账自己给的坐标；不是原图宽、也不是写死的常量；
+    * ``image_source`` —— 那张图从哪来（整屏截图 / 从原始帧裁出的 crop / 回源重抓）。
+    """
+
+    stage: str
+    raw_x: float | None = None
+    raw_y: float | None = None
+    sent_width: int | None = None
+    sent_height: int | None = None
+    image_source: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """落盘形状（回显自己知道怎么渲染）。"""
+        return {
+            "stage": self.stage,
+            "raw_x": self.raw_x,
+            "raw_y": self.raw_y,
+            "sent_width": self.sent_width,
+            "sent_height": self.sent_height,
+            "image_source": self.image_source,
+        }
+
+
+@dataclass(frozen=True)
+class VisualLocateRequest:
+    """视觉通道（两级 grounding）的输入。"""
+
+    #: 目标描述（自然语言）。
+    target_description: str
+    #: **整屏**物理帧（原始物理分辨率，1 像素 = 1 物理像素）。
+    #: 裁剪窗口从这一帧上 1:1 裁下（不缩放）。
+    frame: CapturedFrame
+    #: 可裁剪区域（物理表面空间的矩形 ``(left, top, right, bottom)``）。
+    surface: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class VisualLocateResult:
+    """视觉通道的输出（最终落点 + 观测数据）。
+
+    * ``landing_point`` —— **最终落点**（物理表面空间）。视觉通道内它**只在
+      crop 尺度上产生**；精定位失败并回落时它是粗定位点。
+    * ``coarse_point`` —— 粗定位点（物理表面空间）。
+    * ``crop_plan`` —— 裁剪计划（落盘形状，含「目标是否完整包含」）。
+    * ``fallback`` / ``fallback_reason`` —— 是否回落到粗定位结果 + 回落原因。
+    * ``echoes`` —— 每步回显（模型发出的坐标 + 实际发送尺寸）。
+    """
+
+    landing_point: tuple[int, int] | None = None
+    coarse_point: tuple[float, float] | None = None
+    crop_plan: Mapping[str, Any] | None = None
+    fallback: bool = False
+    fallback_reason: str = ""
+    error_code: ErrorCode | None = None
+    error_message: str = ""
+    echoes: tuple[GroundingEcho, ...] = ()
+    model_calls: int = 0
+    #: 这次换算用的**标度**（来自标定结果）。
+    scale: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.error_code is None
+
+
+@runtime_checkable
+class VisualLocator(Protocol):
+    """视觉通道端口（工单 M6）：一句目标描述 → 一个物理像素落点。
+
+    两级 grounding：整屏粗定位 → 裁剪 → crop 内精定位。
+    **最终落点只在 crop 尺度上产生**（精定位失败时回落到粗定位结果）。
+    """
+
+    def locate(self, request: VisualLocateRequest) -> VisualLocateResult:
+        ...
+
+
+@dataclass(frozen=True)
+class ZoomRequest:
+    """放大动作的输入。
+
+    ⚠️ **放大与裁剪不是一回事**（工单 M6）：
+
+    * 放大是**动作协议里的一个动作**：指定区域**回源重抓**后送模型看清楚，
+      模型回答的仍是**整屏坐标**；
+    * 裁剪是两级定位**内部**的取景：从原始物理分辨率图取窗口，
+      模型报 **crop 内坐标**，由系统加裁剪原点偏移映射回全屏。
+    """
+
+    #: 目标描述（自然语言）。
+    target_description: str
+    #: 要放大的区域（物理表面空间的矩形 ``(left, top, right, bottom)``）。
+    region: tuple[int, int, int, int]
+    #: **回源重抓**拿到的区域画面（物理像素，1:1）。
+    region_frame: CapturedFrame
+    #: 整屏尺寸（物理像素）—— 模型的回答按整屏坐标解释。
+    full_screen_size: tuple[int, int]
+    #: 物理表面矩形（越界判定用）。
+    surface: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class ZoomResult:
+    """放大动作的结果。"""
+
+    #: 模型给的**整屏坐标**换算后的物理像素落点。
+    landing_point: tuple[int, int] | None = None
+    #: 放大路径**不产生裁剪计划**（恒为 ``None``）—— 与裁剪路径的契约区别。
+    crop_plan: None = None
+    error_code: ErrorCode | None = None
+    error_message: str = ""
+    echo: GroundingEcho | None = None
+    model_calls: int = 0
+    scale: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.error_code is None
+
+
+@runtime_checkable
+class ZoomLocator(Protocol):
+    """放大通道端口（工单 M6）：指定区域 → 整屏坐标落点。"""
+
+    def locate(self, request: ZoomRequest) -> ZoomResult:
         ...
 
