@@ -42,6 +42,8 @@ __all__ = [
     "SelectionEcho",
     "ControlLocator",
     "ElementInvoker",
+    "VisualAdmission",
+    "VisualAdmissionPort",
 ]
 
 
@@ -414,5 +416,60 @@ class ElementInvoker(Protocol):
     """按元素 id 触发 InvokePattern（**Invoke 优先**于坐标点击）。"""
 
     def invoke(self, element_id: str) -> bool:
+        ...
+
+
+@dataclass(frozen=True)
+class VisualAdmission:
+    """**视觉通道准入判定**（工单 M5）。
+
+    它是标定结论的翻译：视觉通道能不能用，取决于**落点等价**判据 ——
+    只有「存在使物理落点分歧 > 标定容差的替代标度」才不可用。
+    标度判定为**多解**、但各等价标度族的落点分歧都在容差内时，
+    视觉通道**允许继续**（``available=True`` + ``landing_equivalence="equivalent"``）。
+
+    字段
+    ----
+    available
+        视觉通道可用吗？
+    reason
+        人读的理由（不可用时写清是「标定失败」还是「存在分歧的替代标度」）。
+    scale
+        判定标度（标度名）。
+    scale_verdict
+        标度判定：``"unique"``（唯一命中）/ ``"multi"``（多解）。
+    landing_equivalence
+        落点等价：``"equivalent"``（容差内等价）/ ``"divergent"``（分歧）。
+    equivalent_scales
+        等价标度列表（标度名）。
+    """
+
+    available: bool
+    reason: str = ""
+    scale: str = ""
+    scale_verdict: str = ""
+    landing_equivalence: str = ""
+    equivalent_scales: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        """落盘形状（回显/追踪记录自己知道怎么渲染）。"""
+        return {
+            "available": self.available,
+            "reason": self.reason,
+            "scale": self.scale,
+            "scale_verdict": self.scale_verdict,
+            "landing_equivalence": self.landing_equivalence,
+            "equivalent_scales": list(self.equivalent_scales),
+        }
+
+
+@runtime_checkable
+class VisualAdmissionPort(Protocol):
+    """视觉通道准入判定端口（工单 M5 的硬闸门）。
+
+    形状：问一次「视觉通道现在能不能用」，答一个 :class:`VisualAdmission`。
+    """
+
+    def admit(self) -> VisualAdmission:
         ...
 

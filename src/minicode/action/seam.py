@@ -65,6 +65,8 @@ from .ports import (
     LocateRequest,
     LocateResult,
     SelectionEcho,
+    VisualAdmission,
+    VisualAdmissionPort,
     WindowAnchor,
     WindowController,
 )
@@ -199,6 +201,7 @@ class ActionExecutionSeam:
         locator: ControlLocator | None = None,
         invoker: ElementInvoker | None = None,
         anchor: WindowAnchor | None = None,
+        visual_admission: VisualAdmissionPort | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         #: 缝内唯一的抓屏入口（整屏 / 区域）。
@@ -234,6 +237,11 @@ class ActionExecutionSeam:
         self.invoker = invoker
         #: 定位用的窗口锚点（能力表的键 + 查询的根）。
         self.anchor = anchor or WindowAnchor(hwnd=0)
+        #: **视觉通道准入判定端口**（工单 M5）。给了它，UIA 通道出现
+        #: **覆盖失败**（唯一允许切视觉的情形）时，缝会先问这条判定：
+        #: 视觉通道不可用 → 报明确错误码、零动作下发（**不猜一个标度继续跑**）。
+        #: 缺省 = 不做判定（视觉通道本身是 M6 的活）。
+        self.visual_admission = visual_admission
 
     # ------------------------------------------------------------------
     # 主流程
@@ -285,6 +293,27 @@ class ActionExecutionSeam:
             )
             if located.error_code is not None:
                 locate_ms = (self._clock() - locate_started) * 1000.0
+                # **覆盖失败**是唯一允许切视觉的情形（架构决策备忘 §2.5 ①）：
+                # 这时才问视觉通道的准入判定（工单 M5 的硬闸门）。
+                admission = (
+                    self._admit_visual() if located.allows_visual_fallback else None
+                )
+                if admission is not None and not admission.available:
+                    return self._fail(
+                        request,
+                        ErrorCode.VISUAL_CHANNEL_UNAVAILABLE,
+                        admission.reason,
+                        locate_ms=locate_ms,
+                        rejected=located.candidates,
+                        skipped=skipped,
+                        frame=frame,
+                        query_scope=located.query_scope,
+                        selection_echo=located.selection_echo,
+                        allows_visual_fallback=located.allows_visual_fallback,
+                        candidate_limit=located.candidate_limit,
+                        candidate_limit_source=located.candidate_limit_source,
+                        visual_admission=admission,
+                    )
                 return self._fail(
                     request,
                     located.error_code,
@@ -298,6 +327,7 @@ class ActionExecutionSeam:
                     allows_visual_fallback=located.allows_visual_fallback,
                     candidate_limit=located.candidate_limit,
                     candidate_limit_source=located.candidate_limit_source,
+                    visual_admission=admission,
                 )
             selected = located.selected
             try:
@@ -554,6 +584,16 @@ class ActionExecutionSeam:
             return result
         return replace(result, notes=tuple(result.notes) + tuple(notes))
 
+    def _admit_visual(self) -> VisualAdmission | None:
+        """问一次「视觉通道现在能不能用」。
+
+        没有注入判定端口 → ``None``（不做判定）；
+        有端口 → 返回判定结果（**判定本身不算失败**，由调用方决定怎么办）。
+        """
+        if self.visual_admission is None:
+            return None
+        return self.visual_admission.admit()
+
     def _render_model_view(
         self, candidates: Sequence[ControlCandidate]
     ) -> ModelTreeView | None:
@@ -630,6 +670,7 @@ class ActionExecutionSeam:
         allows_visual_fallback: bool = False,
         candidate_limit: int = 0,
         candidate_limit_source: str = "",
+        visual_admission: VisualAdmission | None = None,
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。"""
         failures = {name: None for name in FAILURE_FIELDS}
@@ -645,6 +686,7 @@ class ActionExecutionSeam:
             ErrorCode.CLIPPED_BY_DESKTOP,
             ErrorCode.CHANNEL_DISABLED,
             ErrorCode.INVALID_TARGET,
+            ErrorCode.VISUAL_CHANNEL_UNAVAILABLE,
         ):
             # 定位层：没找到 / 找不唯一 / 通道不可用 / 通道被拒绝启用 / 落点不可用。
             # 「通道被拒绝启用」也算定位层：它发生在**定位阶段**，动作压根没下发。
@@ -672,6 +714,7 @@ class ActionExecutionSeam:
             allows_visual_fallback=allows_visual_fallback,
             candidate_limit=candidate_limit,
             candidate_limit_source=candidate_limit_source,
+            visual_admission=visual_admission,
             result=result,
             model_view=model_view,
         )

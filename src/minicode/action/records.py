@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from minicode.redact.patterns import PASSWORD_PLACEHOLDER
 
-from .ports import CapturedFrame, ControlCandidate, SelectionEcho
+from .ports import CapturedFrame, ControlCandidate, SelectionEcho, VisualAdmission
 from .protocol import PROTOCOL_VERSION, Action, ActionResult
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入（避免循环依赖）
@@ -105,6 +105,9 @@ class ActionTrace:
     #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
     candidate_limit: int = 0
     candidate_limit_source: str = ""
+    #: **视觉通道准入判定**（工单 M5）。UIA 通道覆盖失败、而切视觉这条路
+    #: 要走判定时才带它；带它就说明「切视觉这条路被看过」。
+    visual_admission: VisualAdmission | None = None
     result: ActionResult = field(default_factory=lambda: ActionResult(ok=True))
 
 
@@ -184,6 +187,9 @@ class ActionRecord:
     #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
     candidate_limit: int = 0
     candidate_limit_source: str = ""
+    #: **视觉通道准入判定**（工单 M5）：可用吗 / 判定标度 / 标度判定 /
+    #: 落点等价 / 等价标度列表。没走过判定时是 ``None``。
+    visual_admission: Mapping[str, Any] | None = None
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -239,6 +245,9 @@ class ActionRecord:
             "allows_visual_fallback": self.allows_visual_fallback,
             "candidate_limit": self.candidate_limit,
             "candidate_limit_source": self.candidate_limit_source,
+            "visual_admission": (
+                dict(self.visual_admission) if self.visual_admission is not None else None
+            ),
             "notes": list(self.notes),
         }
 
@@ -339,6 +348,9 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         allows_visual_fallback=trace.allows_visual_fallback,
         candidate_limit=trace.candidate_limit,
         candidate_limit_source=trace.candidate_limit_source,
+        visual_admission=(
+            trace.visual_admission.to_dict() if trace.visual_admission is not None else None
+        ),
         notes=tuple(result.notes),
     )
 
