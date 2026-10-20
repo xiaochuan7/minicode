@@ -198,6 +198,19 @@ class CaptureSourceTest(unittest.TestCase):
         self.assertIsNone(result.final_point)
         self.assertEqual(injector.events, [])
 
+    def test_a_given_zero_by_zero_frame_is_reported_as_capture_empty(self):
+        seam, injector, _, _ = _build_seam()
+        result = seam.run(
+            SeamRequest(
+                target_description="开始",
+                frame=CapturedFrame(width=0, height=0, payload=b""),
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.result.error_code, ErrorCode.CAPTURE_EMPTY)
+        self.assertIsNone(result.final_point)
+        self.assertEqual(injector.events, [])
+
 
 class SentinelTest(unittest.TestCase):
     """验收项 12：哨兵值不当作合法坐标。"""

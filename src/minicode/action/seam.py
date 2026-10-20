@@ -160,6 +160,15 @@ class ActionExecutionSeam:
                     "所有捕获源都只拿到 0×0 画面，跳过该捕获源后仍无可用画面",
                     skipped=skipped,
                 )
+        elif frame.is_empty:
+            # 直接给进来的 0×0 画面同样按「跳过该捕获源」处理，不产生落点。
+            skipped.append("given-frame")
+            return self._fail(
+                request,
+                ErrorCode.CAPTURE_EMPTY,
+                "给定的一帧截图是 0×0 画面，跳过该捕获源",
+                skipped=skipped,
+            )
         surface = self._surface_for(frame)
 
         # -- 定位 ---------------------------------------------------------
