@@ -21,7 +21,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from minicode.action.ports import CapturedFrame, ControlCandidate, SelectionEcho, WindowAnchor
+from minicode.action.ports import (
+    CandidatePointer,
+    PointerRequest,
+    PointerResult,
+    WindowAnchor,
+)
 
 from .elements import UiaElement
 
@@ -99,41 +104,6 @@ class UiaQueryPort(Protocol):
 
 
 @dataclass(frozen=True)
-class PointerRequest:
-    """消歧请求：模型**只做指认**。
-
-    ``model_view`` 是**已脱敏**的模型侧文本（脱敏器是模型侧文本的唯一出口）；
-    ``candidates`` 是同一批候选的结构化形状（元素 id 与之一一对应）。
-    ``frame`` 是这一帧画面（物理像素）—— 送模型当上下文，
-    **模型不从画面里取坐标**（工单 M4）。
-    """
-
-    target_description: str
-    candidates: tuple[ControlCandidate, ...]
-    model_view: str
-    frame: CapturedFrame | None = None
-
-
-@dataclass(frozen=True)
-class PointerResult:
-    """消歧结果：指认了哪些元素。
-
-    **必须恰好一个**，且必须在候选集内；否则算消歧失败（选择失败）。
-    """
-
-    chosen_ids: tuple[str, ...] = ()
-    #: **每步回显**：模型发出的选择结果 + 实际发送的图片尺寸（**不含坐标**）。
-    echo: SelectionEcho | None = None
-
-
-@runtime_checkable
-class CandidatePointer(Protocol):
-    """消歧指认（候选不唯一时用）。候选唯一时**不调**它（零模型调用）。"""
-
-    def point(self, request: PointerRequest) -> PointerResult:
-        ...
-
-
 class UnblockOutcome(StrEnum):
     """解门控的结果。"""
 

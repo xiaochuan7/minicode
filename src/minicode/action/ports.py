@@ -41,6 +41,9 @@ __all__ = [
     "LocateResult",
     "SelectionEcho",
     "ControlLocator",
+    "PointerRequest",
+    "PointerResult",
+    "CandidatePointer",
     "ElementInvoker",
     "VisualAdmission",
     "VisualAdmissionPort",
@@ -51,7 +54,45 @@ __all__ = [
     "ZoomRequest",
     "ZoomResult",
     "ZoomLocator",
+    "DEFAULT_MAX_CANDIDATES",
+    "CANDIDATE_LIMIT_SOURCE",
+    "candidate_limit_source",
 ]
+
+
+#: **通道名**（追踪记录里读得出「这一步走了哪条通道」）。
+#:
+#: 同一个 :class:`ControlLocator` 端口被两条通道实现（桌面 UIA / 浏览器）——
+#: 通道名是**裸串**，所以给它一处常量（不写在各处）。
+CHANNEL_UIA = "uia"
+CHANNEL_BROWSER = "browser"
+
+
+#: **候选数上限**（运行时参数）。取值 **8**。
+#:
+#: 来源：ADR-0004「消歧失败、候选数超过上限（默认 8）、或指认不唯一 → 走 L4
+#: 错误处理并回报候选集」+ 工单 M4 AC 4。**它是运行时参数**：调用方可以给别的值，
+#: 但**取值来源必须被记录**（进追踪记录与动作记录）。
+#:
+#: ⚠️ 这条上限对**所有通道**是同一条（桌面通道与浏览器通道共用），
+#: 所以它住在**共用**的端口模块里，不在任何一个通道里。
+DEFAULT_MAX_CANDIDATES = 8
+
+#: 候选数上限默认值的**来源**（随记录落盘，便于事后追溯这个 8 是哪来的）。
+CANDIDATE_LIMIT_SOURCE = "ADR-0004「候选数超过上限（默认 8）」+ 工单 M4 AC 4"
+
+
+def candidate_limit_source(max_candidates: int) -> str:
+    """候选数上限的**取值来源**（运行时参数 → 来源随记录落盘）。
+
+    用了默认值 → 写默认值的出处；调用方改了值 → 说清是**覆盖**来的，
+    不然记录里会写着「默认 8」而实际用的不是 8（工单 M4 AC 4）。
+    """
+    if max_candidates == DEFAULT_MAX_CANDIDATES:
+        return CANDIDATE_LIMIT_SOURCE
+    return (
+        f"调用方覆盖（默认值 {DEFAULT_MAX_CANDIDATES} 的来源：{CANDIDATE_LIMIT_SOURCE}）"
+    )
 
 
 class InjectionBlocked(Exception):
@@ -415,6 +456,11 @@ class LocateResult:
     #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
     candidate_limit: int = 0
     candidate_limit_source: str = ""
+    #: **这条通道的名字**（``"uia"`` / ``"browser"``）。空 = 桌面 UIA 通道。
+    #:
+    #: 同一个端口（:class:`ControlLocator`）被两个通道实现 ——
+    #: 追踪记录要读得出「这一步走了哪条通道」（工单 M13 AC 2）。
+    channel: str = ""
 
     def __post_init__(self) -> None:
         if self.error_code is None and (self.selected is None or self.landing_point is None):
@@ -451,9 +497,48 @@ class ControlLocator(Protocol):
     """控件定位端口：**一句目标描述 → 一个选中项 + 一个物理像素落点**。
 
     决策层不在缝内：定位通道不产生模型调用（消歧时的**指认**除外）。
+
+    ⚠️ **桌面通道与浏览器通道共用这一个端口**（工单 M13 AC 2）：
+    换了通道不改变缝的形状，动作协议与坐标换算也只有一套实现。
     """
 
     def locate(self, request: LocateRequest) -> LocateResult:
+        ...
+
+
+@dataclass(frozen=True)
+class PointerRequest:
+    """消歧请求：模型**只做指认**。
+
+    ``model_view`` 是**已脱敏**的模型侧文本（脱敏器是模型侧文本的唯一出口）；
+    ``candidates`` 是同一批候选的结构化形状（元素 id 与之一一对应）。
+    ``frame`` 是这一帧画面（物理像素）—— 送模型当上下文，
+    **模型不从画面里取坐标**（工单 M4）。
+    """
+
+    target_description: str
+    candidates: tuple[ControlCandidate, ...]
+    model_view: str
+    frame: CapturedFrame | None = None
+
+
+@dataclass(frozen=True)
+class PointerResult:
+    """消歧结果：指认了哪些元素。
+
+    **必须恰好一个**，且必须在候选集内；否则算消歧失败（选择失败）。
+    """
+
+    chosen_ids: tuple[str, ...] = ()
+    #: **每步回显**：模型发出的选择结果 + 实际发送的图片尺寸（**不含坐标**）。
+    echo: SelectionEcho | None = None
+
+
+@runtime_checkable
+class CandidatePointer(Protocol):
+    """消歧指认（候选不唯一时用）。候选唯一时**不调**它（零模型调用）。"""
+
+    def point(self, request: PointerRequest) -> PointerResult:
         ...
 
 

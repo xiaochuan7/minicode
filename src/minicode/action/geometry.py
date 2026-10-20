@@ -9,9 +9,18 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
-__all__ = ["SENTINEL_CURSOR", "is_sentinel", "rect_size", "VirtualDesktop"]
+__all__ = [
+    "SENTINEL_CURSOR",
+    "is_sentinel",
+    "rect_size",
+    "is_valid_rect",
+    "rect_center",
+    "center_point",
+    "VirtualDesktop",
+]
 
 #: Windows 在无法给出有效坐标时返回的哨兵值。它看起来像坐标但不是坐标。
 SENTINEL_CURSOR = (-32000, -32000)
@@ -31,6 +40,39 @@ def rect_size(rect: tuple[int, int, int, int]) -> tuple[int, int]:
     """
     left, top, right, bottom = (int(value) for value in rect)
     return (right - left, bottom - top)
+
+
+def is_valid_rect(rect: tuple[int, int, int, int]) -> bool:
+    """矩形是不是**有面积**的合法矩形。
+
+    ⚠️ **矩形全 0 / 零面积一律判成无效** —— 那种形态必须被丢弃，
+    不能当作「它在原点」（架构决策备忘 §2.6 C-08：bbox 全 0 的候选
+    必须被丢弃而不是当作「在原点」）。
+    """
+    if len(rect) != 4:
+        return False
+    left, top, right, bottom = (int(value) for value in rect)
+    return right > left and bottom > top
+
+
+def rect_center(rect: tuple[int, int, int, int]) -> tuple[float, float]:
+    """矩形中心（物理像素，浮点）。
+
+    **矩形 → 落点的换算只此一处**：桌面通道（UIA 控件框）与浏览器通道
+    （页面元素在物理表面空间的矩形）都用它 ——
+    同一句目标描述在两个通道里落到同一类控件上（工单 M13 AC 2）。
+    """
+    left, top, right, bottom = (int(value) for value in rect)
+    return ((left + right) / 2.0, (top + bottom) / 2.0)
+
+
+def center_point(rect: tuple[int, int, int, int]) -> tuple[int, int]:
+    """矩形中心（物理像素，整数）。
+
+    取**就近**取整：与真实中心的偏差 ≤ 0.5 物理像素（验收线是 ≤2）。
+    """
+    x, y = rect_center(rect)
+    return (int(math.floor(x + 0.5)), int(math.floor(y + 0.5)))
 
 
 @dataclass(frozen=True)

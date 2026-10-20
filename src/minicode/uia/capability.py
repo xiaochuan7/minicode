@@ -24,24 +24,13 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
 
 from minicode.action.ports import WindowAnchor
+from minicode.capability import Availability
 
 from .ports import CapabilityProbePort, TreeAssessment, TreeUnblocker, UnblockOutcome
 
 __all__ = ["Availability", "CapabilityEntry", "CapabilityTable"]
-
-
-class Availability(StrEnum):
-    """能力表的三态（**不可压成二元**）。"""
-
-    #: 完全可用。
-    USABLE = "usable"
-    #: 部分覆盖：树存在但覆盖不全。
-    SPARSE = "sparse"
-    #: 不可用。
-    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)

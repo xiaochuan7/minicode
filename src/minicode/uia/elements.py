@@ -14,6 +14,14 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
+# ⚠️ 下面四个名字的**实现**住在共用的地方（桌面通道与浏览器通道共用同一条，
+# 工单 M13 AC 2：动作协议与坐标换算只有一套）：
+#   * 矩形 → 落点、矩形合法性 → :mod:`minicode.action.geometry`
+#   * 文本匹配规则       → :mod:`minicode.action.text`
+# 这里再导出一次，是为了不打断既有引用（``from .elements import center_point``）。
+from minicode.action.geometry import center_point, is_valid_rect, rect_center
+from minicode.action.text import name_matches
+
 __all__ = [
     "Rect",
     "UiaElement",
@@ -60,47 +68,11 @@ def read_rect(raw: Sequence[float]) -> Rect | None:
     return (left, top, right, bottom)
 
 
-def is_valid_rect(rect: Sequence[int]) -> bool:
-    """控件框是不是有面积的合法矩形。"""
-    if len(rect) != 4:
-        return False
-    left, top, right, bottom = (int(value) for value in rect)
-    return right > left and bottom > top
-
-
-def rect_center(rect: Rect) -> tuple[float, float]:
-    """控件框中心（物理像素，浮点）。"""
-    left, top, right, bottom = rect
-    return ((left + right) / 2.0, (top + bottom) / 2.0)
-
-
-def center_point(rect: Rect) -> tuple[int, int]:
-    """控件框中心（物理像素，整数）。
-
-    取**就近**取整：与真实中心的偏差 ≤ 0.5 物理像素（验收线是 ≤2）。
-    """
-    x, y = rect_center(rect)
-    return (int(math.floor(x + 0.5)), int(math.floor(y + 0.5)))
-
-
-def name_matches(element_name: str, condition: str | None) -> bool:
-    """控件名与名字条件是否对得上（**包含**语义）。
-
-    自然语言描述（「任务栏的开始按钮」）要能命中控件「开始」：
-    控件名出现在条件串里，或条件串出现在控件名里。
-
-    这一条规则**只有一份**：通道用它挑候选，查询端口用它过滤读数。
-    """
-    if not condition:
-        return True
-    target = condition.strip().lower()
-    actual = (element_name or "").strip().lower()
-    if not actual:
-        return False
-    if actual == target:
-        return True
-    return actual in target or target in actual
-
+# ⚠️ 下面四个名字的**实现**住在共用的地方（桌面通道与浏览器通道共用同一条，
+# 工单 M13 AC 2：动作协议与坐标换算只有一套）：
+#   * 矩形 → 落点、矩形合法性 → :mod:`minicode.action.geometry`
+#   * 文本匹配规则       → :mod:`minicode.action.text`
+# 这里再导出一次，是为了不打断既有引用（``from .elements import center_point``）。
 
 def element_identity(element: UiaElement) -> tuple[str, str, str, str]:
     """元素的**身份**（跨观测可比）。

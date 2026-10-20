@@ -56,6 +56,8 @@ from .errors import ErrorCode, failure_type_of
 from .executor import ActionExecutor, DoubleClickParams, TimingPolicy
 from .geometry import VirtualDesktop
 from .ports import (
+    CHANNEL_BROWSER,
+    CHANNEL_UIA,
     CapturedFrame,
     CaptureSource,
     ControlCandidate,
@@ -333,7 +335,7 @@ class ActionExecutionSeam:
                 )
             )
             if located.error_code is not None:
-                channel = "uia"
+                channel = located.channel or CHANNEL_UIA
                 locate_ms = (self._clock() - locate_started) * 1000.0
                 # **覆盖失败**是唯一允许切视觉的情形（架构决策备忘 §2.5 ①）：
                 # 这时才问视觉通道的准入判定（工单 M5 的硬闸门）。
@@ -394,7 +396,7 @@ class ActionExecutionSeam:
                 final_point = visual.landing_point
                 channel = "visual"
             else:
-                channel = "uia"
+                channel = located.channel or CHANNEL_UIA
                 selected = located.selected
                 baseline_candidates = located.candidates
                 try:
@@ -419,7 +421,7 @@ class ActionExecutionSeam:
                 final_point = located.landing_point
         else:
             # M0 的老路径：读控件树快照 + 名字匹配（没有注入定位端口时走它）。
-            channel = "uia"
+            channel = CHANNEL_UIA
             try:
                 snapshot = (
                     request.tree_snapshot
@@ -821,10 +823,15 @@ class ActionExecutionSeam:
         notes: list[str] = []
         if located.invokable and self.invoker is not None:
             if self.invoker.invoke(located.selected.element_id):
+                invoke_note = (
+                    "Invoke：走浏览器自己的输入通道（不是坐标点击）"
+                    if located.channel == CHANNEL_BROWSER
+                    else "Invoke：走 UIA 的 InvokePattern（不是坐标点击）"
+                )
                 return ActionResult(
                     ok=True,
                     landing_point=final_point,
-                    notes=("Invoke：走 UIA 的 InvokePattern（不是坐标点击）",),
+                    notes=(invoke_note,),
                 )
             notes.append("Invoke 失败，改用坐标点击")
         elif located.invokable:

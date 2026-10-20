@@ -38,10 +38,13 @@ from typing import TYPE_CHECKING
 
 from minicode.action.errors import ErrorCode, failure_type_of
 from minicode.action.ports import (
+    CANDIDATE_LIMIT_SOURCE,
+    DEFAULT_MAX_CANDIDATES,
     ControlCandidate,
     LocateRequest,
     LocateResult,
     SelectionEcho,
+    candidate_limit_source,
 )
 from minicode.model.errors import ModelError
 from minicode.redact.errors import ChannelUnavailableError
@@ -78,28 +81,11 @@ __all__ = [
 #: （架构决策备忘 §2.6 C-09：全桌面遍历约 1000 个元素要 ≥8 秒）。
 QUERY_SCOPE_WINDOW_ANCHORED = "window-anchored"
 
-#: **候选数上限**（运行时参数）。取值 **8**。
-#:
-#: 来源：ADR-0004「消歧失败、候选数超过上限（默认 8）、或指认不唯一 → 走 L4
-#: 错误处理并回报候选集」+ 工单 M4 AC 4。**它是运行时参数**：调用方可以给别的值，
-#: 但**取值来源必须被记录**（进追踪记录与动作记录）。
-DEFAULT_MAX_CANDIDATES = 8
+# ⚠️ **候选数上限**（运行时参数，默认 8）与它的**取值来源**住在
+# :mod:`minicode.action.ports` —— 那条上限对**所有通道**是同一条
+# （桌面通道与浏览器通道共用，工单 M13 AC 2）。
+# 这里保留这两个名字是为了不打断既有引用。
 
-#: 候选数上限默认值的**来源**（随记录落盘，便于事后追溯这个 8 是哪来的）。
-CANDIDATE_LIMIT_SOURCE = "ADR-0004「候选数超过上限（默认 8）」+ 工单 M4 AC 4"
-
-
-def candidate_limit_source(max_candidates: int) -> str:
-    """候选数上限的**取值来源**（运行时参数 → 来源随记录落盘）。
-
-    用了默认值 → 写默认值的出处；调用方改了值 → 说清是**覆盖**来的，
-    不然记录里会写着「默认 8」而实际用的不是 8（工单 M4 AC 4）。
-    """
-    if max_candidates == DEFAULT_MAX_CANDIDATES:
-        return CANDIDATE_LIMIT_SOURCE
-    return (
-        f"调用方覆盖（默认值 {DEFAULT_MAX_CANDIDATES} 的来源：{CANDIDATE_LIMIT_SOURCE}）"
-    )
 
 class _ChannelRefused(Exception):
     """**通道被拒绝启用**（硬闸门拦下，如脱敏未上线）。
