@@ -15,8 +15,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from .errors import ActionError, ErrorCode
 from .geometry import is_sentinel

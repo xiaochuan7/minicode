@@ -20,7 +20,7 @@ from minicode.action.protocol import (
 )
 from minicode.action.surface import SurfaceSpec
 from minicode.coord.calibrate import CalibrationProbe
-from minicode.coord.coordinates import CoordinateOutOfBounds, DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX
+from minicode.coord.coordinates import DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX, CoordinateOutOfBounds
 
 
 class ProtocolShapeTest(unittest.TestCase):

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from .ports import (
     CapturedFrame,
-    ControlCandidate,
     ControlTreeSnapshot,
     InjectionBlocked,
 )
@@ -189,6 +188,10 @@ class FakeWindowController:
     def foreground_window(self) -> int | None:
         return self._foreground
 
+    def is_occluded(self, hwnd: int, point: tuple[int, int] = (0, 0)) -> bool:
+        """前台窗口不是目标窗口时，假定目标被遮挡。"""
+        return self._foreground is not None and self._foreground != int(hwnd)
+
     def bring_to_front(self, hwnd: int) -> bool:
         self.brought.append(int(hwnd))
         self.journal.append(("bring_to_front", int(hwnd)))
@@ -196,3 +199,26 @@ class FakeWindowController:
             return False
         self._foreground = int(hwnd)
         return True
+
+
+class FakeMetrics:
+    """假屏幕度量（用于在 CI 上验证自检的判定逻辑）。"""
+
+    def __init__(
+        self,
+        awareness: str = "PER_MONITOR_AWARE_V2",
+        physical: tuple[int, int] = (2560, 1600),
+        device_caps_dpi: int = 144,
+    ):
+        self._awareness = awareness
+        self._physical = physical
+        self._device_caps_dpi = device_caps_dpi
+
+    def awareness(self) -> str:
+        return self._awareness
+
+    def physical_size(self) -> tuple[int, int]:
+        return self._physical
+
+    def device_caps_dpi(self) -> int:
+        return self._device_caps_dpi

@@ -57,7 +57,7 @@ class CapturedFrame:
     def digest(self) -> str:
         """截图哈希（SHA-256 十六进制）。同帧两次相同，不同帧不同。"""
         hasher = hashlib.sha256()
-        hasher.update(f"{self.width}x{self.height}@{self.left},{self.top}|".encode("utf-8"))
+        hasher.update(f"{self.width}x{self.height}@{self.left},{self.top}|".encode())
         hasher.update(self.payload)
         return hasher.hexdigest()
 
@@ -165,6 +165,10 @@ class WindowController(Protocol):
 
     def foreground_window(self) -> int | None:
         """当前前台窗口句柄。"""
+        ...
+
+    def is_occluded(self, hwnd: int, point: tuple[int, int]) -> bool:
+        """目标窗口在 ``point`` 处是否被别的窗口压住。"""
         ...
 
     def bring_to_front(self, hwnd: int) -> bool:

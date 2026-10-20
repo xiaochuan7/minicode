@@ -5,5 +5,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .scratch/handoff/
+# M0 最小闭环的动作记录落盘目录（运行时产物）
+runs/
+.tmp_runs/
 # PROMPTS.md 内含真实密钥，不要提交
 PROMPTS.md

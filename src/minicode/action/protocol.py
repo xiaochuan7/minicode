@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Mapping
+from enum import StrEnum
+from typing import Any
 
 from .errors import ErrorCode
 
@@ -25,7 +26,7 @@ __all__ = [
 PROTOCOL_VERSION = "cua.action/1"
 
 
-class ActionKind(str, Enum):
+class ActionKind(StrEnum):
     """动作种类。"""
 
     #: 点击。

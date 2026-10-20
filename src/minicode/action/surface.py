@@ -20,11 +20,11 @@ import logging
 from dataclasses import dataclass, field
 
 from minicode.coord.coordinates import (
+    DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX,
     CoordinateAdapter,
     CoordinateOutOfBounds,
     FrameGeometry,
     ModelScale,
-    DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX,
 )
 
 from .geometry import VirtualDesktop

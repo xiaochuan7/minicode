@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from minicode.coord.coordinates import CoordinateOutOfBounds
 
@@ -207,8 +208,7 @@ class ActionExecutionSeam:
 
         # -- 置前（目标窗口被遮挡时）--------------------------------------
         if self.window_controller is not None and selected.window_handle:
-            foreground = self.window_controller.foreground_window()
-            if foreground != selected.window_handle:
+            if self.window_controller.is_occluded(selected.window_handle, final_point):
                 raised = self.window_controller.bring_to_front(selected.window_handle)
                 now = self.window_controller.foreground_window()
                 if not raised or now != selected.window_handle:

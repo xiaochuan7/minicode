@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 import tempfile
@@ -23,7 +24,7 @@ from minicode.action.geometry import VirtualDesktop
 from minicode.action.ports import CapturedFrame, ControlCandidate, ControlTreeSnapshot
 from minicode.action.protocol import ActionKind
 from minicode.action.records import ActionLog, ListTraceSink, build_record
-from minicode.action.seam import ActionExecutionSeam, SeamRequest
+from minicode.action.seam import ActionExecutionSeam, SeamRequest, SeamResult
 
 _DESKTOP = VirtualDesktop(0, 0, 2560, 1600)
 _FRAME = CapturedFrame(width=2560, height=1600, payload=b"\x01" * 64, backend="fake")
@@ -36,7 +37,7 @@ def _candidate(name="开始", rect=(1016, 1528, 1083, 1600), window_handle=65784
 
 
 def _build_seam(
-    candidates=(_candidate(),),
+    candidates=None,
     injector=None,
     controller=None,
     sources=None,
@@ -50,7 +51,7 @@ def _build_seam(
     controller = controller or FakeWindowController(foreground=65784, journal=journal)
     seam = ActionExecutionSeam(
         capture_sources=sources if sources is not None else (FakeCaptureSource(),),
-        tree=tree or FakeControlTree(candidates),
+        tree=tree or FakeControlTree(candidates if candidates is not None else (_candidate(),)),
         injector=injector,
         window_controller=controller,
         virtual_desktop=desktop,
@@ -266,6 +267,44 @@ class InjectionBlockedTest(unittest.TestCase):
         self.assertTrue(any("C-07" in note for note in result.result.notes))
 
 
+class PortShapeTest(unittest.TestCase):
+    """验收项 2：换掉替身不改变缝的端口形状。"""
+
+    def test_request_and_result_keep_their_public_fields(self):
+        self.assertEqual(
+            [f.name for f in dataclasses.fields(SeamRequest)],
+            ["target_description", "frame", "tree_snapshot", "action_kind", "params"],
+        )
+        self.assertEqual(
+            [f.name for f in dataclasses.fields(SeamResult)],
+            ["action", "final_point", "intent", "result", "rejected_candidates"],
+        )
+
+    def test_swapping_the_fakes_does_not_change_the_output_shape(self):
+        seam_a, _, _, _ = _build_seam()
+        result_a = seam_a.run(SeamRequest(target_description="开始"))
+        seam_b, _, _, _ = _build_seam(
+            sources=(FakeCaptureSource(width=800, height=600, name="other"),)
+        )
+        result_b = seam_b.run(SeamRequest(target_description="开始"))
+        self.assertEqual(
+            [f.name for f in dataclasses.fields(result_a)],
+            [f.name for f in dataclasses.fields(result_b)],
+        )
+        self.assertEqual(result_a.action.kind, result_b.action.kind)
+        self.assertIsInstance(result_a.final_point, tuple)
+        self.assertIsInstance(result_b.final_point, tuple)
+
+    def test_the_seam_needs_only_the_standard_library(self):
+        package = Path(__file__).resolve().parent
+        for path in package.glob("*.py"):
+            if path.name.startswith("test_"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            for banned in ("import numpy", "import mss", "import PIL", "from PIL"):
+                self.assertNotIn(banned, text, msg=f"{path.name} 引入了第三方依赖 {banned}")
+
+
 class ActionRecordTest(unittest.TestCase):
     """验收项 18 / 19：只落哈希 + 恰好一条动作记录。"""
 
@@ -346,3 +385,19 @@ class ActionRecordTest(unittest.TestCase):
             log, _ = self._run_once(tmp)
             for line in log.path.read_text(encoding="utf-8").splitlines():
                 json.loads(line)
+
+    def test_double_click_and_two_independent_clicks_produce_different_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sink = ListTraceSink()
+            seam, _, _, clock = _build_seam(trace_sink=sink)
+            seam.run(
+                SeamRequest(target_description="开始", action_kind=ActionKind.DOUBLE_CLICK)
+            )
+            seam.run(SeamRequest(target_description="开始", action_kind=ActionKind.CLICK))
+            clock.sleep(0.6)
+            seam.run(SeamRequest(target_description="开始", action_kind=ActionKind.CLICK))
+            log = ActionLog(tmp)
+            for trace in sink.traces:
+                log.append(build_record(trace))
+            actions = [record["action"] for record in log.records()]
+            self.assertEqual(actions, ["double_click", "click", "click"])

@@ -12,10 +12,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .ports import ControlCandidate
 from .protocol import PROTOCOL_VERSION, Action, ActionResult
@@ -110,9 +111,13 @@ class ActionRecord:
     ok: bool = False
     error_code: str | None = None
     error_message: str | None = None
+    #: 注入后回读的光标位置（物理表面空间）。哨兵值 (−32000,−32000) 会被判执行失败。
+    cursor_readback: tuple[int, int] | None = None
     locate_ms: float = 0.0
     decision_ms: float = 0.0
     execute_verify_ms: float = 0.0
+    #: 动作自身的实测时序（毫秒）：pre_move / hold / total 等。
+    action_timing: Mapping[str, Any] | None = None
     failure_locate: str | None = None
     failure_decision: str | None = None
     failure_execute: str | None = None
@@ -143,12 +148,14 @@ class ActionRecord:
                 "ok": self.ok,
                 "error_code": self.error_code,
                 "error_message": self.error_message,
+                "cursor_readback": list(self.cursor_readback) if self.cursor_readback else None,
             },
             "timings_ms": {
                 "locate": self.locate_ms,
                 "decision": self.decision_ms,
                 "execute_verify": self.execute_verify_ms,
             },
+            "action_timing": dict(self.action_timing) if self.action_timing else None,
             "failures": {
                 "locate": self.failure_locate,
                 "decision": self.failure_decision,
@@ -183,9 +190,11 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         ok=result.ok,
         error_code=result.error_code.value if result.error_code else None,
         error_message=result.error_message,
+        cursor_readback=result.cursor_readback,
         locate_ms=trace.locate_ms,
         decision_ms=trace.decision_ms,
         execute_verify_ms=trace.execute_verify_ms,
+        action_timing=dict(result.timing) if result.timing else None,
         failure_locate=failures.get("locate"),
         failure_decision=failures.get("decision"),
         failure_execute=failures.get("execute"),

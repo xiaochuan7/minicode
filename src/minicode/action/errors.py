@@ -5,12 +5,12 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 __all__ = ["ErrorCode", "ActionError"]
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """动作协议 v1 的结果错误码。"""
 
     #: 成功。
