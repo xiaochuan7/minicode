@@ -24,7 +24,13 @@ from pathlib import Path
 from .errors import ErrorCode
 from .executor import DoubleClickParams, TimingPolicy
 from .geometry import VirtualDesktop
-from .ports import CaptureSource, ControlTree, InputInjector, WindowController
+from .ports import (
+    CaptureSource,
+    ControlTree,
+    InputInjector,
+    SecureDesktopDetector,
+    WindowController,
+)
 from .records import ActionLog, ActionRecord, ListTraceSink, build_record
 from .seam import ActionExecutionSeam, SeamRequest, SeamResult
 from .selfcheck import (
@@ -109,6 +115,7 @@ def run_minimal_loop(
     timing: TimingPolicy | None = None,
     double_click_params: DoubleClickParams | None = None,
     capture_to_physical_scale: float = 1.0,
+    secure_desktop: SecureDesktopDetector | None = None,
 ) -> LoopOutcome:
     """跑一次最小闭环。"""
     startup = StartupSelfCheck(metrics, tuple(capture_sources), expectations).run()
@@ -141,6 +148,7 @@ def run_minimal_loop(
         double_click_params=double_click_params,
         trace_sink=sink,
         capture_to_physical_scale=capture_to_physical_scale,
+        secure_desktop=secure_desktop,
     )
     result = seam.run(SeamRequest(target_description=target_description))
 

@@ -18,6 +18,7 @@ from .ports import (
     CapturedFrame,
     ControlCandidate,
     ControlTreeSnapshot,
+    ElevationState,
     InjectionBlocked,
     PixelFormat,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "WindowsControlTree",
     "WindowsInputInjector",
     "WindowsWindowController",
+    "WindowsSecureDesktopDetector",
     "system_double_click_params",
     "current_virtual_desktop",
     "find_taskbar_hwnd",
@@ -64,6 +66,27 @@ _user32.CloseClipboard.argtypes = []
 _user32.CloseClipboard.restype = wintypes.BOOL
 _user32.EnumClipboardFormats.argtypes = [wintypes.UINT]
 _user32.EnumClipboardFormats.restype = wintypes.UINT
+_user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_user32.OpenInputDesktop.restype = wintypes.HANDLE
+_user32.GetUserObjectInformationW.argtypes = [
+    wintypes.HANDLE,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+_user32.GetUserObjectInformationW.restype = wintypes.BOOL
+_user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+_user32.CloseDesktop.restype = wintypes.BOOL
+
+#: ``OpenInputDesktop`` 的 ``DESKTOP_READOBJECTS``（只读桌面名，够用了）。
+DESKTOP_READOBJECTS = 0x0001
+
+#: ``GetUserObjectInformation`` 的 ``UOI_NAME``（取桌面的名字）。
+UOI_NAME = 2
+
+#: UAC 安全桌面的名字（提权弹窗出现时输入桌面被切到它上面）。
+SECURE_DESKTOP_NAME = "Winlogon"
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +490,83 @@ class WindowsInputInjector:
         if name is None:
             raise ValueError(f"未知按键：{button!r}")
         return getattr(win_input, name)
+
+
+# ---------------------------------------------------------------------------
+# 提权 / 安全桌面（C-07）
+# ---------------------------------------------------------------------------
+
+
+class WindowsSecureDesktopDetector:
+    """检测当前是不是 **UAC 安全桌面**（架构决策备忘 §2.6 C-07）。
+
+    判据：**输入桌面的名字**。正常运行时输入桌面叫 ``Default``；
+    UAC 提权弹窗出现时，输入桌面被切到 ``Winlogon``（安全桌面）——
+    那一刻**截不到也点不到**（C-07 的原话），所以必须**零动作下发、交给人**。
+
+    ⚠️ **本类只检测，不降低**：仓库里**没有**任何改
+    ``HKCU\\Control Panel\\Desktop\\PromptOnSecureDesktop`` 的路径，
+    也不许加 —— 那等于关掉 UAC 的视觉提示（**降低安全性**），
+    必须有人**书面同意**才存在（工单 M12 AC 6）。
+    单测 ``reflection/test_reflection.py`` 扫描全仓把这条钉死。
+    """
+
+    def detect(self) -> ElevationState:
+        """检测当前是不是 UAC 安全桌面。
+
+        ⚠️ **fail-closed**：**读不到**输入桌面时按「提权」处理（``elevated=True``）——
+        安全桌面上 ``OpenInputDesktop`` 会返回 ``ACCESS_DENIED``，
+        那**正是**要判的那个场景（架构决策备忘 §2.6 C-07）。
+        宁可停下交给人，也不盲目往一个看不见的桌面上打点。
+        """
+        handle = _user32.OpenInputDesktop(0, False, DESKTOP_READOBJECTS)
+        if not handle:
+            return self._undeterminable(
+                f"OpenInputDesktop 失败（Win32 错误码 {ctypes.get_last_error()}）"
+            )
+        try:
+            needed = wintypes.DWORD(0)
+            _user32.GetUserObjectInformationW(
+                handle, UOI_NAME, None, 0, ctypes.byref(needed)
+            )
+            if needed.value == 0:
+                return self._undeterminable("读不到输入桌面的名字")
+            buffer = ctypes.create_unicode_buffer(needed.value // ctypes.sizeof(wintypes.WCHAR) + 1)
+            ok = _user32.GetUserObjectInformationW(
+                handle,
+                UOI_NAME,
+                ctypes.byref(buffer),
+                needed.value,
+                ctypes.byref(needed),
+            )
+            if not ok:
+                return self._undeterminable("读输入桌面名字失败")
+            name = buffer.value or ""
+        finally:
+            _user32.CloseDesktop(handle)
+        if name == SECURE_DESKTOP_NAME:
+            return ElevationState(
+                elevated=True,
+                reason="输入桌面已切到 Winlogon（UAC 安全桌面）：截不到也点不到",
+                desktop_name=name,
+            )
+        return ElevationState(
+            elevated=False,
+            reason=f"输入桌面是 {name or '（无名）'}，不是安全桌面",
+            desktop_name=name,
+        )
+
+    @staticmethod
+    def _undeterminable(detail: str) -> ElevationState:
+        """**判不了**提权 → 按提权处理（fail-closed）。"""
+        return ElevationState(
+            elevated=True,
+            reason=(
+                f"{detail} —— 判不了提权，按提权处理（fail-closed："
+                "宁可停下交给人，也不往看不见的桌面上打点）"
+            ),
+            desktop_name="",
+        )
 
 
 # ---------------------------------------------------------------------------

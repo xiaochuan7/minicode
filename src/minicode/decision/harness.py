@@ -14,6 +14,11 @@
 > 循环推进、上下文裁剪）由**端到端评测**承担 —— 本模块**没有单测覆盖**，
 > 这是明确承担的分工，不是遗漏。受控执行环境（「能不能 import / 能不能写文件」）
 > 的契约在 :mod:`minicode.action.program` 里有单测。
+>
+> 📌 **工单 M12 补一句**：**停止条件**（四类卡死检测器 / 熔断 / 轮次上限）
+> 落成了**独立的状态机**（:mod:`minicode.reflection.stop`）——
+> 它**没有模型依赖**、不碰桌面，因此**有单测**（工单 M12 各条验收标准都要求
+> 可复现的用例）。分工不变的部分是「**规划质量**仍由端到端评测承担」。
 """
 
 from __future__ import annotations
@@ -29,6 +34,15 @@ from minicode.action.program import ProgramOutcome, run_program
 from minicode.model.effort import Effort
 from minicode.model.ports import ModelCaller
 from minicode.model.request_log import count_unset_effort, total_input_tokens
+from minicode.reflection.handoff import HandoffArtifact, build_handoff
+from minicode.reflection.stop import (
+    STOP_ASKED_HUMAN,
+    STOP_DANGEROUS_ACTION,
+    STOP_EXPECTATION_MET,
+    STOP_REASON_TEXT,
+    STOP_ROUND_CAP,
+    StopPolicy,
+)
 from minicode.verification.telemetry import TelemetryAccumulator
 
 from .api import ProtocolApi
@@ -171,6 +185,12 @@ class HarnessReport:
     dropped_frames: int = 0
     #: 模型自称「完成」的次数（**一律不据此停止**）。
     completion_claims_ignored: int = 0
+    #: **换策略**的记录（工单 M12 AC 1：「能读到『已换策略』的记录」）。
+    strategy_changes: tuple[dict[str, Any], ...] = ()
+    #: 四类**卡死检测器**的判定（工单 M12 AC 5）。
+    detectors: tuple[dict[str, Any], ...] = ()
+    #: **交接产物**（交给人时才有；任务达成时是 ``None``）。
+    handoff: HandoffArtifact | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,6 +205,9 @@ class HarnessReport:
             "kept_frames": self.kept_frames,
             "dropped_frames": self.dropped_frames,
             "completion_claims_ignored": self.completion_claims_ignored,
+            "strategy_changes": list(self.strategy_changes),
+            "detectors": list(self.detectors),
+            "handoff": self.handoff.to_dict() if self.handoff is not None else None,
         }
 
 
@@ -201,11 +224,12 @@ class DecisionHarness:
         max_tokens: int = 4000,
         request_log: Any | None = None,
         telemetry: TelemetryAccumulator | None = None,
+        stop_policy: StopPolicy | None = None,
     ):
         self.caller = caller
         self.api = api
-        #: 轮次上限 —— **工程值·未验证**（成本刹车；什么时候该停由 M11/M12 的
-        #: 期望断言与卡死检测器接上来定）。
+        #: 轮次上限 —— **工程值·未验证**（成本刹车）。
+        #: 达到它就**停下来交人**（工单 M12 AC 2：停止原因写明是轮次上限）。
         self.max_rounds = int(max_rounds)
         #: 上下文保留几张完整图 —— **工程值·未验证**（2~4 由工单 M10 AC 5 限定）。
         self.keep_frames = int(keep_frames)
@@ -216,6 +240,9 @@ class DecisionHarness:
         #: **三段耗时与三类失败**的累加器（工单 M11 AC 4 / AC 5）。
         #: 给了它，整任务的三段占比与三类失败分布就有了。
         self.telemetry = telemetry
+        #: **停止条件**（工单 M12）：四类卡死检测器 + 熔断 + 轮次上限。
+        #: 缺省 = 不做停止判定（那时只有轮次上限兜着）。
+        self.stop_policy = stop_policy
 
     # ------------------------------------------------------------------
     # 主循环
@@ -230,7 +257,8 @@ class DecisionHarness:
         steps: list[StepRecord] = []
         growth: list[tuple[int, int | None]] = []
         all_calls: list[dict[str, Any]] = []
-        stop_reason = "max_rounds"
+        #: 默认的停止原因是**轮次上限**（下面每一处 break 都会改写它）。
+        stop_reason = STOP_ROUND_CAP
 
         # **当前观察**：第 1 轮之前先抓一帧 —— 否则模型是**盲写**的程序
         # （模型针对当前观察产出程序，盲写就违背了这条）。
@@ -287,8 +315,25 @@ class DecisionHarness:
             growth.append((len(steps), steps[-1].total_input_tokens))
 
             if self.api.asked_human:
-                stop_reason = "asked_human"
+                stop_reason = STOP_ASKED_HUMAN
                 break
+            if self.api.halted:
+                # **危险动作被拦下**（工单 M12 AC 8 / AC 9）：停下来交给人。
+                stop_reason = STOP_DANGEROUS_ACTION
+                break
+            # -- 停止条件（工单 M12）----------------------------------------
+            # 这一轮结束：交给**卡死检测器**判一次。
+            # * **熔断**（同一动作连续无效）→ 换策略，并把「已换策略」写进上下文，
+            #   模型下一轮据此换招；
+            # * **轮次硬上限 / 期望成立 / 提权** → 停下来（后面交人或收工）。
+            if self.stop_policy is not None:
+                self.stop_policy.observe_round()
+                for change in self.stop_policy.take_strategy_changes():
+                    context.add_note(change.describe())
+                reason = self.stop_policy.stop_reason
+                if reason:
+                    stop_reason = reason
+                    break
             if not outcome.ok:
                 # 反思步：上一轮没跑成 → 高档位复盘，给出下一步。
                 reflect_started = time.perf_counter()
@@ -318,6 +363,8 @@ class DecisionHarness:
                 )
                 growth.append((len(steps), steps[-1].total_input_tokens))
 
+        handoff = self._build_handoff(stop_reason, all_calls)
+        policy = self.stop_policy
         return HarnessReport(
             goal=goal,
             rounds=sum(1 for step in steps if step.kind == STEP_PLAN),
@@ -330,6 +377,37 @@ class DecisionHarness:
             kept_frames=context.kept_frames,
             dropped_frames=context.dropped_frames,
             completion_claims_ignored=sum(step.completion_claims for step in steps),
+            strategy_changes=(
+                tuple(change.to_dict() for change in policy.strategy_change_records)
+                if policy is not None
+                else ()
+            ),
+            detectors=(
+                tuple(verdict.to_dict() for verdict in policy.detectors)
+                if policy is not None
+                else ()
+            ),
+            handoff=handoff,
+        )
+
+    def _build_handoff(
+        self, stop_reason: str, api_calls: Sequence[dict[str, Any]]
+    ) -> HandoffArtifact | None:
+        """**交接产物**（工单 M12 AC 7）。
+
+        只有「停下来交给人」的停止原因才交出去 —— **任务达成不交**
+        （那是收工，不是交人）。
+        """
+        if self.stop_policy is None:
+            return None
+        if stop_reason == STOP_EXPECTATION_MET:
+            return None
+        return build_handoff(
+            self.stop_policy.signals,
+            reason=stop_reason,
+            reason_text=STOP_REASON_TEXT.get(stop_reason, ""),
+            strategy_changes=self.stop_policy.strategy_change_records,
+            api_calls=api_calls,
         )
 
     # ------------------------------------------------------------------

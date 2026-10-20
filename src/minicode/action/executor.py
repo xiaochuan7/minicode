@@ -21,7 +21,13 @@ from typing import Any
 
 from .errors import ActionError, ErrorCode
 from .geometry import is_sentinel, rect_size
-from .ports import InjectionBlocked, InputInjector, ScreenshotPort
+from .ports import (
+    ElevationState,
+    InjectionBlocked,
+    InputInjector,
+    ScreenshotPort,
+    SecureDesktopDetector,
+)
 from .protocol import (
     BUTTON_LEFT,
     CLICK_DOUBLE,
@@ -40,6 +46,8 @@ __all__ = [
     "SCROLL_DELTA_PER_LINE",
     "CURSOR_READBACK_TOLERANCE_PX",
     "C07_DEBT_NOTE",
+    "INPUT_KINDS",
+    "ELEVATION_HANDOFF_NOTE",
 ]
 
 #: 对外单位是「行」，下发前按 ×50 换算到滚轮刻度（架构备忘 §2 L0 的项目约定）。
@@ -53,6 +61,26 @@ C07_DEBT_NOTE = (
     "C-07 未满足：目标窗口完整性级别更高时注入会被拦下（SendInput 返回 0）。"
     "本单只如实记为执行失败，**零动作下发并交人**欠到安全与审计层工单。"
 )
+
+#: **会注入输入**的动作种类（其余是观察：截图 / 等待 / 放大）。
+#:
+#: 提权检测只拦这一组 —— 观察类动作不碰目标程序，不构成「误操作」。
+INPUT_KINDS = frozenset(
+    {
+        ActionKind.CLICK,
+        ActionKind.MOVE,
+        ActionKind.DRAG,
+        ActionKind.SCROLL,
+        ActionKind.TYPE,
+        ActionKind.KEY,
+    }
+)
+
+#: 检测到提权 / 安全桌面时写进结果里的话（**零动作下发**，交人）。
+#:
+#: ⚠️ 这条 note 落进动作记录的 ``notes`` —— 「日志里有一条『已交接给人』的记录」
+#: 由它承载（工单 M12 AC 6）。
+ELEVATION_HANDOFF_NOTE = "已交接给人：检测到提权 / 安全桌面（UAC 安全桌面截不到也点不到）"
 
 
 @dataclass(frozen=True)
@@ -116,12 +144,16 @@ class ActionExecutor:
         timing: TimingPolicy | None = None,
         double_click_params: DoubleClickParams | None = None,
         screenshot_port: ScreenshotPort | None = None,
+        secure_desktop: SecureDesktopDetector | None = None,
     ):
         self.injector = injector
         self.timing = timing or TimingPolicy()
         self.double_click_params = double_click_params
         #: ``screenshot`` 动作的端口（抓帧）。缺省 = 该动作不可执行。
         self.screenshot_port = screenshot_port
+        #: **提权 / 安全桌面检测端口**（C-07）。给了它，执行前先问一次：
+        #: 在安全桌面上就**零动作下发**、交人。缺省 = 不检测。
+        self.secure_desktop = secure_desktop
         self._sleep = sleeper
         self._clock = clock
 
@@ -141,6 +173,21 @@ class ActionExecutor:
                     "按协议 v1 由后续工单扩展启用，本单不做半实现。"
                 ),
             )
+        # -- 提权 / 安全桌面（C-07，工单 M12 AC 6）------------------------
+        # **在注入之前**问：安全桌面上截不到也点不到，硬打只是白打，
+        # 还会把「打到了别的窗口」这种不可逆后果变成可能。
+        if kind in INPUT_KINDS:
+            elevation = self._elevation_state()
+            if elevation is not None and elevation.elevated:
+                return ActionResult(
+                    ok=False,
+                    error_code=ErrorCode.UAC_OR_SECURE_DESKTOP,
+                    error_message=(
+                        "检测到提权 / 安全桌面，零动作下发并交人："
+                        f"{elevation.reason}"
+                    ),
+                    notes=(ELEVATION_HANDOFF_NOTE,),
+                )
         try:
             if kind is ActionKind.CLICK:
                 return self._click(action)
@@ -384,6 +431,23 @@ class ActionExecutor:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    def _elevation_state(self):
+        """问一次「现在是不是 UAC 安全桌面」（C-07）。
+
+        没接检测端口 → ``None``（不检测）；
+        检测端口**自己抛异常** → **按提权处理**（fail-closed）：
+        判不了提权时宁可停下交给人，也不往看不见的桌面上打点。
+        """
+        if self.secure_desktop is None:
+            return None
+        try:
+            return self.secure_desktop.detect()
+        except Exception as exc:
+            return ElevationState(
+                elevated=True,
+                reason=f"提权检测失败（{type(exc).__name__}: {exc}）—— 按提权处理（fail-closed）",
+            )
 
     def _click_sequence(self, x: int, y: int, button: str) -> tuple[dict[str, Any], float, float]:
         """移动 → 停顿 → 按下 → 停顿 → 抬起。

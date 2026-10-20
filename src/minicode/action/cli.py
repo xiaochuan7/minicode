@@ -89,6 +89,7 @@ def _run_real(args):
         WindowsControlTree,
         WindowsInputInjector,
         WindowsMetrics,
+        WindowsSecureDesktopDetector,
         WindowsWindowController,
         current_virtual_desktop,
         system_double_click_params,
@@ -107,6 +108,8 @@ def _run_real(args):
         metrics=WindowsMetrics(),
         log_directory=args.out,
         double_click_params=system_double_click_params(),
+        # **提权 / 安全桌面检测**（C-07）：在安全桌面上就**零动作下发**、交人。
+        secure_desktop=WindowsSecureDesktopDetector(),
     )
     return outcome
 

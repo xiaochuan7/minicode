@@ -23,8 +23,17 @@ from minicode.action.ports import (
 from minicode.action.program import PROGRAM_API_NAMES
 from minicode.action.protocol import Action, ActionKind
 from minicode.action.seam import ActionExecutionSeam, SeamRequest
+from minicode.reflection.gate import DangerGate
+from minicode.verification.expect import Expectation
 
-__all__ = ["ProtocolApi"]
+__all__ = ["ProtocolApi", "DANGEROUS_ACTION_ERROR"]
+
+#: **危险动作被拦下**时的错误码（工单 M12 AC 8 / AC 9）。
+#:
+#: ⚠️ 它**不是**协议里的错误码 —— 动作压根没下发（连缝都没进），
+#: 所以不进 :class:`~minicode.action.errors.ErrorCode`：
+#: 那是**动作协议**的错误码集合，这里是**决策层**拦下动作时说的话。
+DANGEROUS_ACTION_ERROR = "dangerous_action_requires_human"
 
 
 class ProtocolApi:
@@ -37,16 +46,29 @@ class ProtocolApi:
         locator: ControlLocator | None = None,
         anchor: WindowAnchor | None = None,
         frame_provider: Callable[[], CapturedFrame | None] | None = None,
+        goal_expectation: Expectation | None = None,
+        danger_gate: DangerGate | None = None,
     ):
         self._seam = seam
         self._locator = locator
         self._anchor = anchor or WindowAnchor(hwnd=0)
         self._frame_provider = frame_provider
+        #: **目标级期望**（工单 M12）：用户对**整个目标**写的一句期望。
+        #: 它跟着每一步走（缝去校验它），**不成立不算这一步失败**
+        #: —— 成立则任务达成（由 :mod:`minicode.reflection.stop` 读出来）。
+        self.goal_expectation = goal_expectation
+        #: **危险动作的放行判据**（工单 M12 AC 8）。
+        #: 给了它：命中危险词表的**动作不执行**，任务**停下来交给人**
+        #: （审批与 dry-run 是 M16 的活 —— 本单只做「检测 + 停手 + 交接」）。
+        self.danger_gate = danger_gate
         #: 程序每一次接口调用的记录。
         self.calls: list[dict[str, Any]] = []
         #: 程序请求交还给人了吗。
         self.asked_human = False
         self.asked_human_reason = ""
+        #: **被危险动作判据拦下**了吗（停下、交人）。
+        self.halted = False
+        self.halt_reason = ""
         #: 最近一次截图拿到的帧（供上下文窗口留完整图）。
         self.last_frame: CapturedFrame | None = None
         #: 本轮的**决策耗时**（毫秒）与「还没记到动作上」的标记。
@@ -107,11 +129,29 @@ class ProtocolApi:
     def click(self, target: str) -> dict[str, Any]:
         """按目标描述定位并点击（走动作执行缝）。"""
         decision_ms = self._take_decision_ms()
+        # -- 危险动作判据（工单 M12 AC 8）--------------------------------
+        # 命中危险词表 → **不执行**，停下来交给人。
+        # ⚠️ 判据里**没有置信度**（绝对值不可当把握度，排序可用）。
+        if self.danger_gate is not None:
+            verdict = self.danger_gate.evaluate(target_description=str(target))
+            if verdict.requires_human:
+                self.halted = True
+                self.halt_reason = verdict.reason
+                record = {
+                    "kind": "click",
+                    "target": str(target),
+                    "ok": False,
+                    "point": None,
+                    "error": DANGEROUS_ACTION_ERROR,
+                }
+                self.calls.append(record)
+                return record
         result = self._seam.run(
             SeamRequest(
                 target_description=str(target),
                 action_kind=ActionKind.CLICK,
                 decision_ms=decision_ms,
+                goal_expectation=self.goal_expectation,
             )
         )
         record: dict[str, Any] = {

@@ -105,6 +105,14 @@ class ErrorCode(StrEnum):
     #: 动作执行本身失败。
     EXECUTE_FAILED = "execute_failed"
 
+    # -- 提权 / 安全桌面（工单 M12；架构决策备忘 §2.6 C-07）--
+    #: 检测到 **UAC 提权 / 安全桌面**：动作层**拒绝执行**、**零动作下发**，
+    #: 把轨迹交人（工单 M12 AC 6）。
+    #:
+    #: ⚠️ **这不是执行失败的可重试情形**：安全桌面上的输入根本到不了目标程序，
+    #: 重试只是白等 —— 它归「执行失败」（动作执行不了），**交人**由反思层承载。
+    UAC_OR_SECURE_DESKTOP = "uac_or_secure_desktop"
+
     # -- 抓帧 --
     #: 所有捕获源都只拿到 0×0 画面。
     CAPTURE_EMPTY = "capture_empty"
@@ -177,6 +185,8 @@ FAILURE_TYPE_BY_CODE: Mapping[ErrorCode, FailureType] = {
     ErrorCode.CURSOR_MISMATCH: FailureType.EXECUTION,
     ErrorCode.CURSOR_SENTINEL: FailureType.EXECUTION,
     ErrorCode.LANDING_MISMATCH: FailureType.EXECUTION,
+    #: **提权 / 安全桌面**（工单 M12，C-07）：零动作下发、交给人。
+    ErrorCode.UAC_OR_SECURE_DESKTOP: FailureType.EXECUTION,
     #: **期望断言失败**（工单 M11）：动作做了但界面没变成期望的样子
     #: → 归「执行失败」（它在「执行+校验」这一段里没达成目标）。
     ErrorCode.EXPECTATION_FAILED: FailureType.EXECUTION,

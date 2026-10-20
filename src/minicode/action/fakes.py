@@ -10,6 +10,7 @@ from .geometry import rect_size
 from .ports import (
     CapturedFrame,
     ControlTreeSnapshot,
+    ElevationState,
     InjectionBlocked,
 )
 
@@ -19,6 +20,7 @@ __all__ = [
     "FakeControlTree",
     "FakeInputInjector",
     "FakeWindowController",
+    "FakeSecureDesktopDetector",
 ]
 
 
@@ -239,6 +241,32 @@ class FakeWindowController:
             return False
         self._foreground = self.root_of.get(int(hwnd), int(hwnd))
         return True
+
+
+class FakeSecureDesktopDetector:
+    """假提权检测：按预设回答「是不是安全桌面」（C-07）。
+
+    ``calls`` 记录检测了几次 —— 单测据此断言「检测了，但**零动作下发**」。
+    """
+
+    def __init__(
+        self,
+        elevated: bool = False,
+        reason: str = "",
+        desktop_name: str = "Default",
+    ):
+        self.elevated = bool(elevated)
+        self.reason = reason or ("假实现：安全桌面" if elevated else "假实现：正常桌面")
+        self.desktop_name = desktop_name
+        self.calls = 0
+
+    def detect(self) -> ElevationState:
+        self.calls += 1
+        return ElevationState(
+            elevated=self.elevated,
+            reason=self.reason,
+            desktop_name=self.desktop_name,
+        )
 
 
 class FakeMetrics:

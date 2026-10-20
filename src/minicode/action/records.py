@@ -45,6 +45,7 @@ __all__ = [
     "ActionLog",
     "TraceSink",
     "ListTraceSink",
+    "MultiTraceSink",
     "build_record",
     "frame_fields",
     "trace_candidates",
@@ -187,6 +188,22 @@ class ListTraceSink:
 
     def emit(self, trace: ActionTrace) -> None:
         self.traces.append(trace)
+
+
+class MultiTraceSink:
+    """扇出：把**同一条**追踪记录发给多个出口。
+
+    动作日志（:class:`ActionLog` 的来源）与**停止条件**（工单 M12 的卡死检测器）
+    都要看同一条记录 —— 扇出保证它们看的是**同一份数据**，
+    而不是两份各算一遍的副本。
+    """
+
+    def __init__(self, *sinks: TraceSink) -> None:
+        self.sinks = tuple(sinks)
+
+    def emit(self, trace: ActionTrace) -> None:
+        for sink in self.sinks:
+            sink.emit(trace)
 
 
 @dataclass(frozen=True)

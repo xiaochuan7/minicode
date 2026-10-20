@@ -45,6 +45,8 @@ __all__ = [
     "PointerResult",
     "CandidatePointer",
     "ElementInvoker",
+    "ElevationState",
+    "SecureDesktopDetector",
     "VisualAdmission",
     "VisualAdmissionPort",
     "GroundingEcho",
@@ -547,6 +549,36 @@ class ElementInvoker(Protocol):
     """按元素 id 触发 InvokePattern（**Invoke 优先**于坐标点击）。"""
 
     def invoke(self, element_id: str) -> bool:
+        ...
+
+
+@dataclass(frozen=True)
+class ElevationState:
+    """**提权 / 安全桌面**的状态（架构决策备忘 §2.6 C-07）。
+
+    * ``elevated`` —— 此刻是不是 UAC 安全桌面（提权弹窗把输入桌面切走了）；
+    * ``reason`` —— 人读的原因（没检测到时也写清楚「怎么知道的」）；
+    * ``desktop_name`` —— 输入桌面的名字（本机正常是 ``Default``，
+      安全桌面是 ``Winlogon``）。
+
+    ⚠️ **只检测，不降低**：C-07 明写「代码里不得默认开启
+    ``PromptOnSecureDesktop=0``」（那等于关掉 UAC 的视觉提示）。
+    仓库里没有这条路径，也不许加。
+    """
+
+    elevated: bool
+    reason: str = ""
+    desktop_name: str = ""
+
+
+@runtime_checkable
+class SecureDesktopDetector(Protocol):
+    """检测当前是不是 **UAC 安全桌面**（C-07）。
+
+    形状：**一次检测 → 一个状态**。换注入点时这个形状不许变。
+    """
+
+    def detect(self) -> ElevationState:
         ...
 
 

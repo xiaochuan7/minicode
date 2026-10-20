@@ -26,13 +26,16 @@ from pathlib import Path
 from minicode.action.capture import CapturePort
 from minicode.action.fakes import FakeCaptureSource, FakeInputInjector
 from minicode.action.ports import WindowAnchor
-from minicode.action.records import ListTraceSink, build_record
+from minicode.action.records import ListTraceSink, MultiTraceSink, build_record
 from minicode.action.seam import ActionExecutionSeam
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.request_log import InMemoryRequestLog
 from minicode.redact.config import load_model_context_config
 from minicode.redact.redactor import TreeRedactor
+from minicode.reflection.gate import DangerGate
+from minicode.reflection.retry import RetryingSeam
+from minicode.reflection.stop import StopPolicy
 from minicode.uia.capability import CapabilityTable
 from minicode.uia.channel import UiaChannel
 from minicode.uia.elements import UiaElement
@@ -46,6 +49,7 @@ from minicode.uia.fakes import (
 from minicode.uia.observer import UiaStateObserver
 from minicode.uia.pointer import ModelCandidatePointer
 from minicode.uia.ports import TreeAssessment
+from minicode.verification.expect import Expectation, parse_expectation
 from minicode.verification.layer import VerificationLayer
 from minicode.verification.telemetry import TelemetryAccumulator
 
@@ -73,11 +77,27 @@ def _parse_args(argv):
         ),
     )
     parser.add_argument(
+        "--expect",
+        default="",
+        help=(
+            "**目标级期望**（工单 M12）：`text:已保存` / `text:已保存:消失` / "
+            "`state:保存:不可用` —— 用户对整个目标写的一句期望"
+        ),
+    )
+    parser.add_argument(
         "--no-disambiguate",
         action="store_true",
         help="消歧不接模型（用假指认；默认接真模型，动作步的档位证据靠它）",
     )
     return parser.parse_args(argv)
+
+
+def _parse_expectation(text: str) -> Expectation | None:
+    """解析 ``--expect``（**唯一一处**：`minicode.verification.expect.parse_expectation`）。"""
+    try:
+        return parse_expectation(text)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _fake_tree(target: str) -> tuple[UiaElement, ...]:
@@ -117,6 +137,9 @@ def main(argv=None) -> int:
     capture = FakeCaptureSource(width=int(width), height=int(height))
     #: 动作记录（决策层做的每个动作一条 —— M0 的动作记录形状）。
     trace_sink = ListTraceSink()
+    #: **停止条件**（工单 M12）：四类卡死检测器 + 熔断 + 轮次上限。
+    #: 它也是追踪记录的旁路出口 —— 与动作日志看的是**同一份数据**。
+    stop_policy = StopPolicy(max_rounds=args.rounds)
     anchor = WindowAnchor(hwnd=0, app="fake", version="0")
     tree = _fake_tree("开始")
     query = FakeUiaQueryPort(
@@ -156,7 +179,8 @@ def main(argv=None) -> int:
         anchor=anchor,
         locator=channel,
         model_context_config=context_config,
-        trace_sink=trace_sink,
+        # 追踪记录**扇出**：动作日志一份、停止条件一份（同一份数据）。
+        trace_sink=MultiTraceSink(trace_sink, stop_policy),
         # **校验层**（工单 M11）：动作之后跑一次校验
         # （没有期望 → 默认校验：界面无变化检测）。
         verifier=VerificationLayer(
@@ -164,7 +188,18 @@ def main(argv=None) -> int:
             observer=UiaStateObserver(query, anchor),
         ),
     )
-    api = ProtocolApi(seam=seam, locator=channel, anchor=anchor)
+    #: **重试**（工单 M12 AC 3 / AC 4）：套在缝外面 ——
+    #: 只重试可逆动作，退避 200 / 500 / 1200 ms，**每次重试前重新感知**。
+    retrying_seam = RetryingSeam(seam)
+    api = ProtocolApi(
+        seam=retrying_seam,
+        locator=channel,
+        anchor=anchor,
+        goal_expectation=_parse_expectation(args.expect),
+        # **危险动作的放行判据**（工单 M12 AC 8）：命中危险词表的动作
+        # **不执行**，任务停下来交给人（审批与 dry-run 是 M16 的活）。
+        danger_gate=DangerGate(),
+    )
     #: **三段耗时与三类失败**的累加器（工单 M11 AC 4 / AC 5）。
     telemetry = TelemetryAccumulator()
     harness = DecisionHarness(
@@ -174,6 +209,7 @@ def main(argv=None) -> int:
         keep_frames=args.keep_frames,
         request_log=request_log,
         telemetry=telemetry,
+        stop_policy=stop_policy,
     )
 
     report = harness.run(args.goal)
@@ -198,6 +234,28 @@ def main(argv=None) -> int:
     (out_dir / "action-records.json").write_text(
         json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    # **停止条件**的判定（工单 M12）：四类卡死检测器 + 换策略记录。
+    (out_dir / "stop-conditions.json").write_text(
+        json.dumps(
+            {
+                "detectors": list(report.detectors),
+                "strategy_changes": list(report.strategy_changes),
+                "stop_reason": report.stop_reason,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    # **交接产物**（工单 M12 AC 7）：交给人时落一份人能读懂的。
+    if report.handoff is not None:
+        (out_dir / "handoff.json").write_text(
+            json.dumps(report.handoff.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (out_dir / "handoff.txt").write_text(
+            report.handoff.to_text(), encoding="utf-8"
+        )
 
     print("========== 决策层 harness（端到端） ==========")
     print(f"目标      ：{report.goal}")
@@ -240,6 +298,20 @@ def main(argv=None) -> int:
             for name, share in telemetry_report.failure_share.items()
         )
     )
+    print("卡死检测器：")
+    for verdict in report.detectors:
+        print(
+            f"  {verdict['detector']}：命中={verdict['triggered']} "
+            f"计数={verdict['count']}｜{verdict['reason']}"
+        )
+    if report.strategy_changes:
+        print("换策略：")
+        for change in report.strategy_changes:
+            print(f"  {change['description']}")
+    if report.handoff is not None:
+        print("交接产物：")
+        for line in report.handoff.to_text().splitlines():
+            print(f"  {line}")
     print("========================================")
     return 0
 

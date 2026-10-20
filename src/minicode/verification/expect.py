@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-__all__ = ["ExpectationKind", "Expectation", "Verdict"]
+__all__ = ["ExpectationKind", "Expectation", "Verdict", "parse_expectation"]
 
 
 class ExpectationKind(StrEnum):
@@ -93,3 +93,56 @@ class Expectation:
             "enabled": self.enabled,
             "description": self.describe(),
         }
+
+
+# ---------------------------------------------------------------------------
+# 命令行写法（**唯一一处** —— 两个命令行工具共用同一套口径）
+# ---------------------------------------------------------------------------
+
+#: ``state:`` 第三段里表示「**可用**」的写法（中英文都认）。
+_ENABLED_WORDS = ("可用", "enabled", "true", "on")
+
+#: ``state:`` 第三段里表示「**不可用**」的写法。
+_DISABLED_WORDS = ("不可用", "disabled", "false", "off")
+
+#: ``text:`` 第三段里表示「**消失**」的写法。
+_GONE_WORDS = ("消失", "disappear", "gone", "absent")
+
+
+def parse_expectation(text: str) -> Expectation | None:
+    """把命令行上的期望写法解析成 :class:`Expectation`（**唯一一处**）。
+
+    写法：
+
+    * ``state:<控件名>[:可用|不可用]`` —— 那个控件**变成**该状态
+      （第三段缺省是「**不可用**」，与工单 M11 AC 1 的例子一致）；
+    * ``text:<文本>[:消失]`` —— 那段文本**出现**（第三段写「消失」就是**消失**）。
+
+    空串 → ``None``（没有期望）。
+    写法看不懂 → 抛 :class:`ValueError`（**不猜**）。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    parts = [part.strip() for part in raw.split(":", 2)]
+    head = parts[0].lower()
+    if head == "state" and len(parts) >= 2:
+        want = (parts[2] if len(parts) > 2 else "不可用").lower()
+        if want in _ENABLED_WORDS:
+            enabled = True
+        elif want in _DISABLED_WORDS:
+            enabled = False
+        else:
+            raise ValueError(
+                f"state 的第三段只能是「可用」或「不可用」，收到 {parts[2]!r}"
+            )
+        return Expectation(ExpectationKind.STATE_CHANGE, parts[1], enabled=enabled)
+    if head == "text" and len(parts) >= 2:
+        gone = len(parts) > 2 and parts[2].lower() in _GONE_WORDS
+        return Expectation(
+            ExpectationKind.TEXT_DISAPPEARS if gone else ExpectationKind.TEXT_APPEARS,
+            parts[1],
+        )
+    raise ValueError(
+        f"看不懂的期望写法：{raw!r}（例：state:保存:不可用 / text:已保存）"
+    )

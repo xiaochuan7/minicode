@@ -317,6 +317,9 @@ class PortShapeTest(unittest.TestCase):
                 # 工单 M11：**期望**（动作之后应当成立的状态）与**决策段耗时**。
                 # 两个都是**加字段**（既有实现照旧能用），不改已有字段的含义。
                 "expectation",
+                # 工单 M12：**目标级期望**（用户对整个目标写的一句期望）。
+                # 同样是**加字段**，默认 ``None`` = 行为与从前一致。
+                "goal_expectation",
                 "decision_ms",
             ],
         )

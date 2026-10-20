@@ -68,6 +68,7 @@ from .ports import (
     InputInjector,
     LocateRequest,
     LocateResult,
+    SecureDesktopDetector,
     SelectionEcho,
     VisualAdmission,
     VisualAdmissionPort,
@@ -150,6 +151,16 @@ class SeamRequest:
     #: **期望**（工单 M11）：动作之后应当成立、可被确定性验证的状态。
     #: 没有期望时走**默认校验**（界面无变化检测）。
     expectation: Expectation | None = None
+    #: **目标级期望**（工单 M12）：用户对**整个目标**写的一句期望。
+    #:
+    #: 它与 :attr:`expectation`（**单步断言**）不是一回事：
+    #:
+    #: * 单步断言不成立 → **这一步失败**（错误码 ``expectation_failed``）；
+    #: * 目标级期望不成立 → **这一步照样成功**（那是「还没到」，
+    #:   归反思层管），**成立则任务达成**（harness 据此停止）。
+    #:
+    #: ⚠️ 两者只给一个：单步断言优先（它更具体）。
+    goal_expectation: Expectation | None = None
     #: **决策段耗时**（毫秒）。缝自己不知道决策层有多慢 ——
     #: 决策层把这一段的耗时告诉缝，缝把它记进追踪记录与动作记录
     #: （三段耗时必须齐全，架构决策备忘 §2.5 ③）。
@@ -226,6 +237,7 @@ class ActionExecutionSeam:
         visual_locator: VisualLocator | None = None,
         zoom_locator: ZoomLocator | None = None,
         verifier: Verifier | None = None,
+        secure_desktop: SecureDesktopDetector | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         #: 缝内唯一的抓屏入口（整屏 / 区域）。
@@ -243,6 +255,7 @@ class ActionExecutionSeam:
             timing=timing,
             double_click_params=double_click_params,
             screenshot_port=self._capture_port,
+            secure_desktop=secure_desktop,
         )
         self.trace_sink = trace_sink
         self.capture_to_physical_scale = float(capture_to_physical_scale)
@@ -277,6 +290,9 @@ class ActionExecutionSeam:
         #: 有期望 → 断言期望；没有期望 → 默认校验（界面无变化检测）。
         #: 缺省 = 不做校验（这一层是**可选**的）。
         self.verifier = verifier
+        #: **提权 / 安全桌面检测端口**（C-07，工单 M12 AC 6）。给了它，
+        #: 执行器在**注入之前**先问一次：在安全桌面上就**零动作下发**、交人。
+        self.secure_desktop = secure_desktop
 
     # ------------------------------------------------------------------
     # 主流程
@@ -532,10 +548,12 @@ class ActionExecutionSeam:
         failures = {name: None for name in FAILURE_FIELDS}
         if not result.ok and result.error_code is not None:
             failures["execute"] = result.error_code.value
-        if verification is not None and verification.failed:
+        if verification is not None and verification.failed and request.expectation is not None:
             # **期望断言失败** → 归「执行失败」（它在「执行+校验」这一段里没达成目标）。
             # ⚠️ 「界面无变化」**不是**失败：没有期望时的默认校验只给信号
             # （无变化 ≠ 失败 —— 对已置位控件再点一次就属于那种）。
+            # ⚠️ **目标级期望**（工单 M12）不成立**不算这一步失败**：
+            # 它说的是「整个目标还没到」，归反思层管；成立则任务达成。
             failures["execute"] = ErrorCode.EXPECTATION_FAILED.value
             result = replace(
                 result,
@@ -854,9 +872,12 @@ class ActionExecutionSeam:
         """拼出**校验请求**（动作前后共用同一份）。
 
         没接校验端口时也照样拼（调用方自己判断要不要用）。
+
+        断言用哪一条期望：**单步断言优先**，没有才用**目标级期望**
+        （工单 M12）—— 两者语义不同，见 :attr:`SeamRequest.goal_expectation`。
         """
         return VerifyRequest(
-            expectation=request.expectation,
+            expectation=request.expectation or request.goal_expectation,
             baseline_frame=frame,
             landing_point=final_point,
             window_handle=selected.window_handle if selected else None,

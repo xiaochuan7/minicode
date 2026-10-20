@@ -75,35 +75,15 @@ def _parse_args(argv):
 def _expectation(text: str | None):
     """把命令行上的期望写法解析成 :class:`~minicode.verification.expect.Expectation`。
 
-    写法：
-
-    * ``state:<控件名>:不可用`` —— 那个按钮**变成不可用**（工单 AC 1 的例子）；
-    * ``state:<控件名>:可用``；
-    * ``text:<文本>`` —— 那段文本**出现**；
-    * ``text:<文本>:消失`` —— 那段文本**消失**。
+    ⚠️ **写法只有一份**（`minicode.verification.expect.parse_expectation`）——
+    两个命令行工具（这里与决策层）共用同一套口径，不各写一遍。
     """
-    from minicode.verification.expect import Expectation, ExpectationKind
+    from minicode.verification.expect import parse_expectation
 
-    if not text or not text.strip():
-        return None
-    parts = [part.strip() for part in text.split(":", 2)]
-    kind = parts[0]
-    if kind == "state" and len(parts) >= 2:
-        want = parts[2] if len(parts) > 2 else "不可用"
-        return Expectation(
-            ExpectationKind.STATE_CHANGE,
-            parts[1],
-            enabled=want in ("可用", "enabled", "true"),
-        )
-    if kind == "text" and len(parts) >= 2:
-        gone = len(parts) > 2 and parts[2] in ("消失", "disappear", "gone")
-        return Expectation(
-            ExpectationKind.TEXT_DISAPPEARS if gone else ExpectationKind.TEXT_APPEARS,
-            parts[1],
-        )
-    raise SystemExit(
-        f"看不懂的期望写法：{text!r}（例：state:保存:不可用 / text:已保存）"
-    )
+    try:
+        return parse_expectation(text or "")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _find_window(class_name: str) -> int:
@@ -136,6 +116,7 @@ def _run(args) -> int:
     from minicode.action.windows import (
         WindowsCaptureSource,
         WindowsInputInjector,
+        WindowsSecureDesktopDetector,
         WindowsWindowController,
         current_virtual_desktop,
     )
@@ -177,6 +158,8 @@ def _run(args) -> int:
         invoker=WindowsElementInvoker(port),
         anchor=anchor,
         verifier=_verifier(args, port, anchor),
+        # **提权 / 安全桌面检测**（C-07）：在安全桌面上就**零动作下发**、交人。
+        secure_desktop=WindowsSecureDesktopDetector(),
     )
     result = seam.run(
         SeamRequest(

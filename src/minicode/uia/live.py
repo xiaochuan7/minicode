@@ -142,6 +142,7 @@ def _run(args) -> int:
     from minicode.action.windows import (
         WindowsCaptureSource,
         WindowsInputInjector,
+        WindowsSecureDesktopDetector,
         WindowsWindowController,
         current_virtual_desktop,
     )
@@ -230,6 +231,8 @@ def _run(args) -> int:
         anchor=anchor,
         visual_admission=effective_admission,
         visual_locator=grounder,
+        # **提权 / 安全桌面检测**（C-07）：在安全桌面上就**零动作下发**、交人。
+        secure_desktop=WindowsSecureDesktopDetector(),
     )
     request = SeamRequest(
         target_description=args.target,
