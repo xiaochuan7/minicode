@@ -391,7 +391,7 @@ ADR 文件名按 `ADR-FORMAT.md` 的约定（`docs/adr/0001-*.md` 这样的编�
 - `docs/research/01-架构决策备忘.md` —— §2.6 检查项表 C-01~C-16 是验收标准的来源
 - `AGENTS.md`、`docs/agents/` —— 仓库约定（议题跟踪器、分诊标签、领域文档怎么用）
 
-**发布方式：本地双写 + 联网后补发（当前无网络）。**
+**发布方式：本地双写 + 联网后补发（当前是本地开发模式，本轮不发 Issue）。**
 1. **本地真值来源**：每张工单写成仓库内一个文件 **`docs/tickets/M<N>-<slug>.md`**（tracked，要提交）。正文照抄技能的 issue 模板，字段一字不改，三个小节依次是：`## What to build` / `## Acceptance criteria` / `## Blocked by`。
    文件顶部再加一行元信息：`M<N> | <标题> | Blocked by: M<a>, M<b> | Status: ready-for-agent`。
    **编号从 M0 开始，按就绪边顺序**（没有阻塞的先编号）。
