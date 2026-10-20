@@ -119,6 +119,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             continue
         lines.append("")
         lines.append(f"## {task['task_id']} {task['title']}")
+        if task.get("note"):
+            lines.append("")
+            lines.append(f"> ⚠️ {task['note']}")
         lines.append("")
         lines.append("| 步 | 通道 | 失败类型 | 三类失败 | 期望 | 三段耗时（定位/决策/执行+校验） | 落点偏差 |")
         lines.append("|---|---|---|---|---|---|---|")

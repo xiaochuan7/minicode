@@ -91,6 +91,11 @@ class StepOutcome:
     truth_source: str = ""
     #: 这一步的补充说明（回源重抓、退化、人工代确认…）。
     note: str = ""
+    #: 这一步是**按停止条件**结束的（**不是失败**）——
+    #: 例如「检测到模态弹窗 → 零动作下发并交人」（工单 M15 的 WX-3）。
+    #: 这种一步**没有动作下发**、**期望没被判**（它压根没往下走），
+    #: 判定时**不算它失败**。
+    stopped: bool = False
 
     @property
     def expectation_held(self) -> bool:
@@ -120,6 +125,7 @@ class StepOutcome:
             ),
             "truth_source": self.truth_source,
             "note": self.note,
+            "stopped": self.stopped,
         }
 
 
@@ -170,6 +176,8 @@ class TaskOutcome:
     manual: Mapping[str, Any] = field(default_factory=dict)
     #: **交接产物**（M12）：多步任务被停止条件打断时交出去的那一份。
     handoff: Mapping[str, Any] | None = None
+    #: 这张票的口径说明（工单级；报告里带出去）。
+    note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -183,6 +191,7 @@ class TaskOutcome:
             "handoff": dict(self.handoff) if self.handoff is not None else None,
             "steps": [step.to_dict() for step in self.steps],
             "clauses": [clause.to_dict() for clause in self.clauses],
+            "note": self.note,
         }
 
 
@@ -262,10 +271,13 @@ class TaskRunner:
         for step in task.steps:
             outcome = self.executor.execute(step)
             steps.append(outcome)
-            if not outcome.ok:
-                break
+            #: **先读停止条件，再判失败** —— 一步可能**按停止条件结束**
+            #: （模态弹窗 → 零动作下发并交人，工单 M15 的 WX-3）：
+            #: 那种一步的 ``ok`` 是假，**但它的交接产物要交出去**。
             stopped = self.executor.stop_reason()
             if stopped:
+                break
+            if not outcome.ok:
                 break
 
         context = dict(self.executor.task_context())
@@ -289,6 +301,7 @@ class TaskRunner:
             steps=tuple(steps),
             clauses=clauses,
             handoff=self.executor.handoff() if stopped else None,
+            note=task.note,
         )
 
     def _pending_human(self, task: Task, manual_steps: Sequence[str]) -> TaskOutcome:
@@ -337,6 +350,10 @@ def _verdict(
     """
     reasons: list[str] = []
     for step in steps:
+        if step.stopped:
+            # **按停止条件结束的一步不算失败**（模态弹窗 → 零动作下发、交人，
+            # 这正是那张票要的行为；工单 M15 的 WX-3）。
+            continue
         if not step.ok:
             reasons.append(
                 f"{step.step_id} 动作失败（{step.error_code or '（无错误码）'}）："

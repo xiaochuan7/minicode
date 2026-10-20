@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from minicode.action.ports import WindowAnchor
 from minicode.capability import Availability
@@ -44,6 +44,12 @@ class CapabilityEntry:
     reason: str = ""
     #: 探测时见到的 UIA ClassName（去重）。
     class_names: tuple[str, ...] = ()
+    #: **探测了几次**（第一次 + 退避重试）。
+    probe_attempts: int = 1
+    #: **试了几次解门控**。
+    unblock_attempts: int = 0
+    #: **第一次读有没有树**（假 = 一开始就被门控住了）。
+    first_probe_has_tree: bool = True
 
 
 class CapabilityTable:
@@ -100,15 +106,28 @@ class CapabilityTable:
         """树未就绪 → **先激活窗口并做指数退避重试**，再判定不可用。
 
         「第一次读不到」**不等于**「不支持」（工单 M3 AC 9）。
+
+        ⚠️ 重试的**次数**记在条目里（``probe_attempts`` / ``unblock_attempts``）——
+        「先解开 + 退避重试」这条口径要能被**读出来**（工单 M15 的 WX-1）。
         """
         outcome = UnblockOutcome.NOT_APPLICABLE
+        probes = 1
+        unblocks = 0
         for attempt in range(self._max_retries):
             self._sleeper(self._backoff_s * (2**attempt))
             if self._unblocker is not None:
                 outcome = self._unblocker.unblock(anchor)
+                unblocks += 1
             assessment = self._probe.assess(anchor)
+            probes += 1
             if assessment.has_tree:
-                return self._verdict(anchor, assessment)
+                entry = self._verdict(anchor, assessment)
+                return replace(
+                    entry,
+                    probe_attempts=probes,
+                    unblock_attempts=unblocks,
+                    first_probe_has_tree=False,
+                )
         reason = (
             "gated-unlock-failed"
             if outcome is UnblockOutcome.FAILED
@@ -119,6 +138,9 @@ class CapabilityTable:
             version=anchor.version,
             availability=Availability.UNAVAILABLE,
             reason=reason,
+            probe_attempts=probes,
+            unblock_attempts=unblocks,
+            first_probe_has_tree=False,
         )
 
     def _verdict(self, anchor: WindowAnchor, assessment: TreeAssessment) -> CapabilityEntry:

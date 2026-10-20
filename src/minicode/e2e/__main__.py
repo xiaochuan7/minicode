@@ -1,8 +1,9 @@
-"""**端到端评测台**（工单 M14）：跑第一波的六张票并出报告。
+"""**端到端评测台**（工单 M14 + M15）：跑第一波与第二波的工单并出报告。
 
 ```powershell
 $env:PYTHONPATH="src"
-python -m minicode.e2e --tasks W-1,W-3 --out runs/m14 --ticket M14
+python -m minicode.e2e --wave 1 --tasks W-1,W-3 --out runs/m14 --ticket M14
+python -m minicode.e2e --wave 2 --out runs/m15 --ticket M15
 ```
 
 ⚠️ **动真机**（点真桌面、开真浏览器）—— 必须先按 AGENTS.md 拿
@@ -20,9 +21,18 @@ from minicode.lock import acquire, release
 
 from .report import build_report, render_markdown
 from .runner import TaskRunner
-from .wave1 import WAVE1_TASKS, task_by_id
+from .wave1 import WAVE1_TASKS
+from .wave1 import task_by_id as wave1_task_by_id
+from .wave2 import WAVE2_TASKS
+from .wave2 import task_by_id as wave2_task_by_id
 
 __all__ = ["main"]
+
+#: 每一波的工单与标题。
+WAVES = {
+    "1": (WAVE1_TASKS, wave1_task_by_id, "端到端任务第一波（Windows 设置 + Chrome）"),
+    "2": (WAVE2_TASKS, wave2_task_by_id, "端到端任务第二波（微信 + DSH/Tabbit + cc-switch）"),
+}
 
 
 def _parse_size(text: str) -> tuple[int, int]:
@@ -42,12 +52,18 @@ def _parse_truth(text: str) -> tuple[str, tuple[int, int]]:
 def _parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="minicode.e2e",
-        description="端到端评测台（工单 M14）：Windows 设置 + Chrome 第一波",
+        description="端到端评测台（工单 M14/M15）",
+    )
+    parser.add_argument(
+        "--wave",
+        default="1",
+        choices=("1", "2"),
+        help="跑哪一波：1 = Windows 设置 + Chrome（M14）；2 = 微信 + DSH/Tabbit + cc-switch（M15）",
     )
     parser.add_argument(
         "--tasks",
         default="",
-        help="要跑的工单编号（逗号分隔，如 W-1,W-3）；缺省 = 全部六张",
+        help="要跑的工单编号（逗号分隔，如 W-1,W-3）；缺省 = 本波全部",
     )
     parser.add_argument("--out", default="runs/m14", help="报告落盘目录")
     parser.add_argument("--ticket", default="M14", help="本轮票号（写进真机占用锁）")
@@ -89,19 +105,45 @@ def _parse_args(argv):
     return parser.parse_args(argv)
 
 
-def _executor_for(task, args):
+def _executor_for(task, args, page):
     """按应用挑执行器。"""
+    from .apps import (
+        CcSwitchExecutor,
+        CrossAppExecutor,
+        ElectronExecutor,
+        WeChatExecutor,
+    )
     from .real import ChromeExecutor, WindowsDesktopExecutor
 
+    truth_overrides = dict(_parse_truth(item) for item in args.truth)
+    native_common = {
+        "out_dir": args.out,
+        "gate_mode": args.gate_mode,
+        "bypass_admission": args.bypass_admission,
+        "model_input": _parse_size(args.model_input),
+        "truth_overrides": truth_overrides,
+    }
     if task.app == "Chrome":
         return ChromeExecutor(out_dir=args.out)
-    return WindowsDesktopExecutor(
-        out_dir=args.out,
-        gate_mode=args.gate_mode,
-        bypass_admission=args.bypass_admission,
-        model_input=_parse_size(args.model_input),
-        truth_overrides=dict(_parse_truth(item) for item in args.truth),
-    )
+    if task.app == "微信":
+        return WeChatExecutor(
+            **native_common,
+            #: WX-3 要验的是「模态弹窗在场时的行为」→ 评测台**自己造一个**
+            #: 真模态（微信自己的弹窗是人工代确认步骤，本轮不自动制造）。
+            create_modal=task.id == "WX-3",
+            #: WX-3 不需要会话列表（它验的是弹窗那一条）；
+            #: 别的票需要 → 微信停在登录界面时如实记跳过。
+            require_chat_list=task.id != "WX-3",
+        )
+    if task.app == "cc-switch":
+        return CcSwitchExecutor(**native_common)
+    if task.app == "cc-switch → 浏览器":
+        native = CcSwitchExecutor(**native_common)
+        browser = ElectronExecutor(out_dir=args.out, url=page.url if page else "")
+        return CrossAppExecutor(native, browser)
+    if task.app == "DSH/Tabbit":
+        return ElectronExecutor(out_dir=args.out, url=page.url if page else "")
+    return WindowsDesktopExecutor(**native_common)
 
 
 def _load_manual(path: str) -> dict[str, dict]:
@@ -119,22 +161,45 @@ def _load_manual(path: str) -> dict[str, dict]:
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
+    tasks_all, lookup, title = WAVES[args.wave]
     wanted = [item.strip() for item in args.tasks.split(",") if item.strip()]
-    tasks = [task_by_id(item) for item in wanted] if wanted else list(WAVE1_TASKS)
+    tasks = [lookup(item) for item in wanted] if wanted else list(tasks_all)
     manual_results = _load_manual(args.manual)
+
+    #: **本地验证页**（第二波用；第一波不起）。
+    page = None
+    if args.wave == "2":
+        from .apps import VerificationPage, read_ccswitch_providers
+
+        #: 页面上的「当前配置」= **cc-switch 当前生效的那个条目**
+        #: （CC-3 的「依赖该配置的页面」—— 页面真的依赖那个配置）。
+        def _current_provider() -> str:
+            for provider in read_ccswitch_providers():
+                if provider.get("is_current"):
+                    return str(provider.get("name") or "")
+            return ""
+
+        page = VerificationPage(provider=_current_provider)
+        blocked = page.start()
+        if blocked:
+            print(f"本地验证页没起来：{blocked}")
+            return 2
 
     holds_lock = acquire(args.ticket)
     try:
         outcomes = []
         for task in tasks:
             print(f"=== {task.id} {task.title} ===")
-            executor = _executor_for(task, args)
+            executor = _executor_for(task, args, page)
             try:
                 outcome = TaskRunner(executor, manual_results=manual_results).run(task)
             finally:
                 close = getattr(executor, "close", None)
                 if close is not None:
                     close()
+                modal = getattr(executor, "close_modal", None)
+                if modal is not None:
+                    modal()
             outcomes.append(outcome)
             print(f"判定：{outcome.verdict}｜{outcome.reason or '（通过）'}")
             for step in outcome.steps:
@@ -156,10 +221,18 @@ def main(argv=None) -> int:
                 )
             for clause in outcome.clauses:
                 print(f"  {'✓' if clause.ok else '✗'} {clause.id} {clause.description}：{clause.detail}")
+            #: **改了人家配置要还回去**（cc-switch 的供应商切换）。
+            restore = getattr(executor, "restore", None)
+            if restore is not None:
+                note = restore()
+                if note:
+                    print(f"⚠️ 还原失败：{note}")
+                else:
+                    print("已把 cc-switch 的配置还原成原来的那个")
 
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
-        report = build_report(outcomes, title="端到端任务第一波（Windows 设置 + Chrome）")
+        report = build_report(outcomes, title=title)
         (out_dir / "e2e-report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -180,6 +253,8 @@ def main(argv=None) -> int:
     finally:
         if holds_lock:
             release()
+        if page is not None:
+            page.stop()
 
 
 if __name__ == "__main__":  # pragma: no cover

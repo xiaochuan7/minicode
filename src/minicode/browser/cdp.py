@@ -28,6 +28,7 @@ __all__ = [
     "ChromiumPage",
     "ChromiumCapabilityProbe",
     "find_browser_window",
+    "find_browser_window_by_pid",
     "window_rect",
     "PLAYWRIGHT_REQUIRED",
 ]
@@ -108,6 +109,36 @@ def find_browser_window(title_contains: str) -> int:
             user32.GetWindowTextW(hwnd, title, 512)
             if title_contains and title_contains in title.value:
                 found.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(_callback, 0)
+    return found[0] if found else 0
+
+
+def find_browser_window_by_pid(pids: set[int]) -> int:
+    """按**进程**找浏览器窗口（找不到返回 0）。
+
+    ⚠️ **为什么不能只按标题找**（本机实测，2026-10-21）：
+    ``find_browser_window`` 认的是「类名是 Chromium 系 + 标题里有片段」——
+    本机同时跑着 DeepSeek Harness（Electron，类名同样是 ``Chrome_WidgetWin_1``）
+    与用户自己的浏览器实例，按标题挑会**挑到别人的窗口**，
+    拿回来的矩形还是错的（比例算出来 0.04 / 2.017 这种离谱值）。
+
+    按 **PID** 认就只有一个解：刚由评测台起的那几个进程。
+    """
+    user32 = _user32()
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def _callback(hwnd, _lparam):
+        cls = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, cls, 256)
+        if not cls.value.startswith(_WINDOW_CLASS_PREFIX):
+            return True
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if int(pid.value) in pids:
+            found.append(int(hwnd))
         return True
 
     user32.EnumWindows(_callback, 0)

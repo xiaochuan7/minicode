@@ -38,6 +38,7 @@ from minicode.reflection.stop import STOP_EXPECTATION_MET, STOP_REASON_TEXT, Sto
 
 from .runner import StepOutcome
 from .tasks import Step
+from .visual import VisualChannel
 
 __all__ = ["WindowsDesktopExecutor", "ChromeExecutor"]
 
@@ -49,7 +50,7 @@ MAX_STEPS_BEFORE_STOP = 8
 _SCALE_PATTERN = re.compile(r"(\d{2,3})\s*%")
 
 #: 找窗口时用的可见窗口枚举。
-def _find_window_by_title(title: str) -> int:
+def find_window_by_title(title: str) -> int:
     """按**标题**找可见窗口（找不到返回 0）。"""
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     found: list[int] = []
@@ -66,7 +67,7 @@ def _find_window_by_title(title: str) -> int:
     return found[0] if found else 0
 
 
-def _find_window_by_class(class_name: str) -> int:
+def find_window_by_class(class_name: str) -> int:
     """按**类名**找可见窗口（找不到返回 0）。"""
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     found: list[int] = []
@@ -81,6 +82,16 @@ def _find_window_by_class(class_name: str) -> int:
 
     user32.EnumWindows(_callback, 0)
     return found[0] if found else 0
+
+
+def window_title_of(hwnd: int) -> str:
+    """窗口标题（读不到就是空串 —— 不假装）。"""
+    if not hwnd:
+        return ""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    buf = ctypes.create_unicode_buffer(512)
+    length = user32.GetWindowTextW(wintypes.HWND(int(hwnd)), buf, 512)
+    return buf.value[:length] if length > 0 else ""
 
 
 @dataclass
@@ -112,11 +123,16 @@ class WindowsDesktopExecutor:
         self.truth_overrides = dict(truth_overrides or {})
         self._wiring: dict[str, _Wiring] = {}
         self._context: dict[str, Any] = {}
-        self._grounder = None
         #: 上一步给的落点（放大那一类：放大的答案就是点击位置）。
         self._last_landing: tuple[int, int] | None = None
-        self._admission = None
-        self._calib: dict[str, Any] = {}
+        #: **视觉通道的接线**（标定 / 准入门 / 两级 grounding / 放大）——
+        #: M14 与 M15 共用这一处（标定与准入门不许有两个来源）。
+        self._visual = VisualChannel(
+            out_dir=self.out_dir,
+            gate_mode=gate_mode,
+            bypass_admission=bypass_admission,
+            model_input=model_input,
+        )
         #: **停止条件 + 卡死检测器 + 熔断**（工单 M12）：端到端评测的步循环
         #: 也归它管（撞到停止条件就停下来，并交出**交接产物**）。
         self._policy = StopPolicy(max_rounds=MAX_STEPS_BEFORE_STOP)
@@ -127,7 +143,7 @@ class WindowsDesktopExecutor:
         """环境自检。返回**空串** = 就绪；非空 = 环境不可达的原因。"""
         from minicode.exec import dpi  # noqa: F401  (导入即声明 PMv2)
 
-        if not _find_window_by_title("设置"):
+        if not find_window_by_title("设置"):
             return "环境不可达：Windows 设置没开（找不到标题为「设置」的可见窗口）"
         self._ensure_wiring("settings")
         self._reset_to_home()
@@ -488,11 +504,11 @@ class WindowsDesktopExecutor:
         from minicode.verification.layer import VerificationLayer
 
         if window == "taskbar":
-            hwnd = _find_window_by_class("Shell_TrayWnd")
+            hwnd = find_window_by_class("Shell_TrayWnd")
             if not hwnd:
                 raise RuntimeError("找不到任务栏窗口（Shell_TrayWnd）")
         else:
-            hwnd = _find_window_by_title("设置")
+            hwnd = find_window_by_title("设置")
             if not hwnd:
                 raise RuntimeError("找不到标题为「设置」的窗口")
         anchor = describe_window(hwnd)
@@ -516,9 +532,9 @@ class WindowsDesktopExecutor:
             trace_sink=MultiTraceSink(sink, self._policy),
             locator=UiaChannel(query=port, capability=table),
             anchor=anchor,
-            visual_admission=self._admission_port(),
-            visual_locator=self._visual_locator(),
-            zoom_locator=self._zoom_locator(),
+            visual_admission=self._visual.admission_port(),
+            visual_locator=self._visual.locator(),
+            zoom_locator=self._visual.zoom_locator(),
             verifier=verifier,
             secure_desktop=WindowsSecureDesktopDetector(),
         )
@@ -527,120 +543,12 @@ class WindowsDesktopExecutor:
         if window == "settings":
             self._context["capability"] = entry.availability.value
             self._context["capability_reason"] = entry.reason
+        #: 标定的读数进上下文（报告里读得到）。
+        self._context.update(self._visual.context)
         return wiring
 
-    # -- 视觉通道 ---------------------------------------------------------
 
-    def _run_calibration(self):
-        """标定（真调模型）+ 准入判定。**只跑一次**。"""
-        if self._calib:
-            return self._calib
-        from minicode.calib.calibrate import CalibrationProbe
-        from minicode.calib.probe import default_probe_spec
-        from minicode.exec import dpi
-        from minicode.model.client import ModelClient
-        from minicode.model.config import load_config
-        from minicode.model.request_log import JsonlRequestLog
-
-        config = load_config()
-        client = ModelClient(config, JsonlRequestLog(self.out_dir / "model-requests.jsonl"))
-        width, height = dpi.physical_screen_size()
-        probe = CalibrationProbe(
-            client,
-            spec=default_probe_spec(width, height),
-            model_input_size=self.model_input,
-            call_path="image",
-            model_id=config.model,
-        )
-        outcome = probe.run()
-        best = outcome.candidate(outcome.detected_scale)
-        self._calib = {
-            "outcome": outcome,
-            "best": best,
-            "client": client,
-            "scale": outcome.detected_scale,
-            "width": width,
-            "height": height,
-        }
-        self._context["calibration"] = {
-            "scale": outcome.detected_scale.value,
-            "scale_verdict": outcome.scale_verdict,
-            "max_error_px": round(best.max_error_px, 2),
-            "ok": outcome.calibration_ok,
-            "model_input": list(self.model_input),
-        }
-        return self._calib
-    def _admission_port(self):
-        """视觉通道的准入判定端口（生产口径 = 准入门说了算）。"""
-        from minicode.calib.admission import CalibrationAdmission
-
-        calibration = self._run_calibration()
-        real = CalibrationAdmission(calibration["outcome"])
-        if not self.bypass_admission:
-            return real
-        return _BypassAdmission(real)
-
-    def _visual_locator(self):
-        """两级 grounding（视觉通道）。"""
-        if self._grounder is not None:
-            return self._grounder
-        from minicode.ground.channel import TwoStageGrounder
-
-        calibration = self._run_calibration()
-        self._grounder = TwoStageGrounder(
-            calibration["client"],
-            scale=calibration["scale"],
-            model_input_size=self.model_input,
-            full_screen_size=(calibration["width"], calibration["height"]),
-            gate_mode=self.gate_mode,
-        )
-        return self._grounder
-
-    def _zoom_locator(self):
-        """放大通道（回源重抓 + 模型报整屏坐标）。"""
-        from minicode.ground.zoom import zoom_locate
-
-        calibration = self._run_calibration()
-        client = calibration["client"]
-        scale = calibration["scale"]
-        model_input = self.model_input
-
-        class _ZoomLocator:
-            def locate(self, request):
-                return zoom_locate(
-                    client,
-                    request,
-                    scale=scale,
-                    model_input_size=model_input,
-                )
-
-        return _ZoomLocator()
-
-
-class _BypassAdmission:
-    """**测量口径**：绕过准入门（真实判定照样记在上下文里）。"""
-
-    def __init__(self, real):
-        self.real = real
-
-    def admit(self):
-        from minicode.action.ports import VisualAdmission
-
-        verdict = self.real.admit()
-        return VisualAdmission(
-            available=True,
-            reason=(
-                f"⚠️ 测量口径：绕过准入门（真实判定："
-                f"{'可用' if verdict.available else '不可用'} —— {verdict.reason}）"
-            ),
-            scale=verdict.scale,
-            scale_verdict=verdict.scale_verdict,
-            landing_equivalence=verdict.landing_equivalence,
-            equivalent_scales=verdict.equivalent_scales,
-        )
-
-
-class _PageObserver:
+class PageObserver:
     """浏览器那一路的**定点观察**（页面结构快照里按名字查）。
 
     校验层要判「状态 / 存在性」就得**再读一次**页面结构 ——
@@ -829,7 +737,7 @@ class ChromeExecutor:
             # **校验层**：期望要有人判 —— 否则每一步都是「判不了」。
             verifier=VerificationLayer(
                 screenshot_port=CapturePort([WindowsCaptureSource()]),
-                observer=_PageObserver(self._source),
+                observer=PageObserver(self._source),
             ),
         )
         before = len(self._sink.traces)
@@ -915,3 +823,4 @@ class ChromeExecutor:
     def _focused_value(self) -> str:
         snapshot = self._source.snapshot()
         return snapshot.focused_value or ""
+

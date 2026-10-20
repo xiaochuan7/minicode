@@ -109,11 +109,16 @@ def build_handoff(
     reason_text: str = "",
     strategy_changes: Sequence[Any] = (),
     api_calls: Sequence[Any] = (),
+    window_title: str = "",
 ) -> HandoffArtifact:
     """从走过的每一步的信号拼出**交接产物**。
 
     ``strategy_changes`` 可以给 :class:`~minicode.reflection.stop.StrategyChange`
     （自动取人读说法），也可以直接给字符串。
+
+    ``window_title`` —— 调用方**已经知道**当前在哪个窗口时用它
+    （比如「模态弹窗」那条路径：停下来的时候人正对着那个弹窗）。
+    缺省 = 从走过的步骤里取最后一个有标题的。
     """
     steps = list(signals)
     titles = [step.window_title for step in steps if step.window_title]
@@ -147,7 +152,7 @@ def build_handoff(
     return HandoffArtifact(
         reason=reason,
         reason_text=reason_text,
-        window_title=titles[-1] if titles else "",
+        window_title=window_title or (titles[-1] if titles else ""),
         last_action=last_action,
         sent_points=points,
         executed_actions=actions,

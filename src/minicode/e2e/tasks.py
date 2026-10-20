@@ -8,6 +8,15 @@
 1. **每一步都必须有结构断言** —— 没有期望的步骤一律拒绝建出来
    （工单 M14：「不允许只用『画面变了』当通过判据」）。
 2. **每张工单至少一步** —— 空工单没有意义。
+
+**结构断言有三种形态**（工单 M15 补的两种，都是**读应用自己说的状态**，
+不是看画面变了没有）：
+
+* :attr:`Step.expectation` —— M11 的期望（文本出现 / 消失 / 状态变化）；
+* :attr:`Step.expect_window_title` —— **窗口标题**（应用自己说的那句状态；
+  本机微信 4.1.15 的聊天内容**根本不在可访问性树里**）；
+* :attr:`Step.expect_control_value` —— **目标控件的值**（本机微信的搜索框：
+  输入之后值变了，名字没变）。
 """
 
 from __future__ import annotations
@@ -41,6 +50,22 @@ class Step:
     #: **结构断言**（这一步之后应当成立、可被确定性验证的状态）。
     #: 没有它 = 只剩「画面变了」→ **不许建出这样的步**。
     expectation: Expectation | None = None
+    #: **结构断言之二**：这一步之后**窗口标题**应当等于这个。
+    #:
+    #: ⚠️ 有些应用**内容根本不在可访问性树里**（本机微信 4.1.15 就是：
+    #: 聊天区、会话输入框都不在树里，树只给外壳）—— 这时**窗口标题**
+    #: 是应用自己说的那句状态（工单 M15 的 WX-1）。
+    expect_window_title: str = ""
+    #: **结构断言之三**：这一步之后**目标控件的值**应当等于这个
+    #: （本机微信的搜索框：输入之后值变了，名字没变）。
+    expect_control_value: str = ""
+    #: **结构断言之四**：这一步之后，**任务级读数**里的这个键应当等于这个值
+    #: （``(键, 值)``；空元组 = 不判）。
+    #:
+    #: ⚠️ 有些状态**可访问性树里读不出来**（本机 cc-switch 的选中态：
+    #: 没有 Toggle / SelectionItem pattern）→ 「当前配置」的真值取
+    #: **应用自己的状态**（工单 M15 的 CC-1）。
+    expect_context: tuple[str, str] = ("", "")
     #: 控件类型提示（给定位通道缩小范围用）。
     control_type: str = ""
     #: **真值**：目标控件中心（物理像素）。给了才能算落点偏差。
@@ -60,11 +85,21 @@ class Step:
     note: str = ""
 
     def __post_init__(self) -> None:
-        if self.expectation is None:
+        if not self.has_structural_assertion:
             raise ValueError(
                 f"步骤 {self.id} 没有结构断言："
                 "不允许只用「画面变了」当通过判据（工单 M14 验收标准）"
             )
+
+    @property
+    def has_structural_assertion(self) -> bool:
+        """这一步**至少有一条结构断言**吗。"""
+        return bool(
+            self.expectation is not None
+            or self.expect_window_title
+            or self.expect_control_value
+            or self.expect_context[0]
+        )
 
 
 @dataclass(frozen=True)
@@ -93,12 +128,15 @@ class Task:
     human_confirm: bool = False
     #: 静态已知的跳过原因（环境不可达）。非空 = 这张票直接记 ``skip``。
     skip_reason: str = ""
+    #: **这张票的口径说明**（人读；报告里带出去）。
+    #: 例：「本轮跑在评测台自带的本地验证页上，DSH Web GUI 本体没驱动」。
+    note: str = ""
 
     def __post_init__(self) -> None:
         if not self.steps:
             raise ValueError(f"工单 {self.id} 一步都没有")
         for step in self.steps:
-            if step.expectation is None:
+            if not step.has_structural_assertion:
                 raise ValueError(
                     f"工单 {self.id} 的步骤 {step.id} 没有结构断言："
                     "不允许只用「画面变了」当通过判据（工单 M14 验收标准）"

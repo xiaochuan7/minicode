@@ -50,6 +50,7 @@ __all__ = [
     "STOP_ELEVATED",
     "STOP_STRATEGY_EXHAUSTED",
     "STOP_DANGEROUS_ACTION",
+    "STOP_MODAL_DIALOG",
     "STOP_REASONS",
     "STOP_REASON_TEXT",
     "STRATEGY_CROP_SIZE",
@@ -104,6 +105,8 @@ STOP_ELEVATED = "elevated"
 STOP_STRATEGY_EXHAUSTED = "strategy_exhausted"
 #: 停止原因：**危险动作被拦下**（要人工确认；工单 M12 AC 8 / AC 9）。
 STOP_DANGEROUS_ACTION = "dangerous_action"
+#: 停止原因：**检测到模态弹窗**（零动作下发、交人；工单 M15 的 WX-3）。
+STOP_MODAL_DIALOG = "modal_dialog"
 
 #: 全部停止原因（报告里能读到的取值集合）。
 STOP_REASONS = (
@@ -113,6 +116,7 @@ STOP_REASONS = (
     STOP_ELEVATED,
     STOP_STRATEGY_EXHAUSTED,
     STOP_DANGEROUS_ACTION,
+    STOP_MODAL_DIALOG,
 )
 
 #: 停止原因的人读说法（交接产物与报告里用）。
@@ -123,6 +127,7 @@ STOP_REASON_TEXT = {
     STOP_ELEVATED: "检测到提权 / 安全桌面，零动作下发并交给人",
     STOP_STRATEGY_EXHAUSTED: "换策略的阶梯用尽（还是没进展），交给人",
     STOP_DANGEROUS_ACTION: "遇到危险动作（发消息 / 支付 / 删除这类），交给人确认",
+    STOP_MODAL_DIALOG: "检测到模态弹窗，零动作下发并交给人",
 }
 
 # ---------------------------------------------------------------------------
