@@ -1,6 +1,5 @@
 # minicode — Matt Pocock 技能包全流程提示词包（去密钥版）
-
-> **本文件不含任何密钥**（真实值在 .env，已被 .gitignore 排除）。带密钥的本地版在 PROMPTS.md（同样 gitignore）。
+> **本文件不含任何密钥**（真实值在 `.env`，已被 .gitignore 排除）。带密钥的本地版在 `PROMPTS.md`（同样 gitignore）。节点 0 已在建仓时完成（见 git 历史 `b70dc0b` / `3c49100`），当前进度见 `docs/00-现状.md`。
 
 > 用途：在一个**全新的 DSH 会话**里，从零把 minicode 建起来。每个节点一条提示词，直接复制粘贴。
 > 约定：每条提示词都在 `C:\Users\22197\Desktop\minicode` 作为工作目录下发出。
@@ -11,6 +10,31 @@
 
 ---
 
+## ⛔ 当前运行模式：本地优先（无 VPN 不推送）
+
+> **现状（2026-10-20 实测）**：这台机器到 `github.com:443` 的路由不通。节点 0 推送时**前 9 次全部失败**，第 10 次是用户开了 VPN 才成功。
+> **所以从现在起，整个流程按"本地优先"跑。**
+
+| 动作 | 现在怎么做 |
+|---|---|
+| **本地 `git commit`** | ✅ **每个可验证的小块都提交**——进度在 git 里，不在上下文里 |
+| **`git push`** | ⛔ **延后**。除非用户明确说"VPN 开了 / 可以推了"，否则一律不推 |
+| **push 失败** | **最多重试 1 次**；再失败就当作网络问题**立刻跳过，继续本地工作**。不要等、不要重试到没完没了 |
+| **`gh issue create` / `gh api`** | ⛔ 同样延后（也要走网络）。需要发到 GitHub 的东西**先在本地留一份真值副本**（见节点 2 / 3 的"双写"约定） |
+| **报告怎么写** | `已本地提交 <sha>，待推送` + 列出本地领先远端的 commit 列表 |
+
+**任务完成的判据是本地状态正确，不是远端同步。** 任何时候都不许因为"推不上去"而中断任务、卡住、或反复重试。
+用户开了 VPN 后说一句"可以推了"，再一次性 `git push`（本地领先的所有 commit 一次推完）。
+
+**每个节点结束时的收尾动作固定为**：
+
+1. `git status -sb` 看一眼
+2. 本地 `git add -A && git commit`（commit message 用中文）
+3. `git log --oneline origin/main..HEAD` 列出待推送的 commit
+4. 报告里写清"本地已提交 N 个 commit，待推送"
+
+**`gh` 不在 PATH**：`C:\Program Files\GitHub CLI\gh.exe`（已 keyring 登录 xiaochuan7）。裸敲 `gh` 会报"无法识别"。
+用全路径：`& "$env:ProgramFiles\GitHub CLI\gh.exe" ...`。
 ## 已实测验证（2026-10-20，本机真跑）
 
 ### 模型接入配方（踩过坑，照抄）
@@ -85,7 +109,22 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 
 **⑦ 调研边界（诚实声明）**：Jedi / AnyClick / ConClick / Seg2Click / Groma / OS-Atlas 因网络不通**未 clone 成功**，其"无 crop/zoom"是方法知识推断而非读源码；AutoFocus / GUI-Lens / MHVF 连 arXiv 页面都没取到。Anthropic 官方文档页因跨域重定向读不到，但其 SDK 类型 docstring 是读源码得到的（权威性更高）。
 
-### 还没测的（留给实施阶段）
+### 节点 0 复跑（2026-10-20，在 minicode 仓库内重跑）
+
+| 项目 | 结果 |
+|---|---|
+| `coord` 单测 | **Ran 50 tests / OK** |
+| `exec` 自检 | **5 PASS / 0 FAIL / 0 SKIP**（DPI PMv2 生效、`sizeof(INPUT)=40`、截图 2560×1600、UIA 命中任务栏、点击时序达标） |
+| `verify/test_01` | HTTP 200 / 文本 1.65s + 图像 10.97s / **输出最大值 900.00 → 0~1000 归一化** / 平均误差 **0.2 px** |
+| `verify/test_02` 真实桌面 | 目标「开始」(67×72px)，UIA 真值中心 (1049.5, 1564.0)：**L0 整屏 7.6 px → L1 crop 0.8 px**，判定命中 |
+| `verify/test_03` 延迟 | `effort=low` 比默认快（1568 宽 16.68s vs 19.31s）；`thinking disabled` → **HTTP 400** |
+
+**本轮新增的三条事实（上一轮没测到）**：
+
+1. **默认 effort（=max）在 `max_tokens=1200` 时，思考链会把预算吃光 → 模型根本不返回 JSON**。三个"默认"档全部解析失败，只有 `effort=low` 档正常返回坐标。
+   → **动作步必须显式 `output_config:{"effort":"low"}`，且 `max_tokens` 要给思考链留够余量**，否则模型"HTTP 200 成功"了但你拿不到坐标。
+2. **`reasoning_effort: "low"` 是无效参数**——被忽略，行为与默认一致（本轮 21.38s，反而最慢）。
+3. **同一目标的 L0 误差在 3.4~7.6 px 之间浮动**（两轮）→ **单次数字不能当验收线**，验收必须用一组目标的分布。
 
 - 真实**小图标**（≤16px）的定位精度（本次目标是 67×72px 的开始按钮，太大）
 - **UWP/WinUI 应用**（Windows 设置无 UIA 树，纯视觉路径）上的表现
@@ -154,68 +193,26 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
   1. crop 精定位**必须从原始物理分辨率截图裁**，不能从降采样后的图裁
   2. crop 精定位**必须门控**（实测无条件做整体 −0.3pp：Text −2.3 / Mobile −5.2）
   3. **UIA 树原文进模型上下文前必须脱敏**（czdcode 实测从微信草稿捞到过 API key）
-- 首批目标应用：Chrome（BOSS直聘页）、微信、Windows 设置（UWP/WinUI，**无 UIA 树，只能走视觉**）、DSH / Tabbit（Electron）、cc-switch
+- 首批目标应用（**已定，别再问用户**）：**Windows 设置**（UWP/WinUI，**无 UIA 树，只能走视觉** → 视觉兜底层的活体测试）→ **Chrome**（BOSS直聘页，扁平 DOM）→ **微信**（UIA 可用但有弹窗门控）→ **DSH / Tabbit**（Electron）→ **cc-switch**
 - **Issue tracker：GitHub Issues（原生）** —— 仓库 https://github.com/xiaochuan7/minicode （private，main 分支）；`gh` CLI v2.102.0 已装并已认证（keyring，账号 xiaochuan7）；5 个 triage 标签已建好；**`/repos/.../issues/{n}/sub_issues` 端点实测 200 → 可用原生阻塞关系**
+  - ⚠️ **`gh` 不在 PATH**，用全路径 `C:\Program Files\GitHub CLI\gh.exe`（或 `& "$env:ProgramFiles\GitHub CLI\gh.exe"`）
+  - ⚠️ **当前连不上 github.com（没开 VPN）**：`gh issue create` / `git push` 会失败 → GitHub 动作一律延后，**本地留真值副本**（见「本地优先」一节）
 - 调研底稿位置：`docs/research/`（架构备忘 + 方案排名 + 10 份调研底稿）
 - 已验证原型位置：`src/minicode/coord/`（50 单测全绿）、`src/minicode/exec/`（本机自检 5 PASS / 0 FAIL）、`src/minicode/verify/`（4 个实测脚本）
 
 ---
 
-## 节点 0 — 物理脚手架（不用技能，纯指令）
+## 节点 0 — 物理脚手架 ✅ **已完成 2026-10-20，HEAD = `e4d1830`**
 
-```
-在 C:\Users\22197\Desktop\minicode 做一次性脚手架准备，做完停下等我确认，不要开始写业务代码。
-
-**工作方式：这一节点单干，不要建团队、不要开 workflow、不要开 ralph。** 复制文件、装依赖、跑测试是顺序任务，派并发只会更慢更乱。
-
-背景：这里要从零建一个 Windows 桌面 computer-use agent。架构已定稿（方案 B：拼装现成骨架 + 自建两个缺口）。调研底稿和三个已在本机验证过的原型/脚本都在别的目录，这一步把它们搬进来当起点——不要重写它们。
-
-请做：
-1. **git 与远端我已经全部就绪**：仓库 https://github.com/xiaochuan7/minicode （private）、分支 main（已 push 且跟踪 origin/main）、user.name=xiaochuan7、user.email=2219783254cf@gmail.com、`gh` CLI 已认证。你只要 `git status -sb` 确认干净即可，**不要重新 init、不要改 remote**。
-2. 复制已验证资产进 src/（保留全部测试与 README，不要重写、不要改逻辑）：
-   - C:\Users\22197\Desktop\gui-cu\proto\coord\   → src/minicode/coord/
-   - C:\Users\22197\Desktop\gui-cu\proto\exec\    → src/minicode/exec/
-   - C:\Users\22197\Desktop\gui-cu\proto\verify\  → src/minicode/verify/
-3. 复制文档进 docs/research/：
-   - C:\Users\22197\Desktop\gui-cu\docs\01-架构决策备忘.md
-   - C:\Users\22197\Desktop\gui-cu\docs\02-方案全景与双打分排名.md
-   - C:\Users\22197\Desktop\gui-cu\docs\03-选型决策与推荐.md
-   - C:\Users\22197\Desktop\DSH-work\research\01~10 全部 → docs/research/bottom-drafts/
-4. **`.env` 我已经写好了，不要覆盖、不要回显里面的 key。** 它已包含：
-     MINICODE_ANTHROPIC_BASE_URL=https://opencode.ai/zen/go
-     MINICODE_ANTHROPIC_API_KEY=<你的 OPENCODE_GO_API_KEY>
-     MINICODE_MODEL=minimax-m3.1-flash-free
-     MINICODE_SESSION_ID=dsh-union-alpha
-     MINICODE_HTTP_USER_AGENT=opencode/1.0.0
-     MINICODE_HTTP_CLIENT=cli
-     （另有空的百炼/zen 备用项，主线不用）
-   你的任务只是**校验**这三项存在且值正确（MODEL / BASE_URL / SESSION_ID），并确认 `.gitignore` 已排除 `.env`。
-   **读 .env 时不要把 key 打印到终端或写进任何提交的文件。**
-
-   GitHub 相关（也已经配好，**不要再问我要 token**）：
-     账号 xiaochuan7 / 仓库 https://github.com/xiaochuan7/minicode （private）
-     GITHUB_TOKEN=<你的 GITHUB_TOKEN>
-     `gh` CLI v2.102.0 已装（`C:\Program Files\GitHub CLI\gh.exe`，已在机器 PATH），已 `gh auth login`（keyring，账号 xiaochuan7）
-     5 个 triage 标签已建：needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix
-     `sub_issues` 端点实测 200 → 阻塞关系用原生 sub-issue
-   **token 也不要打印到终端或写进任何提交的文件**（`.env` 已有 `GH_TOKEN` / `GITHUB_TOKEN` 两项）。
-5. 写 pyproject.toml：requires-python >= 3.11；dev 依赖 ruff + pytest；core 依赖标注为可选（core 必须只靠标准库可跑，Pillow/numpy/httpx 按需）
-6. 把「已实测验证」写进 docs/01-现状.md，务必包含这三条（都是本机跑出来的，别写成推测）：
-   - 接入配方与三个坑：① 必须带 user-agent: opencode/1.0.0 + x-opencode-client: cli，否则 Cloudflare 1010；② free 模型只能走 /zen/go，走 /zen 会 FreeTierError；③ thinking 关不掉（400），只能用 output_config.effort=low 降延迟（10.6s → 5.9s）
-   - 坐标量纲实测是 0~1000；真实桌面两级 grounding：L0 3.4px → L1 2.3px（目标「开始」按钮，UIA 真值对照）
-   - 还没测的：小图标(≤16px)、UWP 纯视觉路径、同名歧义、中文输入
-7. 验证搬进来的东西仍然通过：
-   cd src/minicode/coord && python -m unittest test_coordinates
-   cd ../exec && python selftest.py
-   cd ../verify && python test_01_text_and_probe.py     ← 这个会真的调 API（.env 里已有 key）
-   把**实际输出**贴给我。第 7 步如果失败就停下报告，**不要自己造 key、不要改模型 id**。
-8. 提交并推送：`git add -A && git commit -m "chore: 脚手架（搬入原型与底稿、建 pyproject、实测通过）" && git push`。**确认 .env 没有被 add 进去**（.gitignore 已挡，但你要 `git status` 看一眼 staged 清单）。
-8. 再写一份 docs/00-现状.md：机器参数、方案 B 组成、坐标契约、三条红线、首批目标应用、三个原型的位置与测试状态。
-
-汇报后停下。
-```
-
-**这一节点在教什么**：`setup-matt-pocock-skills` 只管"仓库的配置与文档布局"，不管"把已有的东西搬进来"。从零项目最容易犯的错是先写代码后补配置。这里反过来——**先把已知正确的资产放进去，再让技能包去配置仓库**。第 7 步尤其重要：**让新会话自己跑一遍实测脚本**，它才知道这些数字是真的、不是文档里抄的。
+> **不用再跑了。** 当时的原文已归档在 git 历史里（\70dc0b\ / c49100\）。实际产出见 `docs/00-现状.md`、`docs/01-现状.md`、`docs/research/`。
+>
+> **新会话直接继承这些结论，不要重新讨论、也不要重新验证**：
+>
+> - 原型已搬进 `src/minicode/{coord,exec,verify}`，**冻结不改**（ruff 对这三个目录整体豁免）
+> - **`verify` 脚本读的是 `~/.dsh/.credentials.yaml` 的 `OPENCODE_GO_API_KEY`，不是仓库 `.env`** → 必须有张工单把模型客户端统一到读 `.env`
+> - 底稿只搬了架构备忘「证据出处」表登记的那 **11 份**（`docs/research/bottom-drafts/`）；`DSH-work/research/` 下同号的其他文件属**八字择日**与 **DSH 移动端**两套无关调研，**没搬、也不要用**
+> - **首批目标应用已定**（见「机器与架构前提」），**脚手架不拆分**（不 force push，已推送的历史不动）
+> - `mss 10.2.0` / `ruff 0.17.1` / `pytest 9.1.1` 已装进默认 Python 3.11.5，`python selftest.py` 可直接跑
 
 ---
 
@@ -228,19 +225,24 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 
 这是 minicode——一个 Windows 桌面 computer-use agent 的新仓库，目标是控制鼠标键盘操作 GUI 应用。
 
-请先读 docs/01-现状.md 和 docs/research/01-架构决策备忘.md 的第 0 节和第 9 节，了解项目是什么，再执行 setup。
+请先读 docs/00-现状.md、docs/01-现状.md 和 docs/research/01-架构决策备忘.md 的第 0 节和第 9 节，了解项目是什么，再执行 setup。
 
 我已知的信息（供你判断，不要重复问我）：
-- issue tracker：选 **GitHub Issues**。仓库 https://github.com/xiaochuan7/minicode 已建好（private），`gh` CLI v2.102.0 已装并已认证（账号 xiaochuan7，keyring），5 个 triage 标签已建好，`gh issue create` 可直接用。**`sub_issues` 端点实测 200，所以阻塞关系用 GitHub 原生 sub-issue 表达。** 记录时把「PRs as a request surface」保持关闭。，工单放 .scratch/<feature-slug>/issues/<NN>-<slug>.md。理由：这是从零的新项目、还没有 GitHub remote，先不引入 gh 认证和远程依赖。将来要切 GitHub 时重跑这个技能即可。
-- triage 标签：**用默认五个**（needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix），不要覆盖——这五个标签**我已经在仓库里建好了**，你只需确认存在。
+- issue tracker：选 **GitHub Issues**。仓库 https://github.com/xiaochuan7/minicode 已建好（private），`gh` CLI v2.102.0 已装并已认证（账号 xiaochuan7，keyring），5 个 triage 标签已建好（needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix），**`sub_issues` 端点实测 200，所以阻塞关系用 GitHub 原生 sub-issue 表达**。记录时把「PRs as a request surface」保持关闭。
+  - ⚠️ **`gh` 不在 PATH**，要调就用全路径 `& "$env:ProgramFiles\GitHub CLI\gh.exe" ...`。
+  - ⚠️ **当前这台机器连不上 github.com（没开 VPN）**。所以**这一轮不要执行任何 `gh issue` / `gh api` 调用**——技能流程里凡是"发布到 issue tracker"的步骤，**这一轮一律跳过**，并在报告里写明"待网络恢复后补发"。setup 本身只写仓库内的配置文件，不依赖网络，照常做。
+- triage 标签：**用默认五个**，不要覆盖——这五个**我已经在仓库里建好了**，你只需确认存在。
 - domain docs：**single-context** —— 根目录一个 CONTEXT.md + docs/adr/。
 - 仓库根没有 CLAUDE.md 也没有 AGENTS.md：按技能规则应该问我要建哪个。请问我。
 - 项目是单包 Python，不是 monorepo。
+- 首批目标应用**已经定了**，不用再问：Windows 设置 → Chrome（BOSS直聘页）→ 微信 → DSH / Tabbit（Electron）→ cc-switch。
 
 请按技能流程执行：探索 → 分节问我（每节带推荐答案）→ 给我看草稿 → 确认后写入。
+
+写入完成后：**本地 `git add -A && git commit`（commit message 用中文）**，**不要 push**（当前无网络；等我说"可以推了"再推）。报告里附上 `git log --oneline origin/main..HEAD`。
 ```
 
-**这一节点在教什么**：`setup` 技能是**一次性的、prompt-driven 的**，不是脚本。它会先探索仓库再分节问你，每节都带推荐答案让你一个词就能接受。三个决策（issue tracker / triage 标签 / domain docs）不是随便选的——它们决定了后面 `to-spec`、`to-tickets`、`triage` 这几个技能往哪儿写、读什么。**选 local markdown 的代价**：没有远程协作、没有 PR 作为请求面；**收益**：零认证、零远程依赖、可以先跑通全流程。
+**这一节点在教什么**：`setup` 技能是**一次性的、prompt-driven 的**，不是脚本。它会先探索仓库再分节问你，每节都带推荐答案让你一个词就能接受。三个决策（issue tracker / triage 标签 / domain docs）不是随便选的——它们决定了后面 `to-spec`、`to-tickets`、`triage` 这几个技能往哪儿写、读什么。**选 GitHub Issues 的代价**：要装 `gh`、要认证、离线时发不了 issue（所以本项目额外约定"本地留真值副本 + 联网后补发"）；**收益**：原生 sub-issue 阻塞边、PR 作为请求面、多个会话/多个 agent 共享同一份工单池——这正是 tracer-bullet 工单流需要的。
 
 ---
 
@@ -252,18 +254,24 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 这是 minicode——Windows 桌面 computer-use agent。规格要覆盖**整个产品**，不只第一个里程碑。
 
 不要访谈我，直接综合下面的材料产出 spec：
-- docs/01-现状.md（含本机实测的接入配方与实测数字）
+- docs/00-现状.md（现状总览：机器参数、方案 B 组成、坐标契约、三条红线）
+- docs/01-现状.md（**本机实测**的接入配方与实测数字、还没测的四项边界）
 - docs/research/01-架构决策备忘.md（完整的技术方案、坐标协议、动作协议、检查项 C-01~C-16）
 - docs/research/03-选型决策与推荐.md（方案 B 的组成、三个候选方案、为什么不选另外两个）
 - docs/research/02-方案全景与双打分排名.md（59 个方案的双打分，用来解释选型理由）
-- docs/research/bottom-drafts/ 下的 10 份调研底稿（事实与出处来源）
+- docs/research/bottom-drafts/ 下的 11 份底稿（01-czdcode-review / 02-coordinate-systems / 03-gui-agent-landscape / 04-windows-stack / 05-api-cost / 06-action-protocol / 07-继承清单 / 08-文档复核 / 09-zoom开源实现调研 / 10-anthropic-zoom源码细节 / dom-vs-pixel-2026）
 - src/minicode/coord/、src/minicode/exec/、src/minicode/verify/（已通过测试的原型与实测脚本）
 
-**工作方式：可以用团队并行核对底稿，但只在下面这个切法下用。** 底稿有 8~10 份，可按四块切开各派一个 agent 核对：**①坐标协议与 crop 精定位（底稿 02 + 09 + 10）②Windows 栈 / DPI / UIA（底稿 04）③方案格局与选型（底稿 03）④API 成本与模型接入（底稿 05）**。每个 agent 回报"这一块里哪些结论能进 spec、哪些不能进（附底稿行号）"，**由主会话合并成一份 spec**。
+**发布方式：双写（重要）。**
+1. 先把 spec 正文写到仓库内 **`docs/spec.md`**——这是**本地真值来源**，要提交。
+2. **当前机器连不上 github.com（没开 VPN）**，所以**这一轮不要执行 `gh issue create`**。等我说"可以推了 / 可以发 issue 了"，再把同一份 spec 发成 GitHub Issue 并打 `ready-for-agent` 标签，并把对应的 Issue 号记到 `docs/spec.md` 顶部。
+3. 报告里写清"spec 已写入 docs/spec.md，待网络恢复后发布为 Issue"。
+
+**工作方式：可以用团队并行核对底稿，但只在下面这个切法下用。** 底稿有 11 份，可按四块切开各派一个 agent 核对：**①坐标协议与 crop 精定位（底稿 02 + 09 + 10 + dom-vs-pixel-2026）②Windows 栈 / DPI / UIA（底稿 04）③方案格局与选型（底稿 03 + 01）④API 成本与模型接入（底稿 05）**。每个 agent 回报"这一块里哪些结论能进 spec、哪些不能进（附底稿行号）"，**由主会话合并成一份 spec**。
 - 派之前先 `list_agents` 查占用，**成员数不要超过当前上限**（`maxMembers`）。
 - 派 3~4 个就够，**不要为了"并行"而并行**——如果四块里有一块内容很少，就只派三个。
 - **不要开 ralph**：写 spec 是综合判断，不是反复验证。
-- **如果这一轮明显做不完**（底稿多、要核对的地方多），先 `create_goal` 把目标设成「产出符合本规范的 spec 并发布到 GitHub Issue」，让会话跨自动续跑轮次接着走，别停在半路。（`update_goal` 的 `blocked` 需要同一条件连续 3 轮才允许，"还没干完"不算。）
+- **如果这一轮明显做不完**（底稿多、要核对的地方多），先 `create_goal` 把目标设成「产出符合本规范的 spec 并写入 docs/spec.md」，让会话跨自动续跑轮次接着走，别停在半路。（`update_goal` 的 `blocked` 需要同一条件连续 3 轮才允许，"还没干完"不算。）
 - 如果你判断这次综合根本不需要并行（底稿已经读过），**就单干**，别为了用工具而用工具。
 
 写 spec 前，按技能流程的第 2 步先向我确认**测试缝（seams）**。我的倾向是：唯一的缝在「动作执行层」——即"给定一个目标描述与一帧截图，产出坐标与动作"这一层，测试全部打在这一层；Windows 相关的部分用注入式假实现（假截图源、假 UIA 树、假 SendInput、假模型响应），让整套逻辑**不需要真桌面、不需要 API key 就能测**。请就这个缝的位置跟我确认。
@@ -277,13 +285,14 @@ spec 要点（务必覆盖）：
   · crop 必须从原始物理分辨率图裁
   · crop 精定位必须门控（引 CCF 实测 −0.3pp）
   · UIA 树脱敏必须在所有通道之前
-  · 模型接入的三个坑（Cloudflare 1010 / FreeTierError / thinking 关不掉）
-  · 延迟预算：每步 UIA 命中 0 成本；视觉兜底单次约 5.9s（effort=low）
+  · 模型接入的三个坑（Cloudflare 1010 / FreeTierError / thinking 关不掉）+ **第 4 条：默认 effort 会吃光 max_tokens 导致无 JSON 输出，动作步必须显式 effort=low**
+  · **模型客户端统一读仓库 `.env`**（原型现在读的是 `~/.dsh/.credentials.yaml`，要改）
+  · 延迟预算：每步 UIA 命中 0 成本；视觉兜底单次约 5.9~16.7s（effort=low，图片越大越慢）
   · 三条硬红线
 - Testing Decisions 写明"只测外部行为"的标准、哪些模块被测、已有先例（coord 的 50 个 unittest、exec 的 selftest、verify 的 4 个实测脚本就是要复用的先例）
 - Out of Scope 明确写：UAC Secure Desktop 控制、全盘录制回放、自研 grounding 模型、跨平台（仅 Windows）、多显示器热插拔
 
-按技能要求把 spec 发布到 issue tracker 并打 ready-for-agent 标签。
+写完后：**本地 `git add -A && git commit`（中文 message）**，**不要 push**。汇报后停下。
 ```
 
 **这一节点在教什么**：`to-spec` 的 description 明确写着 **"no interview, just synthesis of what you've already discussed"**——它就是为你这种"已经讨论透了、只想沉淀成文档"的场景设计的。所以提示词的重点不是"告诉我你要做什么"，而是**把材料的地图指给它，并规定产出里必须包含哪些决策**。注意它会先问你测试缝在哪——**这个问题的答案是整个项目质量的决定点**：缝定高了，测试就测实现细节；缝定低了，Windows 依赖让 CI 跑不起来。
@@ -306,10 +315,12 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 - **缝（seam）**：本项目里唯一的那个测试缝正式叫什么
 - **动作（action）**：click / type / scroll / drag / inspect / execute_code 各自的边界
 - **思考预算（effort）**：本项目里 effort 各档用在哪（动作步 low / 规划步 high）
+- **真值来源（source of truth）**：本地工单文件 `docs/tickets/` 与 GitHub Issue 谁是权威、坐标换算链路的唯一真值在哪
 
 以及这些不可逆决策（应为 ADR）：
 - 语言选 Python 而非 TypeScript（理由：UFO² 是 Python、UIA 绑定只有 Python 成熟、三个原型已在 Python）
-- issue tracker 选 local markdown
+- **issue tracker 选 GitHub Issues（原生 sub-issue 阻塞边），不是 local markdown**
+- **工单真值来源选本地 `docs/tickets/` 文件（离线可写可读），GitHub Issue 作为联网后的镜像**
 - 坐标系契约选"crop 内坐标 + 偏移"而非 Anthropic 的"整屏坐标"（理由：实测 MiniMax M3.1 用 0~1000 且未被训练过 Anthropic 契约）
 - 决策层用"代码执行 harness"而非"逐条吐 action"（理由：OpenGCUA 消融 +15.5~33.6 分、步数 −55~63%）
 - 架构主线选"结构优先、视觉兜底"而非"视觉优先"
@@ -326,7 +337,12 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 ```
 /to-tickets
 
-把刚才的 spec 拆成 tracer-bullet 工单，发布到 **GitHub Issues**（仓库 xiaochuan7/minicode）。用 `gh issue create`，标题前缀 `M<N> `，正文写「What to build / Acceptance criteria / Blocked by」。**阻塞关系用 GitHub 原生 sub-issue**（`gh api -X POST repos/xiaochuan7/minicode/issues/<父号>/sub_issues -f sub_issue_id=<子号>`），因为 `sub_issues` 端点实测可用。**先建阻塞者再建被阻塞者**，编号顺序即依赖顺序。每个工单打 `ready-for-agent` 标签。
+把刚才的 spec 拆成 tracer-bullet 工单。
+
+**发布方式：本地双写 + 联网后补发（当前无网络）。**
+1. **本地真值来源**：每张工单写成仓库内一个文件 **`docs/tickets/M<N>-<slug>.md`**（tracked，要提交）。正文写「What to build / Acceptance criteria / Blocked by」。**编号从 M0 开始，按就绪边顺序**（没有阻塞的先编号）。文件顶部写一行元信息：`M<N> | <标题> | Blocked by: M<a>, M<b>`。
+2. **GitHub 是镜像，不是真值**：等我说"可以发 issue 了"，再用 `gh issue create`（全路径 `& "$env:ProgramFiles\GitHub CLI\gh.exe" issue create ...`）把同一份内容发成 Issue、标题前缀 `M<N> `、打 `ready-for-agent` 标签，并用 `gh api -X POST repos/xiaochuan7/minicode/issues/<父号>/sub_issues -f sub_issue_id=<子号>` 挂上原生阻塞边（**先建阻塞者再建被阻塞者**）。发完把 Issue 号回填到本地文件顶部。
+3. **本轮不要执行任何 `gh` 命令**（github.com 连不上，跑了就是白等）。
 
 关键约束（务必遵守）：
 1. **每张工单必须是可独立验证的垂直切片**——不是"实现 L1 层"这种水平切片。理想是一张工单就能 demo。
@@ -345,9 +361,10 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
    - M2 决策层：代码执行 harness + expect 校验 + 反思
    - M3 泛化：4 个目标应用跑通多步任务
    - **UIA 脱敏器放在 M1 一起做**（不是后置）：czdcode 实测从微信输入框的 UIA 树里捞到过 API key，而本架构明确要把 UIA 树送进模型上下文；成本只是一个正则 + 一个单测 + 密码框 Value 替换，不做等于拿已知会发生的事故去赌
+   - **模型客户端统一读仓库 `.env`** 放进 M0/M1（原型现在读 `~/.dsh/.credentials.yaml`，仓库 `.env` 目前是摆设）
    - **后置**：危险动作审批、动作日志回放、MCP 对外暴露、隐私策略
-8. **模型客户端工单必须包含那三个坑的回归测试**：① 不带 user-agent + x-opencode-client → 期望 Cloudflare 1010；② 走 /zen → 期望 FreeTierError；③ thinking disabled → 期望 400。这三个都要有测试，否则换网关就会静默失败。
-9. 首批目标应用按这个顺序推进：**Windows 设置**（UWP，完全无 UIA 树 → 强制走视觉，是视觉兜底层的活体测试）→ **Chrome**（有扁平 DOM 树）→ **微信**（UIA 可用但有弹窗门控）→ **DSH / Tabbit**（Electron）。
+8. **模型客户端工单必须包含那四个坑的回归测试**：① 不带 user-agent + x-opencode-client → 期望 Cloudflare 1010；② 走 /zen → 期望 FreeTierError；③ thinking disabled → 期望 400；④ **默认 effort → 期望"无 JSON 输出"**（思考链吃光 max_tokens）。这四个都要有测试，否则换网关就会静默失败。
+9. **首批目标应用按这个顺序推进（已定，别再问）**：**Windows 设置**（UWP，完全无 UIA 树 → 强制走视觉，是视觉兜底层的活体测试）→ **Chrome**（BOSS直聘页，扁平 DOM）→ **微信**（UIA 可用但有弹窗门控）→ **DSH / Tabbit**（Electron）→ **cc-switch**。
 10. **不要用宽重构**去切分；如果某步只能横向铺开（UIA 封装层、动作协议层），按 expand–contract 排成三张工单。
 11. **M0 的原型已经存在**：`src/minicode/exec/` 已经实现这一层的绝大部分（本机 5 PASS / 0 FAIL），工单是"把它组装成可运行的最小闭环并补上缺失的接线"，不是"从零实现"。
 
@@ -356,12 +373,13 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 - 切片的数量就是团队规模，**不要超过切片数**（8~12 张工单就派 8~12 个；更多就分波）。
 - 合并时要**统一坐标口径与红线**（第 5、6 条），不能让各 agent 各写一套。
 - **不要开 ralph**：工单拆分是一次性综合判断，不是收敛问题。
-- **如果这一轮明显做不完**，先 `create_goal` 把目标设成「产出工单清单并等用户批准后发布到 GitHub Issues」，让会话跨自动续跑轮次接着走。
+- **如果这一轮明显做不完**，先 `create_goal` 把目标设成「产出工单清单并等用户批准后写入 docs/tickets/」，让会话跨自动续跑轮次接着走。
 
-按技能流程第 4 步，先把工单清单（编号 / 标题 / 阻塞边 / 交付什么）列给我，问粒度对不对、阻塞边对不对，我批准后再发布。
+按技能流程第 4 步，先把工单清单（编号 / 标题 / 阻塞边 / 交付什么）列给我，问粒度对不对、阻塞边对不对，我批准后再写入 `docs/tickets/`。
+写完：**本地 `git add -A && git commit`（中文 message）**，**不要 push**。汇报后停下。
 ```
 
-**这一节点在教什么**：`to-tickets` 的核心是 **tracer bullet（曳光弹）**——每张工单切一条窄但完整的路径，单独就能演示。它还强制一个**编号即依赖序**的约定：本地 tracker 下没有原生的 blocking link，所以靠编号和 "Blocked by" 字段表达依赖，**阻塞者必须排在前面**。第 4 步它一定要你批准清单才发布——**这个批准点是全流程里最值钱的一次人工干预**，因为切错了粒度，后面每张工单都会受影响。
+**这一节点在教什么**：`to-tickets` 的核心是 **tracer bullet（曳光弹）**——每张工单切一条窄但完整的路径，单独就能演示。GitHub Issues 有原生 blocking link（`sub_issues` 端点实测 200），所以阻塞边最终是**机器可读**的；但离线期先靠本地文件顶部的 `Blocked by` 行表达，联网后再镜像成原生关系。**编号即依赖序**这个约定在两边都成立：**阻塞者必须排在前面**。第 4 步它一定要你批准清单才发布——**这个批准点是全流程里最值钱的一次人工干预**，因为切错了粒度，后面每张工单都会受影响。
 
 ---
 
@@ -370,7 +388,7 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 ```
 /implement
 
-工单：<把工单号填这里，如 03>
+工单：**M<NN>** —— 正文在本地文件 `docs/tickets/M<NN>-<slug>.md`（这是真值来源）；若已联网发布过，同一份内容也是 GitHub Issue #<N>。
 
 ## ⛔ 开工第一件事：建立目标模式（goal）
 
@@ -397,7 +415,7 @@ create_goal(
 |---|---|---|
 | **goal** | 同一会话**跨自动续跑轮次**继续，上下文不丢 | **驱动这张工单的实现**（就是本次的目标模式） |
 | **ralph** | 每轮**换一个新代理**，只做审核/验证 | 收尾的 code-review 循环 |
-| `subagent` / `workflow` | 派出去的**可切分子块** | 确实能切开的独立调研/实现块 |
+| **subagent** / `workflow` | 派出去的**可切分子块** | 确实能切开的独立调研/实现块 |
 
 **不要用 subagent、workflow 或 ralph 去"继续 goal"**——那是续跑机制自己的职责，绕开它会丢掉连续上下文。
 
@@ -427,6 +445,7 @@ create_goal(
 背景（这个新会话没有之前的所有上下文，请先读）：
 - docs/00-现状.md 与 docs/01-现状.md（机器参数、接入配方与三个坑、方案 B、三条红线、首批目标应用、已实测数字）
 - docs/research/01-架构决策备忘.md（尤其 §1 坐标协议、§2 分层架构、§3 动作协议、§2.6 检查项表）
+- **本工单正文 `docs/tickets/M<NN>-<slug>.md`（真值来源，先读这个）**
 - 该工单引用的上游工单（Blocked by 里的那些），以及它们已经在仓库里留下的代码
 
 要求：
@@ -439,7 +458,8 @@ create_goal(
    - 目标里必须写全：审哪个分支、改动范围、输出写到哪、什么算通过——**每轮是全新代理，没有你的上下文**。
    - **审查用的 ralph 只看 diff 与文件，不许改代码**；发现问题写进报告，由你（主会话）决定要不要改。
    - **顺序不能反**：先 `update_goal` action `complete`（目标达成），**再**开 ralph 做审查。**ralph 不是用来完成目标的。**
-5. 提交到当前分支（commit message 用中文，格式：`feat(<工单号>): <一句话>`）。
+5. 提交：**本地 `git add -A && git commit`（commit message 用中文，格式：`feat(<工单号>): <一句话>`）**。
+   **不要 push**——当前机器连不上 github.com，等用户说"可以推了"再推。
 6. 汇报时列出：改了哪些模块、测试全绿输出、code-review 的结论、以及**有没有遇到与工单假设不符的现实**（这比"做完了"更重要）。
 7. 如果这张工单大到一次会话做不完（超出上下文窗口），用 `create_goal` 建立持久目标，让本会话跨自动续跑轮次接着做——**不要用 ralph 写代码**（ralph 每轮换新代理，写代码需要连续上下文）。
 
@@ -447,6 +467,7 @@ create_goal(
 - **Windows 相关的逻辑必须可测**：真实截图源/真实 UIA 树/真实 SendInput/真实模型响应都要有注入式假实现，CI 里不碰真桌面、不花钱。
 - **坐标换算链路只能有一个真值来源**，任何地方都不许出现第二份缩放或标度逻辑。
 - **模型客户端必须显式带 user-agent + x-opencode-client**，且 base URL 与模型 id 集中在配置里，禁止散落在代码中。
+- **密钥只从仓库 `.env` 读**（`MINICODE_ANTHROPIC_API_KEY` 等），不许再从 `~/.dsh/.credentials.yaml` 读，也不许硬编码。
 - 遇到与工单假设冲突的发现，**不要自己改需求**，停下来写进汇报，由我决定。
 ```
 
@@ -482,7 +503,7 @@ create_goal(
 
 **用 ralph 循环做这次审查**（用户明确要求使用 ralph 循环做审核验证）。`maxRounds` 给 3。每轮一个全新代理，**只读不写**，输出一份 `docs/reviews/<日期>-<主题>.md`。
 
-审一下当前分支相对 main 的改动，双轴审：Standards（是否符合 docs/00-现状.md 与 docs/research/01-架构决策备忘.md 里已定下的约定）和 Spec（是否符合 .scratch/minicode/issues/ 下对应工单的验收标准）。
+审一下当前分支相对 main 的改动，双轴审：Standards（是否符合 docs/00-现状.md 与 docs/research/01-架构决策备忘.md 里已定下的约定）和 Spec（是否符合 `docs/tickets/` 下对应工单的验收标准）。
 
 重点盯这几条红线有没有被绕过：
 - 坐标换算链路是否只有单一真值来源
@@ -491,6 +512,9 @@ create_goal(
 - UIA 树是否在脱敏之后才进模型上下文
 - 标定失败时视觉通道是否真的被禁用
 - 模型客户端是否带 user-agent + x-opencode-client，base URL 与 model id 是否集中配置
+- 密钥是否只从仓库 `.env` 读（不许再从 `~/.dsh/.credentials.yaml` 读、不许硬编码）
+
+审完只写报告，**不要 commit、不要 push**。
 ```
 
 ---
@@ -498,22 +522,25 @@ create_goal(
 ## 附：全流程一张图
 
 ```
-节点 0  物理脚手架（git + 搬原型/底稿 + .env.example + pyproject + 跑实测脚本）  ← 不用技能
-   ↓                                                                    【单干】
-节点 1  /setup-matt-pocock-skills   → docs/agents/ + CONTEXT.md 布局       【单干：一问一答】
+节点 0  物理脚手架   ✅ 已完成 (e4d1830)          ← 不用技能
    ↓
-节点 2  /to-spec                    → spec（GitHub Issue，标 ready-for-agent）
-   ↓                                              【可派 3~4 agent 并行核对四块底稿】
-节点 2.5 /domain-modeling            → CONTEXT.md 词汇表 + docs/adr/*.md    【单干/1~2 agent】
+节点 1  /setup-matt-pocock-skills  → docs/agents/ + CONTEXT.md 布局  【单干：一问一答】⚠️ 需要该 skill 存在
    ↓
-节点 3  /to-tickets                 → GitHub Issues + 原生 sub-issue 阻塞边
-   ↓                                              【适合派团队：每切片一个 agent】
+节点 2  /to-spec                   → docs/spec.md（本地真值）→ 联网后发 Issue  【可派 3~4 agent 核对四块底稿】
+   ↓
+节点 2.5 /domain-modeling          → CONTEXT.md 词汇表 + docs/adr/*.md   【单干/1~2 agent】
+   ↓
+节点 3  /to-tickets                → docs/tickets/M<N>-<slug>.md（本地真值）→ 联网后发 Issue + sub-issue
+   ↓                                                【适合派团队：每切片一个 agent】
 节点 4  /implement  ←── 每张工单一个【全新会话】──┐
    │  ① create_goal（目标模式，驱动跨轮次续跑）              │
    │  ② tdd 实现 → 每块 commit → goal complete               │
-   │  ③ code-review（ralph 循环,3 轮，只读）→ 改 → push       │
+   │  ③ code-review（ralph 循环,3 轮，只读）→ 改 → commit       │
    ↓                                    【主会话单干 + goal 驱动】
    └── 下一张工单（工单自包含，上下文可弃）────────┘
+
+⛔ 当前模式：本地优先——**每个节点结束都本地 commit，一律不 push**（无 VPN）。
+   联网动作（gh issue / git push）延后到用户说"可以推了"。
 
 跳过：/grill-me、/grill-with-docs（本项目已讨论透，直接进 to-spec）
 可选：/handoff（换 harness/换目录时）、/research（要再查资料时）、
@@ -525,6 +552,23 @@ workflow            → 规模化 fan-out；schema 只能用 12 个关键字；�
 ralph               → 审核/验证专用；用户必须明确要求；maxRounds 给 3~5
 goal                → 同一会话的长任务；写代码用这个，不可用 ralph
 ```
+
+---
+
+## 附：当前已定的决策（**别再问用户了**）
+
+| # | 决策 | 结论 | 依据 |
+|---|---|---|---|
+| 1 | 首批目标应用 | Windows 设置 → Chrome（BOSS直聘页）→ 微信 → DSH / Tabbit（Electron）→ cc-switch | 用户已指定；按「UIA 覆盖度差 → 扁平 DOM → UIA 可用 → Electron」排 |
+| 2 | 脚手架要不要从 `b70dc0b` 拆出来 | **不拆** | 已推送；force push 会动另一个会话的改动，收益只是 commit message 好看 |
+| 3 | 推送策略 | **本地优先**：本地 commit 必须做，push 等用户开 VPN | 实测前 9 次推送全败，第 10 次靠 VPN |
+| 4 | `gh` 调用方式 | 用**全路径** `C:\Program Files\GitHub CLI\gh.exe` | 实测不在 PATH |
+| 5 | issue tracker | **GitHub Issues**（不是 local markdown） | 仓库已建、gh 已认证、`sub_issues` 端点实测 200 |
+| 6 | 本地工单真值来源 | **`docs/tickets/M<N>-<slug>.md`** | 离线时 GitHub 发不了，本地必须有一份能读能改的 |
+| 7 | 模型客户端密钥来源 | **统一读仓库 `.env`** | 原型读的是 `~/.dsh/.credentials.yaml`，`.env` 目前是摆设 |
+| 8 | 主线模型栈 | **`minimax-m3.1-flash-free` 一个**（兼任大脑和眼睛） | 已实测；`minimax-m3` / `deepseek-v4-flash` 是纯文本，带图时瞎猜 |
+| 9 | 语言 / 架构 | **Python** / **方案 B**（拼装骨架 + 自建两级 grounding 与校验反思层） | UIA 绑定只有 Python 成熟；UFO / UI-TARS 都没有 crop 精定位层 |
+| 10 | 哪些是已知未测 | 小图标(≤16px)、UWP 纯视觉路径、同名歧义、中文输入 | 架构备忘 §9 与 `docs/01-现状.md` §4 |
 
 **最后一条纪律：这些是工具，不是流程。** 每个节点先判断「任务能不能切成互不依赖的块」——
 能切且合并成本低 → 派团队；不能切 → 单干。**setup 这种一问一答的技能派团队是负收益。**
