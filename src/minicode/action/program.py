@@ -56,6 +56,11 @@ PROGRAM_API_NAMES: frozenset[str] = frozenset(
     }
 )
 
+#: 程序编译时用的**文件名**（受控环境里程序没有真实路径）。
+#:
+#: 它是**行数计数器**的判据（只数程序自己的行，见 :class:`_LineCounter`）。
+_PROGRAM_FILENAME = "<action-program>"
+
 #: **禁止调用**的名字：系统调用、文件写入、代码执行与反射的入口。
 #:
 #: ``import`` 语句、双下划线属性访问与**含双下划线的字符串常量**由
@@ -133,7 +138,8 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
 class ProgramLimits:
     """程序执行的规模上限（默认值是工程值，不是实测值）。"""
 
-    #: 最多执行多少行（死循环的兜底）。
+    #: 最多执行多少行（死循环的兜底）。**只数程序自己的行**（见
+    #: :class:`_LineCounter`）—— 框架干了多少活不占这个预算。
     max_lines: int = 20000
     #: 标准输出 / 标准错误各最多留多少字符。
     max_output_chars: int = 8000
@@ -266,7 +272,7 @@ def run_program(
     sys.settrace(counter)
     try:
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            exec(compile(source, "<action-program>", "exec"), env, env)  # noqa: S102
+            exec(compile(source, _PROGRAM_FILENAME, "exec"), env, env)  # noqa: S102
     except _LimitExceeded as exc:
         return ProgramOutcome(
             ok=False,
@@ -315,14 +321,23 @@ class _LimitedWriter(io.TextIOBase):
 
 
 class _LineCounter:
-    """行数计数器：超过上限就中断程序。"""
+    """行数计数器：超过上限就中断程序。
 
-    def __init__(self, limit: int):
+    ⚠️ **只数程序自己的行**（编译时那个文件名）。
+    这个上限是「**模型写的那段程序**的死循环兜底」，**不是**
+    「框架这一轮干了多少活」的预算 —— 工单 M16 轮实测：把框架的行也算进去时，
+    同一段程序会**因为框架多干了点活**（多问了一次模型、多走了一遍审批）
+    而被报成「规模上限」—— 那是**静默失败**：模型背不了这个锅，
+    而且同样的输入可能这次过、下次不过。
+    """
+
+    def __init__(self, limit: int, filename: str = _PROGRAM_FILENAME):
         self._limit = int(limit)
+        self._filename = filename
         self._count = 0
 
     def __call__(self, frame, event, arg):  # noqa: ANN001 - sys.settrace 的签名
-        if event == "line":
+        if event == "line" and frame.f_code.co_filename == self._filename:
             self._count += 1
             if self._count > self._limit:
                 raise _LimitExceeded(f"执行行数超过 {self._limit} 行")

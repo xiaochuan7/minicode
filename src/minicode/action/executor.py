@@ -19,6 +19,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from minicode.approval.catalog import DangerCategory
+from minicode.approval.gate import ApprovalGate
+
 from .errors import ActionError, ErrorCode
 from .geometry import is_sentinel, rect_size
 from .ports import (
@@ -48,6 +51,7 @@ __all__ = [
     "C07_DEBT_NOTE",
     "INPUT_KINDS",
     "ELEVATION_HANDOFF_NOTE",
+    "CLIPBOARD_DENIED_NOTE",
 ]
 
 #: 对外单位是「行」，下发前按 ×50 换算到滚轮刻度（架构备忘 §2 L0 的项目约定）。
@@ -81,6 +85,11 @@ INPUT_KINDS = frozenset(
 #: ⚠️ 这条 note 落进动作记录的 ``notes`` —— 「日志里有一条『已交接给人』的记录」
 #: 由它承载（工单 M12 AC 6）。
 ELEVATION_HANDOFF_NOTE = "已交接给人：检测到提权 / 安全桌面（UAC 安全桌面截不到也点不到）"
+
+#: **读剪贴板未获批**时写进结果里的话（退化到 Unicode 注入通道）。
+CLIPBOARD_DENIED_NOTE = (
+    "剪贴板读取未获批 → 改走 Unicode 注入通道（不读、不碰用户的剪贴板）"
+)
 
 
 @dataclass(frozen=True)
@@ -145,6 +154,7 @@ class ActionExecutor:
         double_click_params: DoubleClickParams | None = None,
         screenshot_port: ScreenshotPort | None = None,
         secure_desktop: SecureDesktopDetector | None = None,
+        approval_gate: ApprovalGate | None = None,
     ):
         self.injector = injector
         self.timing = timing or TimingPolicy()
@@ -154,6 +164,10 @@ class ActionExecutor:
         #: **提权 / 安全桌面检测端口**（C-07）。给了它，执行前先问一次：
         #: 在安全桌面上就**零动作下发**、交人。缺省 = 不检测。
         self.secure_desktop = secure_desktop
+        #: **审批闸门**（工单 M16）。**永远在**（fail-closed）：没接就退到一个
+        #: **没有审批人**的闸门 —— 「读剪贴板」「提权弹窗」这两类
+        #: （它们不是动作的目标描述能看出来的）一律发不出去。
+        self.approval_gate = approval_gate or ApprovalGate()
         self._sleep = sleeper
         self._clock = clock
 
@@ -179,6 +193,19 @@ class ActionExecutor:
         if kind in INPUT_KINDS:
             elevation = self._elevation_state()
             if elevation is not None and elevation.elevated:
+                # **提权弹窗也是一类危险动作**（工单 M16 AC 1）：产生审批请求。
+                # ⚠️ 提权这一类**批了也没用**：安全桌面上的输入根本到不了目标程序
+                # （C-07）—— 所以它**零动作下发 + 交人**，审批请求只作留痕。
+                approval = self.approval_gate.check(
+                    intent="在提权 / 安全桌面上执行动作",
+                    target_description="提权弹窗",
+                    category=DangerCategory.ELEVATION,
+                )
+                notes = [ELEVATION_HANDOFF_NOTE]
+                notes.append(
+                    f"已产生审批请求（{approval.category.value if approval.category else '未知'}）："
+                    f"{approval.reason}"
+                )
                 return ActionResult(
                     ok=False,
                     error_code=ErrorCode.UAC_OR_SECURE_DESKTOP,
@@ -186,7 +213,8 @@ class ActionExecutor:
                         "检测到提权 / 安全桌面，零动作下发并交人："
                         f"{elevation.reason}"
                     ),
-                    notes=(ELEVATION_HANDOFF_NOTE,),
+                    notes=tuple(notes),
+                    approval=approval.to_dict() if approval is not None else None,
                 )
         try:
             if kind is ActionKind.CLICK:
@@ -331,6 +359,23 @@ class ActionExecutor:
             notes.append("注入通道=unicode")
             notes.append("剪贴板含非文本内容，改走 Unicode 注入通道（不碰用户的剪贴板）")
             return ActionResult(ok=True, notes=tuple(notes))
+        # -- 读剪贴板要审批（工单 M16 AC 6）--------------------------------
+        # 粘贴通道要**读**一次剪贴板内容（备份，好原样写回）。读内容这件事
+        # **要人点头**：没批就**不读**，改走 Unicode 注入通道（压根不碰剪贴板）。
+        approval = self.approval_gate.check(
+            intent="读取剪贴板内容（输入文本前的备份与恢复）",
+            target_description="剪贴板",
+            category=DangerCategory.CLIPBOARD_READ,
+        )
+        if approval.denied:
+            self.injector.type_unicode(text)
+            notes.append("注入通道=unicode")
+            notes.append(CLIPBOARD_DENIED_NOTE)
+            return ActionResult(
+                ok=True,
+                notes=tuple(notes),
+                approval=approval.to_dict(),
+            )
         backup: str | None = None
         backup_read = False
         channel = "clipboard"

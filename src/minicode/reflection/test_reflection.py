@@ -46,6 +46,8 @@ from minicode.action.records import (
     build_record,
 )
 from minicode.action.seam import ActionExecutionSeam, SeamRequest
+from minicode.approval.fakes import AutoApprover, DenyApprover
+from minicode.approval.gate import ApprovalGate
 from minicode.decision.api import ProtocolApi
 from minicode.decision.harness import DecisionHarness
 from minicode.model.client import ModelReply
@@ -190,6 +192,7 @@ def _build_seam(
     trace_sink=None,
     frame: CapturedFrame | None = None,
     verifier: bool = True,
+    approval_gate=None,
 ):
     """搭一条缝（**全假**：不碰真桌面）。"""
     clock = VirtualClock()
@@ -204,6 +207,7 @@ def _build_seam(
         trace_sink=trace_sink,
         locator=locator if locator is not None else _FakeLocator(),
         secure_desktop=detector,
+        approval_gate=approval_gate,
         verifier=(
             VerificationLayer(
                 screenshot_port=ScriptedScreenshotPort([picture]),
@@ -382,7 +386,13 @@ class RetryReversibilityTest(unittest.TestCase):
 
     def test_an_irreversible_action_is_not_retried(self):
         injector = _FlakyInjector(fail_moves=10)
-        seam, _ = _build_seam(injector=injector)
+        # 📌 **工单 M16 起**：「发送消息」是危险动作 → 闸门会问一次。
+        # 本测的是**重试策略**（不可逆动作不重试），所以闸门接一个**全都批**的审批人，
+        # 让动作真的发出去 —— 被拦下的话测的就不是重试了。
+        seam, _ = _build_seam(
+            injector=injector,
+            approval_gate=ApprovalGate(approver=AutoApprover()),
+        )
         retrying = RetryingSeam(seam, sleeper=lambda _seconds: None)
         result = retrying.run(
             SeamRequest(target_description="发送消息", action_kind=ActionKind.CLICK)
@@ -722,12 +732,18 @@ class DangerGateTest(unittest.TestCase):
 
 
 class DangerGateOnTheChainTest(unittest.TestCase):
-    """AC8 / AC 9：判据在**真实链路**上生效 —— 危险动作**不执行**，停下来交人。"""
+    """AC8 / AC 9：判据在**真实链路**上生效 —— 危险动作**不执行**，停下来交人。
+
+    📌 **工单 M16 起**：链路上换成了**审批闸门**（``minicode.approval``）——
+    M12 的 ``DangerGate`` 只判「要不要人工确认」，M16 的闸门**真的去问人**
+    （没批就零动作下发）。本测试因此改成「闸门 + 拒绝的审批人」。
+    """
 
     def _run(self, target: str):
         policy = StopPolicy(max_rounds=2)
-        seam, _ = _build_seam(trace_sink=policy)
-        api = ProtocolApi(seam=seam, locator=_FakeLocator(), danger_gate=DangerGate())
+        gate = ApprovalGate(approver=DenyApprover())
+        seam, _ = _build_seam(trace_sink=policy, approval_gate=gate)
+        api = ProtocolApi(seam=seam, locator=_FakeLocator(), approval_gate=gate)
         harness = DecisionHarness(
             caller=FakeModelClient(
                 _reply(f"```python\nclick('{target}')\n```"),
@@ -747,9 +763,10 @@ class DangerGateOnTheChainTest(unittest.TestCase):
         assert report.handoff is not None
         self.assertEqual(report.handoff.reason, "dangerous_action")
         self.assertIn("危险动作", report.handoff.to_text())
-        # **没有动作下发**（缝一次都没进）。
+        # **没有动作下发**（一个输入都没发出去）。
         self.assertEqual(report.calls[0]["ok"], False)
-        self.assertEqual(report.calls[0]["error"], "dangerous_action_requires_human")
+        self.assertEqual(report.calls[0]["error"], "approval_denied")
+        self.assertEqual(seam.injector.events, [])
 
     def test_an_ordinary_action_still_runs(self):
         report, _ = self._run("开始")

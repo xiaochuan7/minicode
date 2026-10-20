@@ -113,6 +113,14 @@ class ErrorCode(StrEnum):
     #: 重试只是白等 —— 它归「执行失败」（动作执行不了），**交人**由反思层承载。
     UAC_OR_SECURE_DESKTOP = "uac_or_secure_desktop"
 
+    # -- 审批（工单 M16）--
+    #: **审批未获批**：危险动作在执行前要人点头，人没点头（或没接审批人）→
+    #: **零动作下发**（动作压根没做），把轨迹交人。
+    #:
+    #: ⚠️ 归「执行失败」：动作执行不了（它被闸门拦下了）。
+    #: **只加不改，协议版本不升**（同 M11 的 ``expectation_failed``）。
+    APPROVAL_DENIED = "approval_denied"
+
     # -- 抓帧 --
     #: 所有捕获源都只拿到 0×0 画面。
     CAPTURE_EMPTY = "capture_empty"
@@ -187,6 +195,8 @@ FAILURE_TYPE_BY_CODE: Mapping[ErrorCode, FailureType] = {
     ErrorCode.LANDING_MISMATCH: FailureType.EXECUTION,
     #: **提权 / 安全桌面**（工单 M12，C-07）：零动作下发、交给人。
     ErrorCode.UAC_OR_SECURE_DESKTOP: FailureType.EXECUTION,
+    #: **审批未获批**（工单 M16）：危险动作被闸门拦下 → 零动作下发、交给人。
+    ErrorCode.APPROVAL_DENIED: FailureType.EXECUTION,
     #: **期望断言失败**（工单 M11）：动作做了但界面没变成期望的样子
     #: → 归「执行失败」（它在「执行+校验」这一段里没达成目标）。
     ErrorCode.EXPECTATION_FAILED: FailureType.EXECUTION,

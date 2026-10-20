@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from minicode.action.errors import ErrorCode
 from minicode.action.ports import (
     CapturedFrame,
     ControlLocator,
@@ -23,17 +24,17 @@ from minicode.action.ports import (
 from minicode.action.program import PROGRAM_API_NAMES
 from minicode.action.protocol import Action, ActionKind
 from minicode.action.seam import ActionExecutionSeam, SeamRequest
-from minicode.reflection.gate import DangerGate
+from minicode.approval.gate import ApprovalGate
+from minicode.approval.request import TargetPreview
 from minicode.verification.expect import Expectation
 
 __all__ = ["ProtocolApi", "DANGEROUS_ACTION_ERROR"]
 
-#: **危险动作被拦下**时的错误码（工单 M12 AC 8 / AC 9）。
+#: **危险动作被拦下**时的错误码（工单 M16）。
 #:
-#: ⚠️ 它**不是**协议里的错误码 —— 动作压根没下发（连缝都没进），
-#: 所以不进 :class:`~minicode.action.errors.ErrorCode`：
-#: 那是**动作协议**的错误码集合，这里是**决策层**拦下动作时说的话。
-DANGEROUS_ACTION_ERROR = "dangerous_action_requires_human"
+#: ⚠️ 它**就是动作协议的错误码**（``ErrorCode.APPROVAL_DENIED``）——
+#: 动作被闸门拦下、**零动作下发**，上层按码分流。
+DANGEROUS_ACTION_ERROR = ErrorCode.APPROVAL_DENIED.value
 
 
 class ProtocolApi:
@@ -47,7 +48,7 @@ class ProtocolApi:
         anchor: WindowAnchor | None = None,
         frame_provider: Callable[[], CapturedFrame | None] | None = None,
         goal_expectation: Expectation | None = None,
-        danger_gate: DangerGate | None = None,
+        approval_gate: ApprovalGate | None = None,
     ):
         self._seam = seam
         self._locator = locator
@@ -57,10 +58,12 @@ class ProtocolApi:
         #: 它跟着每一步走（缝去校验它），**不成立不算这一步失败**
         #: —— 成立则任务达成（由 :mod:`minicode.reflection.stop` 读出来）。
         self.goal_expectation = goal_expectation
-        #: **危险动作的放行判据**（工单 M12 AC 8）。
-        #: 给了它：命中危险词表的**动作不执行**，任务**停下来交给人**
-        #: （审批与 dry-run 是 M16 的活 —— 本单只做「检测 + 停手 + 交接」）。
-        self.danger_gate = danger_gate
+        #: **审批闸门**（工单 M16）。给了它：
+        #: * **点击 / 截图**这类走缝的动作，闸门在**缝里**问（那里才有
+        #:   dry-run 要的目标控件框、位置与截图哈希）；
+        #: * **输入文本 / 按键**不走缝，闸门在**这里**问；
+        #: 没批 → **零动作下发**，任务**停下来交给人**。
+        self.approval_gate = approval_gate or ApprovalGate()
         #: 程序每一次接口调用的记录。
         self.calls: list[dict[str, Any]] = []
         #: 程序请求交还给人了吗。
@@ -129,23 +132,6 @@ class ProtocolApi:
     def click(self, target: str) -> dict[str, Any]:
         """按目标描述定位并点击（走动作执行缝）。"""
         decision_ms = self._take_decision_ms()
-        # -- 危险动作判据（工单 M12 AC 8）--------------------------------
-        # 命中危险词表 → **不执行**，停下来交给人。
-        # ⚠️ 判据里**没有置信度**（绝对值不可当把握度，排序可用）。
-        if self.danger_gate is not None:
-            verdict = self.danger_gate.evaluate(target_description=str(target))
-            if verdict.requires_human:
-                self.halted = True
-                self.halt_reason = verdict.reason
-                record = {
-                    "kind": "click",
-                    "target": str(target),
-                    "ok": False,
-                    "point": None,
-                    "error": DANGEROUS_ACTION_ERROR,
-                }
-                self.calls.append(record)
-                return record
         result = self._seam.run(
             SeamRequest(
                 target_description=str(target),
@@ -154,6 +140,11 @@ class ProtocolApi:
                 goal_expectation=self.goal_expectation,
             )
         )
+        # **审批未获批**（工单 M16）：动作**零下发**（缝在闸门那儿就停了），
+        # 任务**停下来交给人**。
+        if result.result.error_code == ErrorCode.APPROVAL_DENIED:
+            self.halted = True
+            self.halt_reason = result.result.error_message or DANGEROUS_ACTION_ERROR
         record: dict[str, Any] = {
             "kind": "click",
             "target": str(target),
@@ -204,7 +195,31 @@ class ProtocolApi:
         「请直接用动作执行器」（`seam.py` 的 ``SeamRequest`` 明确不收它们）。
         因此这两种动作**不产追踪记录** —— 动作日志的欠账记在
         ``docs/reviews/M10.md``（M11/M17 接手动作日志时补齐）。
+
+        ⚠️ **审批在这里问**（工单 M16）：这两种动作**不经过缝**，
+        闸门若只装在缝上就会漏掉它们（输入一条命令、发一条消息都在这条路上）。
         """
+        approval = self._ask_approval(
+            # ⚠️ **意图里不带输入的正文**（C-15：用户输入的正文不进日志，
+            #: 审批请求会落进动作记录）。正文只交给**分类**（extra_text），
+            #: 用来判「这是不是一条命令」—— 判完不进请求、不进记录。
+            intent="输入文本",
+            target_description="当前焦点控件",
+            action_kind=ActionKind.TYPE.value,
+            extra_text=str(text),
+        )
+        if approval.denied:
+            self.halted = True
+            self.halt_reason = approval.reason
+            record = {
+                "kind": "type_text",
+                "target": str(text),
+                "ok": False,
+                "point": None,
+                "error": DANGEROUS_ACTION_ERROR,
+            }
+            self.calls.append(record)
+            return record
         result = self._seam.executor.execute(
             Action(ActionKind.TYPE, {"text": str(text)}, intent="输入文本")
         )
@@ -213,6 +228,23 @@ class ProtocolApi:
     def press_key(self, *keys: str) -> dict[str, Any]:
         """按键（``press_key('ctrl', 'c')``）。同 :meth:`type_text`：不走缝。"""
         combo = tuple(str(key) for key in keys)
+        approval = self._ask_approval(
+            intent=f"按键「{','.join(combo)}」",
+            target_description="当前焦点控件",
+            action_kind=ActionKind.KEY.value,
+        )
+        if approval.denied:
+            self.halted = True
+            self.halt_reason = approval.reason
+            record = {
+                "kind": "press_key",
+                "target": ",".join(combo),
+                "ok": False,
+                "point": None,
+                "error": DANGEROUS_ACTION_ERROR,
+            }
+            self.calls.append(record)
+            return record
         result = self._seam.executor.execute(
             Action(ActionKind.KEY, {"combo": combo}, intent="按键")
         )
@@ -277,6 +309,34 @@ class ProtocolApi:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    def _ask_approval(
+        self,
+        *,
+        intent: str,
+        target_description: str,
+        action_kind: str,
+        extra_text: str = "",
+    ):
+        """问一次审批（工单 M16）。"""
+        return self.approval_gate.check(
+            intent=intent,
+            target_description=target_description,
+            action_kind=action_kind,
+            extra_text=extra_text,
+            preview=self._preview(),
+        )
+
+    def _preview(self) -> TargetPreview:
+        """dry-run 的呈现：**这一轮看到的画面**的截图哈希。
+
+        ⚠️ 输入文本 / 按键**没有定位目标**（那里根本没有控件）→
+        拿不到控件框与落点；有的是**画面**（哈希）。
+        """
+        frame = self.last_frame
+        return TargetPreview(
+            screenshot_sha256=frame.digest() if frame is not None else "",
+        )
 
     def _record_action(
         self, kind: str, result: Any, *, detail: str = ""

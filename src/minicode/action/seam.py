@@ -44,6 +44,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from minicode.approval.gate import APPROVAL_HANDOFF_NOTE, ApprovalGate
+from minicode.approval.request import TargetPreview
 from minicode.coord.coordinates import DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX, CoordinateOutOfBounds
 from minicode.redact.config import ModelContextConfig
 from minicode.redact.errors import ChannelUnavailableError
@@ -239,6 +241,7 @@ class ActionExecutionSeam:
         zoom_locator: ZoomLocator | None = None,
         verifier: Verifier | None = None,
         secure_desktop: SecureDesktopDetector | None = None,
+        approval_gate: ApprovalGate | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         #: 缝内唯一的抓屏入口（整屏 / 区域）。
@@ -249,6 +252,10 @@ class ActionExecutionSeam:
         self.virtual_desktop = virtual_desktop or VirtualDesktop()
         self._sleeper = sleeper
         self._clock = clock
+        #: **审批闸门**（工单 M16）。**永远在**（fail-closed）：
+        #: 没接就退到一个**没有审批人**的闸门 —— 危险动作一律发不出去。
+        #: 「不装闸门」不是一种放行配置。
+        self.approval_gate = approval_gate or ApprovalGate()
         self.executor = ActionExecutor(
             injector,
             sleeper=sleeper,
@@ -257,6 +264,9 @@ class ActionExecutionSeam:
             double_click_params=double_click_params,
             screenshot_port=self._capture_port,
             secure_desktop=secure_desktop,
+            # **同一个闸门**（工单 M16）：执行器这一层要问的两件事
+            # （「读剪贴板」「提权弹窗」）在动作的**目标描述**里看不出来。
+            approval_gate=self.approval_gate,
         )
         self.trace_sink = trace_sink
         self.capture_to_physical_scale = float(capture_to_physical_scale)
@@ -310,6 +320,20 @@ class ActionExecutionSeam:
         skipped: list[str] = []
         frame = request.frame
         if frame is None:
+            # -- 审批（工单 M16）：**抓帧之前**先问一次 --------------------
+            # 敏感窗口的画面一旦被抓走送进模型，审批就已经晚了 ——
+            # 那时要紧的**不是**动作，是**画面**。
+            capture_approval = self.approval_gate.check_capture(
+                intent=f"定位「{request.target_description}」时抓一帧画面"
+            )
+            if capture_approval.denied:
+                return self._fail(
+                    request,
+                    ErrorCode.APPROVAL_DENIED,
+                    f"审批未获批（{capture_approval.category}）：{capture_approval.reason}",
+                    notes=(APPROVAL_HANDOFF_NOTE,),
+                    approval=capture_approval.to_dict(),
+                )
             frame = self._capture_port.screenshot()
             skipped.extend(self._capture_port.skipped)
             if frame.is_empty:
@@ -497,6 +521,39 @@ class ActionExecutionSeam:
                 model_view=model_view,
             )
 
+        # -- 审批（工单 M16）-----------------------------------------------
+        # **人点头之前不动桌面**：审批放在**置前之前** —— 置前虽然不是
+        # 「动作下发」（它不注入任何输入），但它**改了桌面状态**
+        # （把窗口顶到前面）。dry-run 的呈现要用的东西
+        # （控件框 / 落点 / 截图哈希）这时**已经齐了**。
+        action = self._build_action(request, final_point)
+        approval = self.approval_gate.check(
+            intent=action.intent,
+            target_description=request.target_description,
+            action_kind=action.kind.value,
+            preview=TargetPreview(
+                control_name=selected.name if selected else "",
+                control_rect=selected.rect if selected else None,
+                point=final_point,
+                window_title=(selected.window_title or "") if selected else "",
+                screenshot_sha256=frame.digest(),
+            ),
+        )
+        if approval.denied:
+            return self._fail(
+                request,
+                ErrorCode.APPROVAL_DENIED,
+                f"审批未获批（{approval.category.value if approval.category else '未知'}）："
+                f"{approval.reason}",
+                locate_ms=locate_ms,
+                selected=selected,
+                skipped=skipped,
+                frame=frame,
+                model_view=model_view,
+                notes=(APPROVAL_HANDOFF_NOTE,),
+                approval=approval.to_dict(),
+            )
+
         # -- 置前（目标窗口被遮挡时）--------------------------------------
         # 视觉通道没有「选中控件」，也就没有窗口句柄可置前（那个窗口本来就是前景）。
         if (
@@ -524,7 +581,6 @@ class ActionExecutionSeam:
                     )
 
         # -- 执行 + 校验 ---------------------------------------------------
-        action = self._build_action(request, final_point)
         verify_request = self._verify_request(
             request, frame, baseline_candidates, selected, final_point
         )
@@ -684,6 +740,19 @@ class ActionExecutionSeam:
                 failure_field="execute",
             )
         # **回源重抓**：重新抓那块区域（不是从已抓的整屏帧上裁一块）。
+        # ⚠️ 抓帧之前先问一次（工单 M16）：敏感窗口的画面不许进模型上下文。
+        capture_approval = self.approval_gate.check_capture(
+            intent=f"放大「{request.target_description}」区域 {rect}"
+        )
+        if capture_approval.denied:
+            return self._fail(
+                request,
+                ErrorCode.APPROVAL_DENIED,
+                f"审批未获批（{capture_approval.category.value if capture_approval.category else '未知'}）："
+                f"{capture_approval.reason}",
+                notes=(APPROVAL_HANDOFF_NOTE,),
+                approval=capture_approval.to_dict(),
+            )
         frame = self._capture_port.screenshot(rect)
         if frame.is_empty:
             return self._fail(
@@ -767,6 +836,22 @@ class ActionExecutionSeam:
                 failure_field="execute",
             )
         action = self._build_standalone_action(request)
+        # -- 审批（工单 M16）-----------------------------------------------
+        # 截图也可能命中危险动作（**前台窗口是敏感窗口**时）：
+        # 同样在**抓屏之前**问一次，没批就**零动作下发**（压根没拍）。
+        approval = self.approval_gate.check_capture(
+            intent=action.intent,
+            target_description=request.target_description,
+        )
+        if approval.denied:
+            return self._fail(
+                request,
+                ErrorCode.APPROVAL_DENIED,
+                f"审批未获批（{approval.category.value if approval.category else '未知'}）："
+                f"{approval.reason}",
+                notes=(APPROVAL_HANDOFF_NOTE,),
+                approval=approval.to_dict(),
+            )
         execute_started = self._clock()
         result = self.executor.execute(action)
         execute_verify_ms = (self._clock() - execute_started) * 1000.0
@@ -976,6 +1061,8 @@ class ActionExecutionSeam:
         channel: str = "",
         model_calls: int = 0,
         failure_type: str = "",
+        notes: tuple[str, ...] = (),
+        approval: Mapping[str, Any] | None = None,
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。
 
@@ -1007,7 +1094,12 @@ class ActionExecutionSeam:
         else:
             # 其余都是执行层（抓帧失败也归这里：截图属于「执行+校验」段，架构备忘 §2.5 ③）。
             failures["execute"] = code.value
-        result = ActionResult(ok=False, error_code=code, error_message=message)
+        result = ActionResult(
+            ok=False,
+            error_code=code,
+            error_message=message,
+            notes=tuple(notes),
+        )
         trace = ActionTrace(
             action=None,
             intent="",
@@ -1044,6 +1136,7 @@ class ActionExecutionSeam:
             gate_reasons=visual.gate_reasons if visual is not None else (),
             gate_undecidable=visual.gate_undecidable if visual is not None else (),
             refine_enabled=visual.refine_enabled if visual is not None else False,
+            approval=dict(approval) if approval is not None else None,
             result=result,
             model_view=model_view,
         )

@@ -268,13 +268,28 @@ class KeyboardDegradationTest(unittest.TestCase):
 
 
 class ClipboardTest(unittest.TestCase):
-    """AC 5：用粘贴通道输入后剪贴板内容被恢复。"""
+    """AC 5：用粘贴通道输入后剪贴板内容被恢复。
+
+    📌 **工单 M16 起**：粘贴通道要**读一次剪贴板**（备份）→ 读剪贴板**要审批**
+    （工单 M16 AC 6）。没批就**不读**、改走 Unicode 注入通道。
+    本类测的是「**批了**之后」的行为 → 闸门接一个**全都批**的审批人。
+    """
+
+    def _executor(self, injector):
+        from minicode.approval.fakes import AutoApprover
+        from minicode.approval.gate import ApprovalGate
+
+        return ActionExecutor(
+            injector,
+            sleeper=lambda seconds: None,
+            approval_gate=ApprovalGate(approver=AutoApprover()),
+        )
 
     def test_the_clipboard_is_the_same_before_and_after(self):
         injector = FakeInputInjector()
         injector.write_clipboard("用户原来的剪贴板")
         typing = BrowserTyping(
-            executor=ActionExecutor(injector, sleeper=lambda seconds: None),
+            executor=self._executor(injector),
             structure=FakePageStructure([_snapshot(_element(), focused_element_id="s1#1")]),
             browser_input=FakeBrowserInput(),
         )
@@ -285,12 +300,31 @@ class ClipboardTest(unittest.TestCase):
     def test_the_paste_channel_was_used(self):
         injector = FakeInputInjector()
         typing = BrowserTyping(
-            executor=ActionExecutor(injector, sleeper=lambda seconds: None),
+            executor=self._executor(injector),
             structure=FakePageStructure([_snapshot(_element(), focused_element_id="s1#1")]),
             browser_input=FakeBrowserInput(),
         )
         typing.type_text("张三")
         self.assertIn(("press_combo", ("ctrl", "v")), injector.events)
+
+    def test_without_the_approval_the_clipboard_is_not_read_at_all(self):
+        """工单 M16 AC 6：没批 → **不读**剪贴板 → 改走 Unicode 注入通道。"""
+        from minicode.approval.fakes import DenyApprover
+        from minicode.approval.gate import ApprovalGate
+
+        injector = FakeInputInjector()
+        typing = BrowserTyping(
+            executor=ActionExecutor(
+                injector,
+                sleeper=lambda seconds: None,
+                approval_gate=ApprovalGate(approver=DenyApprover()),
+            ),
+            structure=FakePageStructure([_snapshot(_element(), focused_element_id="s1#1")]),
+            browser_input=FakeBrowserInput(),
+        )
+        typing.type_text("张三")
+        self.assertNotIn(("press_combo", ("ctrl", "v")), injector.events)
+        self.assertIn(("type_unicode", "张三"), injector.events)
 
 
 class CapabilityTableTest(unittest.TestCase):

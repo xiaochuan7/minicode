@@ -193,6 +193,11 @@ class ActionResult:
     #: 观察到的一帧画面（``screenshot`` 动作的结果）。
     #: **只落它的摘要，不落原图** —— 与动作记录同一条红线。
     captured: CapturedFrame | None = None
+    #: **审批**（工单 M16）：这一条动作的审批请求与结论
+    #: （类别、请求 id、批没批、dry-run 的对象）。没走过审批时是 ``None``。
+    #:
+    #: ⚠️ **只加不改，协议版本不升**（工单 M21 的版本口径）。
+    approval: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -204,6 +209,7 @@ class ActionResult:
             "cursor_delta_px": self.cursor_delta_px,
             "notes": list(self.notes),
             "timing": dict(self.timing) if self.timing else None,
+            "approval": dict(self.approval) if self.approval is not None else None,
             "captured": (
                 {
                     "width": self.captured.width,

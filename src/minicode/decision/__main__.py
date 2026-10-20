@@ -28,12 +28,12 @@ from minicode.action.fakes import FakeCaptureSource, FakeInputInjector
 from minicode.action.ports import WindowAnchor
 from minicode.action.records import ListTraceSink, MultiTraceSink, build_record
 from minicode.action.seam import ActionExecutionSeam
+from minicode.approval.console import console_gate
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.request_log import InMemoryRequestLog
 from minicode.redact.config import load_model_context_config
 from minicode.redact.redactor import TreeRedactor
-from minicode.reflection.gate import DangerGate
 from minicode.reflection.retry import RetryingSeam
 from minicode.reflection.stop import StopPolicy
 from minicode.uia.capability import CapabilityTable
@@ -89,6 +89,14 @@ def _parse_args(argv):
         action="store_true",
         help="消歧不接模型（用假指认；默认接真模型，动作步的档位证据靠它）",
     )
+    parser.add_argument(
+        "--tree-target",
+        default="开始",
+        help=(
+            "假桌面上那个按钮的**名字**（默认「开始」）。"
+            "填「发送消息」这类危险名字，就能看见**审批闸门**把动作拦下来"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -141,7 +149,7 @@ def main(argv=None) -> int:
     #: 它也是追踪记录的旁路出口 —— 与动作日志看的是**同一份数据**。
     stop_policy = StopPolicy(max_rounds=args.rounds)
     anchor = WindowAnchor(hwnd=0, app="fake", version="0")
-    tree = _fake_tree("开始")
+    tree = _fake_tree(args.tree_target)
     query = FakeUiaQueryPort(
         reads=[ScriptedRead(elements=tree) for _ in range(8)],
     )
@@ -172,6 +180,10 @@ def main(argv=None) -> int:
         redactor=TreeRedactor(context_config),
     )
 
+    #: **审批闸门**（工单 M16）：危险动作要人点头，没批就**零动作下发**。
+    #: 假桌面上拍的是假画面 → **不问真窗口**（只接审批人）。
+    #: ⚠️ **一个闸门，两处接线**（缝 + 接口面）—— 「谁被问过」只有一份流水。
+    gate = console_gate(read_foreground_window=False)
     seam = ActionExecutionSeam(
         capture_sources=[capture],
         tree=None,
@@ -187,6 +199,8 @@ def main(argv=None) -> int:
             screenshot_port=CapturePort([capture]),
             observer=UiaStateObserver(query, anchor),
         ),
+        # **审批闸门**（工单 M16）：危险动作要人点头，没批就**零动作下发**。
+        approval_gate=gate,
     )
     #: **重试**（工单 M12 AC 3 / AC 4）：套在缝外面 ——
     #: 只重试可逆动作，退避 200 / 500 / 1200 ms，**每次重试前重新感知**。
@@ -196,9 +210,9 @@ def main(argv=None) -> int:
         locator=channel,
         anchor=anchor,
         goal_expectation=_parse_expectation(args.expect),
-        # **危险动作的放行判据**（工单 M12 AC 8）：命中危险词表的动作
-        # **不执行**，任务停下来交给人（审批与 dry-run 是 M16 的活）。
-        danger_gate=DangerGate(),
+        # **审批闸门**（工单 M16）：命中危险动作清单的动作**要人点头**。
+        # 缝里那一份管点击/截图，这里这一份管**不走缝**的输入文本/按键。
+        approval_gate=gate,
     )
     #: **三段耗时与三类失败**的累加器（工单 M11 AC 4 / AC 5）。
     telemetry = TelemetryAccumulator()

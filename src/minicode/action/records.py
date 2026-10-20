@@ -154,6 +154,9 @@ class ActionTrace:
     #: 它是**观测数据**，走旁路出口（不进主返回类型）。
     #: 形状由校验层自己渲染（``verification.layer.VerificationResult.to_dict()``）。
     verification_result: Mapping[str, Any] | None = None
+    #: **审批**（工单 M16）：这一条动作的审批请求与结论
+    #: （类别、请求 id、批没批、dry-run 的对象）。没走过审批时是 ``None``。
+    approval: Mapping[str, Any] | None = None
     #: **动作前**的状态（工单 M11 AC 7：动作日志要含「动作前后状态」）。
     state_before: Mapping[str, Any] | None = None
     #: **动作后**的状态。
@@ -303,6 +306,8 @@ class ActionRecord:
     state_after: Mapping[str, Any] | None = None
     #: **校验结果**（工单 M11）：期望断言 / 默认校验的结论（落盘形状由校验层渲染）。
     verification_result: Mapping[str, Any] | None = None
+    #: **审批**（工单 M16）：这一条动作的审批请求与结论。没走过审批时是 ``None``。
+    approval: Mapping[str, Any] | None = None
     notes: tuple[str, ...] = ()
 
     @property
@@ -396,6 +401,7 @@ class ActionRecord:
                 if self.verification_result is not None
                 else None
             ),
+            "approval": dict(self.approval) if self.approval is not None else None,
             "notes": list(self.notes),
         }
 
@@ -540,6 +546,7 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
             if trace.verification_result is not None
             else None
         ),
+        approval=dict(trace.approval) if trace.approval is not None else None,
         notes=tuple(result.notes),
     )
 

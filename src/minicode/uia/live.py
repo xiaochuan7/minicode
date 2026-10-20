@@ -31,6 +31,7 @@ import math
 import sys
 from pathlib import Path
 
+from minicode.approval.console import console_gate
 from minicode.lock import acquire, release
 
 __all__ = ["main"]
@@ -233,6 +234,8 @@ def _run(args) -> int:
         visual_locator=grounder,
         # **提权 / 安全桌面检测**（C-07）：在安全桌面上就**零动作下发**、交人。
         secure_desktop=WindowsSecureDesktopDetector(),
+        # **审批闸门**（工单 M16）：危险动作要人点头，没批就**零动作下发**。
+        approval_gate=console_gate(),
     )
     request = SeamRequest(
         target_description=args.target,

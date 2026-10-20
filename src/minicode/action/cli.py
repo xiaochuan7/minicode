@@ -59,6 +59,7 @@ def _run_fake(args):
     from minicode.action.geometry import VirtualDesktop
     from minicode.action.ports import ControlCandidate
     from minicode.action.runner import run_minimal_loop
+    from minicode.approval.console import console_gate
 
     desktop = VirtualDesktop(0, 0, 2560, 1600)
     candidate = ControlCandidate(
@@ -76,6 +77,8 @@ def _run_fake(args):
         virtual_desktop=desktop,
         metrics=FakeMetrics(),
         log_directory=args.out,
+        # 假桌面上拍的是假画面 → **不问真窗口**（只接审批人）。
+        approval_gate=console_gate(read_foreground_window=False),
     )
 
 
@@ -94,6 +97,7 @@ def _run_real(args):
         current_virtual_desktop,
         system_double_click_params,
     )
+    from minicode.approval.console import console_gate
     from minicode.exec import dpi  # noqa: F401  (导入即声明 PMv2)
 
     desktop = current_virtual_desktop()
@@ -110,6 +114,8 @@ def _run_real(args):
         double_click_params=system_double_click_params(),
         # **提权 / 安全桌面检测**（C-07）：在安全桌面上就**零动作下发**、交人。
         secure_desktop=WindowsSecureDesktopDetector(),
+        # **审批闸门**（工单 M16）：危险动作要人点头，没批就**零动作下发**。
+        approval_gate=console_gate(),
     )
     return outcome
 
