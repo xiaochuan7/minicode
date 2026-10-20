@@ -39,13 +39,22 @@ import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from coordinates import (
-    CoordinateAdapter,
-    CoordinateError,
-    FrameGeometry,
-    ModelScale,
-    Rect,
-)
+if __package__:  # 包化：作为 minicode.coord 的一部分被导入
+    from .coordinates import (
+        CoordinateAdapter,
+        CoordinateError,
+        FrameGeometry,
+        ModelScale,
+        Rect,
+    )
+else:  # 目录内直接运行（`python calibrate.py`）时的平铺导入
+    from coordinates import (
+        CoordinateAdapter,
+        CoordinateError,
+        FrameGeometry,
+        ModelScale,
+        Rect,
+    )
 
 __all__ = [
     "ProbeTarget",

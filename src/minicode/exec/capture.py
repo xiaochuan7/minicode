@@ -21,7 +21,10 @@ import time
 from ctypes import wintypes
 from typing import Optional
 
-import dpi  # noqa: F401  -- 导入即设置进程 DPI 感知（必须在最前）
+if __package__:  # 包化：作为 minicode.exec 的一部分被导入
+    from . import dpi  # noqa: F401  -- 导入即设置进程 DPI 感知（必须在最前）
+else:  # 目录内直接运行时的平铺导入
+    import dpi  # noqa: F401  -- 导入即设置进程 DPI 感知（必须在最前）
 
 __all__ = [
     "grab",

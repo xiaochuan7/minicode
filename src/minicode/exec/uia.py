@@ -38,7 +38,10 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 
-import dpi  # noqa: F401  -- 保证进程 PMv2，UIA 坐标才是物理像素
+if __package__:  # 包化：作为 minicode.exec 的一部分被导入
+    from . import dpi  # noqa: F401  -- 保证进程 PMv2，UIA 坐标才是物理像素
+else:  # 目录内直接运行时的平铺导入
+    import dpi  # noqa: F401  -- 保证进程 PMv2，UIA 坐标才是物理像素
 
 __all__ = [
     "UIAError", "Element", "UIA",

@@ -29,13 +29,22 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from coordinates import (
-    CoordinateAdapter,
-    CoordinateError,
-    FrameGeometry,
-    ModelScale,
-    Rect,
-)
+if __package__:  # 包化：作为 minicode.coord 的一部分被导入
+    from .coordinates import (
+        CoordinateAdapter,
+        CoordinateError,
+        FrameGeometry,
+        ModelScale,
+        Rect,
+    )
+else:  # 目录内直接运行时的平铺导入
+    from coordinates import (
+        CoordinateAdapter,
+        CoordinateError,
+        FrameGeometry,
+        ModelScale,
+        Rect,
+    )
 
 __all__ = [
     "CropPlan",

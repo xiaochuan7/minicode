@@ -25,10 +25,16 @@ os.environ.setdefault("GUI_CU_DPI_QUIET", "1")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import capture  # noqa: E402
-import dpi  # noqa: E402
-import input as win_input  # noqa: E402
-import uia  # noqa: E402
+if __package__:  # 包化：作为 minicode.exec 的一部分被导入
+    from . import capture  # noqa: E402
+    from . import dpi  # noqa: E402
+    from . import input as win_input  # noqa: E402
+    from . import uia  # noqa: E402
+else:  # 目录内直接运行（`python selftest.py`）时的平铺导入
+    import capture  # noqa: E402
+    import dpi  # noqa: E402
+    import input as win_input  # noqa: E402
+    import uia  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 

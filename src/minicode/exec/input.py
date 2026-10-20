@@ -25,7 +25,10 @@ import ctypes
 import time
 from ctypes import wintypes
 
-import dpi  # noqa: F401  -- 必须最先 import，保证进程 DPI 感知已生效
+if __package__:  # 包化：作为 minicode.exec 的一部分被导入
+    from . import dpi  # noqa: F401  -- 必须最先 import，保证进程 DPI 感知已生效
+else:  # 目录内直接运行时的平铺导入
+    import dpi  # noqa: F401  -- 必须最先 import，保证进程 DPI 感知已生效
 
 __all__ = [
     "InputSelfCheckError", "SendInputError",
