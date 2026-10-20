@@ -14,8 +14,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "CapturedFrame",
@@ -70,6 +71,10 @@ class ControlCandidate:
     """控件候选（控件树里与目标描述匹配上的元素）。
 
     ``rect`` 是**物理表面空间**的包围矩形 ``(left, top, right, bottom)``。
+
+    值类字段（``value`` / ``help_text`` / ``is_password`` / ``extra``）是**敏感面**：
+    它们只在「要外发的表示」里出现，且必须先过脱敏（:mod:`minicode.redact`）。
+    **定位用的一直是原值** —— 脱敏只改要外发的副本，不改这里。
     """
 
     name: str
@@ -77,6 +82,23 @@ class ControlCandidate:
     rect: tuple[int, int, int, int] = (0, 0, 0, 0)
     window_handle: int | None = None
     automation_id: str | None = None
+    #: 控件的值（编辑框正文、密码框字符、组合框选中项……）。
+    value: str = ""
+    #: 帮助文本。
+    help_text: str = ""
+    #: 是不是密码框（``IsPassword=True``）。
+    is_password: bool = False
+    #: **未登记**的原始属性（fail-closed：一律不外发）。
+    extra: Mapping[str, Any] = field(default_factory=dict, compare=False)
+
+    def __repr__(self) -> str:
+        """**值不进 repr** —— 密码明文与草稿正文不许出现在任何输出里
+        （异常信息、日志、`print` 都算输出）。"""
+        return (
+            f"{type(self).__name__}(name={self.name!r}, control_type={self.control_type!r}, "
+            f"rect={self.rect!r}, window_handle={self.window_handle!r}, "
+            f"automation_id={self.automation_id!r}, is_password={self.is_password!r})"
+        )
 
     @property
     def center(self) -> tuple[float, float]:

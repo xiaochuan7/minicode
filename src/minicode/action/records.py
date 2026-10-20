@@ -18,14 +18,19 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from minicode.redact.patterns import PASSWORD_PLACEHOLDER
 
 from .ports import ControlCandidate
 from .protocol import PROTOCOL_VERSION, Action, ActionResult
+
+if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入（避免循环依赖）
+    from minicode.redact.redactor import ModelTreeView
 
 __all__ = [
     "ActionTrace",
@@ -34,6 +39,7 @@ __all__ = [
     "TraceSink",
     "ListTraceSink",
     "build_record",
+    "trace_candidates",
     "POINT_SPACE",
     "FAILURE_FIELDS",
 ]
@@ -55,6 +61,10 @@ class ActionTrace:
     candidates: tuple[ControlCandidate, ...] = ()
     selected: ControlCandidate | None = None
     rejected_candidates: tuple[ControlCandidate, ...] = ()
+    #: 送进模型上下文的那份界面状态（**已脱敏**）。
+    #: 这条通道不把控件树送模型时是 ``None`` —— 追踪记录里没有它，
+    #: 就说明这条通道**没走过脱敏**。
+    model_view: ModelTreeView | None = None
     landing_point: tuple[int, int] | None = None
     capture_width: int | None = None
     capture_height: int | None = None
@@ -136,6 +146,9 @@ class ActionRecord:
     failure_locate: str | None = None
     failure_decision: str | None = None
     failure_execute: str | None = None
+    #: 脱敏计数（密码框替换数 / 正则命中数 / 丢弃正文类字段数 / 输出长度）。
+    #: 没走过脱敏时是 ``None`` —— 「某条通道没走脱敏」因此能被看见。
+    redaction: Mapping[str, Any] | None = None
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -182,8 +195,30 @@ class ActionRecord:
                 "decision": self.failure_decision,
                 "execute": self.failure_execute,
             },
+            "redaction": dict(self.redaction) if self.redaction is not None else None,
             "notes": list(self.notes),
         }
+
+
+def trace_candidates(
+    candidates: Sequence[ControlCandidate],
+) -> tuple[ControlCandidate, ...]:
+    """给**追踪记录**用的候选集：值一律不落（密码框留占位符，其余为空）。
+
+    追踪记录是观测数据，不是定位数据：控件名与控件框保持原值，
+    但**值**不落盘 —— 密码框留占位符（看得见「这里有个密码框」），
+    其余控件的值一律为空（不落盘任何正文）。
+
+    规则放在这里（追踪记录归本模块管），脱敏规则在 :mod:`minicode.redact`。
+    """
+    return tuple(
+        replace(
+            candidate,
+            value=PASSWORD_PLACEHOLDER if candidate.is_password else "",
+            extra={},
+        )
+        for candidate in candidates
+    )
 
 
 def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionRecord:
@@ -228,6 +263,9 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         failure_locate=failures.get("locate"),
         failure_decision=failures.get("decision"),
         failure_execute=failures.get("execute"),
+        redaction=(
+            trace.model_view.report.to_dict() if trace.model_view is not None else None
+        ),
         notes=tuple(result.notes),
     )
 

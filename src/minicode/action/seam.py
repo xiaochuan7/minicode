@@ -42,9 +42,12 @@ import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from minicode.coord.coordinates import CoordinateOutOfBounds
+from minicode.redact.config import ModelContextConfig
+from minicode.redact.errors import ChannelUnavailableError
+from minicode.redact.redactor import TreeRedactor
 
 from .errors import ErrorCode
 from .executor import ActionExecutor, DoubleClickParams, TimingPolicy
@@ -59,8 +62,11 @@ from .ports import (
     WindowController,
 )
 from .protocol import POINT_KINDS, Action, ActionKind, ActionResult
-from .records import FAILURE_FIELDS, POINT_SPACE, ActionTrace, TraceSink
+from .records import FAILURE_FIELDS, POINT_SPACE, ActionTrace, TraceSink, trace_candidates
 from .surface import SurfaceSpec
+
+if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
+    from minicode.redact.redactor import ModelTreeView
 
 __all__ = ["SeamRequest", "SeamResult", "ActionExecutionSeam"]
 
@@ -123,6 +129,13 @@ class _SelectionFailure(Exception):
         self.candidates = candidates
 
 
+def _traced_candidate(candidate: ControlCandidate | None) -> ControlCandidate | None:
+    """追踪记录里的候选：**值不落**（密码框留占位符，其余为空）。"""
+    if candidate is None:
+        return None
+    return trace_candidates((candidate,))[0]
+
+
 class ActionExecutionSeam:
     """动作执行缝。"""
 
@@ -140,6 +153,7 @@ class ActionExecutionSeam:
         double_click_params: DoubleClickParams | None = None,
         trace_sink: TraceSink | None = None,
         capture_to_physical_scale: float = 1.0,
+        model_context_config: ModelContextConfig | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         self.tree = tree
@@ -157,6 +171,13 @@ class ActionExecutionSeam:
         )
         self.trace_sink = trace_sink
         self.capture_to_physical_scale = float(capture_to_physical_scale)
+        #: 这条通道要不要把控件树送进模型上下文。
+        #: 给了配置 = 要送（脱敏器由缝**自己**持有 → 模型侧文本只有一个出口）；
+        #: 缺省 = **不送**（零模型调用的通道）。
+        self.model_context_config = model_context_config
+        self._redactor = (
+            TreeRedactor(model_context_config) if model_context_config is not None else None
+        )
 
     # ------------------------------------------------------------------
     # 主流程
@@ -188,13 +209,26 @@ class ActionExecutionSeam:
 
         # -- 定位 ---------------------------------------------------------
         locate_started = self._clock()
+        model_view: ModelTreeView | None = None
         try:
             snapshot = (
                 request.tree_snapshot
                 if request.tree_snapshot is not None
                 else self.tree.snapshot()
             )
+            # 脱敏闸门先过：这条通道要把控件树送进模型上下文 → 必须先有脱敏后的视图。
+            model_view = self._render_model_view(snapshot.candidates)
             selected, _ = self._select(snapshot.candidates, request.target_description)
+        except ChannelUnavailableError as exc:
+            locate_ms = (self._clock() - locate_started) * 1000.0
+            return self._fail(
+                request,
+                ErrorCode.LOCATE_FAILED,
+                str(exc),
+                locate_ms=locate_ms,
+                skipped=skipped,
+                frame=frame,
+            )
         except _SelectionFailure as exc:
             locate_ms = (self._clock() - locate_started) * 1000.0
             return self._fail(
@@ -205,6 +239,7 @@ class ActionExecutionSeam:
                 rejected=exc.candidates,
                 skipped=skipped,
                 frame=frame,
+                model_view=model_view,
             )
         locate_ms = (self._clock() - locate_started) * 1000.0
 
@@ -228,6 +263,7 @@ class ActionExecutionSeam:
                 selected=selected,
                 skipped=skipped,
                 frame=frame,
+                model_view=model_view,
             )
 
         # -- 置前（目标窗口被遮挡时）--------------------------------------
@@ -248,6 +284,7 @@ class ActionExecutionSeam:
                         selected=selected,
                         skipped=skipped,
                         frame=frame,
+                        model_view=model_view,
                     )
 
         # -- 执行 + 校验 ---------------------------------------------------
@@ -264,8 +301,8 @@ class ActionExecutionSeam:
             action=action,
             intent=action.intent,
             target_description=request.target_description,
-            candidates=snapshot.candidates,
-            selected=selected,
+            candidates=trace_candidates(snapshot.candidates),
+            selected=_traced_candidate(selected),
             landing_point=final_point,
             capture_width=frame.width,
             capture_height=frame.height,
@@ -279,6 +316,7 @@ class ActionExecutionSeam:
             execute_verify_ms=execute_verify_ms,
             failures=failures,
             result=result,
+            model_view=model_view,
         )
         self._emit(trace)
         return SeamResult(
@@ -291,6 +329,19 @@ class ActionExecutionSeam:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    def _render_model_view(
+        self, candidates: Sequence[ControlCandidate]
+    ) -> ModelTreeView | None:
+        """准备「送进模型上下文的那份界面状态」（**已脱敏**）。
+
+        * 这条通道**不把树送模型**时（没有配置）→ ``None``；
+        * 脱敏没上线 → 抛 :class:`ChannelUnavailableError`，
+          上层据此报「该通道不可用」，**一个字符的模型侧文本都不产生**。
+        """
+        if self._redactor is None:
+            return None
+        return self._redactor.render(candidates)
 
     def _capture_usable(self, skipped: list[str]) -> CapturedFrame | None:
         """依次尝试各捕获源，跳过只拿到 0×0 画面的源。"""
@@ -355,15 +406,17 @@ class ActionExecutionSeam:
         rejected: tuple[ControlCandidate, ...] = (),
         skipped: Sequence[str] = (),
         frame: CapturedFrame | None = None,
+        model_view: ModelTreeView | None = None,
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。"""
         failures = {name: None for name in FAILURE_FIELDS}
         if code in (
             ErrorCode.TARGET_NOT_FOUND,
             ErrorCode.AMBIGUOUS_TARGET,
+            ErrorCode.LOCATE_FAILED,
             ErrorCode.CLIPPED_BY_DESKTOP,
         ):
-            # 定位层：没找到 / 找不唯一 / 落点不可用。
+            # 定位层：没找到 / 找不唯一 / 通道不可用 / 落点不可用。
             failures["locate"] = code.value
         else:
             # 其余都是执行层（抓帧失败也归这里：截图属于「执行+校验」段，架构备忘 §2.5 ③）。
@@ -373,8 +426,8 @@ class ActionExecutionSeam:
             action=None,
             intent="",
             target_description=request.target_description,
-            selected=selected,
-            rejected_candidates=rejected,
+            selected=_traced_candidate(selected),
+            rejected_candidates=trace_candidates(rejected),
             capture_width=frame.width if frame else None,
             capture_height=frame.height if frame else None,
             screenshot_sha256=frame.digest() if frame else None,
@@ -387,6 +440,7 @@ class ActionExecutionSeam:
             execute_verify_ms=0.0,
             failures=failures,
             result=result,
+            model_view=model_view,
         )
         self._emit(trace)
         return SeamResult(
