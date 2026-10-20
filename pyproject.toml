@@ -34,8 +34,14 @@ exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-# proto/ 下三份原型是已验证资产，保持原样不改；lint 只报不自动修。
-ignore = ["E501", "UP038"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# coord / exec / verify 三个原型是已验证的冻结资产：不改逻辑、不做风格清理，整体豁免。
+# 规则集只对后续新写的业务代码生效。
+"src/minicode/coord/*" = ["ALL"]
+"src/minicode/exec/*" = ["ALL"]
+"src/minicode/verify/*" = ["ALL"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/minicode"]
