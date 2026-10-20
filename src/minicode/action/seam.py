@@ -58,6 +58,7 @@ from .geometry import VirtualDesktop
 from .ports import (
     CHANNEL_BROWSER,
     CHANNEL_UIA,
+    CHANNEL_VISUAL,
     CapturedFrame,
     CaptureSource,
     ControlCandidate,
@@ -402,7 +403,7 @@ class ActionExecutionSeam:
                         candidate_limit_source=located.candidate_limit_source,
                         visual_admission=admission,
                         visual=visual,
-                        channel="visual" if visual is not None else channel,
+                        channel=CHANNEL_VISUAL if visual is not None else channel,
                         model_calls=located.model_calls,
                         failure_type=located.failure_type,
                     )
@@ -410,7 +411,7 @@ class ActionExecutionSeam:
                 selected = None
                 px, py = float(visual.landing_point[0]), float(visual.landing_point[1])
                 final_point = visual.landing_point
-                channel = "visual"
+                channel = CHANNEL_VISUAL
             else:
                 channel = located.channel or CHANNEL_UIA
                 selected = located.selected

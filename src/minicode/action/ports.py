@@ -68,6 +68,9 @@ __all__ = [
 #: 通道名是**裸串**，所以给它一处常量（不写在各处）。
 CHANNEL_UIA = "uia"
 CHANNEL_BROWSER = "browser"
+#: **视觉通道**（两级 grounding 的那一路）。它没有 :class:`ControlLocator` 实现
+#: ——它是 UIA 侧**覆盖失败**之后才走的另一条路（架构决策备忘 §2.5 ①）。
+CHANNEL_VISUAL = "visual"
 
 
 #: **候选数上限**（运行时参数）。取值 **8**。
