@@ -9,18 +9,40 @@ import inspect
 import unittest
 
 from minicode.action.errors import ErrorCode
-from minicode.action.geometry import SENTINEL_CURSOR, VirtualDesktop, is_sentinel
+from minicode.action.geometry import SENTINEL_CURSOR, VirtualDesktop, is_sentinel, rect_size
 from minicode.action.protocol import (
+    BUTTON_LEFT,
+    BUTTON_RIGHT,
+    CLICK_DOUBLE,
+    CLICK_SINGLE,
     DEFERRED_KINDS,
     EXECUTABLE_KINDS,
     PROTOCOL_VERSION,
     Action,
     ActionKind,
     ActionResult,
+    parse_click_params,
 )
 from minicode.action.surface import SurfaceSpec
 from minicode.coord.calibrate import CalibrationProbe
 from minicode.coord.coordinates import DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX, CoordinateOutOfBounds
+
+#: **架构决策备忘 §3 的 12 个动作种类**（逐字抄在这里）。
+#: 这份清单是本单的**防漂移闸门**：协议里多一个或少一个动作种类，单测就红。
+_MEMO_ACTION_KINDS = {
+    "screenshot",
+    "click",
+    "move",
+    "drag",
+    "type",
+    "key",
+    "scroll",
+    "wait",
+    "zoom",
+    "inspect",
+    "execute_code",
+    "ask_user",
+}
 
 
 class ProtocolShapeTest(unittest.TestCase):
@@ -29,6 +51,19 @@ class ProtocolShapeTest(unittest.TestCase):
     def test_protocol_version_is_v1(self):
         self.assertEqual(PROTOCOL_VERSION, "cua.action/1")
 
+    def test_the_action_kind_set_is_exactly_the_twelve_from_the_architecture_memo(self):
+        """防漂移闸门：动作种类集合 == 架构决策备忘 §3 的 12 个（逐个比对名字）。"""
+        self.assertEqual({kind.value for kind in ActionKind}, _MEMO_ACTION_KINDS)
+
+    def test_double_click_and_right_click_are_not_action_kinds(self):
+        """双击与右键是 `click` 的参数，不是独立动作种类。"""
+        self.assertNotIn("double_click", {kind.value for kind in ActionKind})
+        self.assertNotIn("right_click", {kind.value for kind in ActionKind})
+
+    def test_the_input_text_kind_is_named_type(self):
+        self.assertIn(ActionKind.TYPE, set(ActionKind))
+        self.assertEqual(ActionKind.TYPE.value, "type")
+
     def test_twelve_kinds_split_into_eight_executable_and_four_deferred(self):
         self.assertEqual(len(ActionKind), 12)
         self.assertEqual(EXECUTABLE_KINDS | DEFERRED_KINDS, set(ActionKind))
@@ -36,11 +71,36 @@ class ProtocolShapeTest(unittest.TestCase):
         self.assertEqual(len(EXECUTABLE_KINDS), 8)
         self.assertEqual(len(DEFERRED_KINDS), 4)
 
-    def test_deferred_kinds_are_exactly_the_four_this_ticket_does_not_implement(self):
+    def test_the_executable_kinds_are_the_eight_that_are_wired(self):
+        self.assertEqual(
+            {kind.value for kind in EXECUTABLE_KINDS},
+            {"screenshot", "click", "move", "drag", "type", "key", "scroll", "wait"},
+        )
+
+    def test_the_deferred_kinds_are_exactly_the_four_this_ticket_does_not_implement(self):
         self.assertEqual(
             DEFERRED_KINDS,
             {ActionKind.ZOOM, ActionKind.INSPECT, ActionKind.EXECUTE_CODE, ActionKind.ASK_USER},
         )
+
+    def test_the_click_parameters_carry_the_button_and_the_click_count(self):
+        """双击与右键靠参数区分：`click_count`（1/2）与 `button`（1/3）。"""
+        self.assertEqual((CLICK_SINGLE, CLICK_DOUBLE), (1, 2))
+        self.assertEqual((BUTTON_LEFT, BUTTON_RIGHT), (1, 3))
+
+    def test_the_click_parameters_are_read_in_one_place(self):
+        """协议层是 `click` 参数的唯一读法：合法值给结果，非法值报错。"""
+        self.assertEqual(parse_click_params({}), (BUTTON_LEFT, CLICK_SINGLE))
+        self.assertEqual(
+            parse_click_params({"button": BUTTON_RIGHT, "click_count": CLICK_DOUBLE}),
+            (BUTTON_RIGHT, CLICK_DOUBLE),
+        )
+        with self.assertRaises(ValueError):
+            parse_click_params({"button": 2})
+        with self.assertRaises(ValueError):
+            parse_click_params({"click_count": 3})
+        with self.assertRaises(ValueError):
+            parse_click_params({"button": "左键"})
 
     def test_action_exposes_kind_params_and_intent(self):
         action = Action(kind=ActionKind.CLICK, params={"x": 1, "y": 2}, intent="点击「开始」")
@@ -72,6 +132,17 @@ class SentinelTest(unittest.TestCase):
         self.assertFalse(is_sentinel((0, 0)))
         self.assertFalse(is_sentinel((-32001, 100)))
         self.assertFalse(is_sentinel((100, -32000)))
+
+
+class RectSizeTest(unittest.TestCase):
+    """矩形 → 尺寸：`(left, top, right, bottom)` 的换算只有一份。"""
+
+    def test_the_size_of_a_rect_is_its_extent_in_physical_pixels(self):
+        self.assertEqual(rect_size((100, 200, 500, 600)), (400, 400))
+
+    def test_a_degenerate_rect_has_no_size(self):
+        self.assertEqual(rect_size((100, 200, 100, 600)), (0, 400))
+        self.assertEqual(rect_size((100, 200, 500, 200)), (400, 0))
 
 
 class SurfaceScaleTest(unittest.TestCase):

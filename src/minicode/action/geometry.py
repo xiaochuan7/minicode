@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["SENTINEL_CURSOR", "is_sentinel", "VirtualDesktop"]
+__all__ = ["SENTINEL_CURSOR", "is_sentinel", "rect_size", "VirtualDesktop"]
 
 #: Windows 在无法给出有效坐标时返回的哨兵值。它看起来像坐标但不是坐标。
 SENTINEL_CURSOR = (-32000, -32000)
@@ -20,6 +20,17 @@ SENTINEL_CURSOR = (-32000, -32000)
 def is_sentinel(point: tuple[int, int] | None) -> bool:
     """判断一个坐标是不是哨兵值。"""
     return point is not None and (int(point[0]), int(point[1])) == SENTINEL_CURSOR
+
+
+def rect_size(rect: tuple[int, int, int, int]) -> tuple[int, int]:
+    """矩形 → ``(width, height)``。
+
+    矩形一律是 ``(left, top, right, bottom)``（与控件框同一口径，物理像素）。
+    **矩形 → 尺寸的换算只此一处** —— 别在各处各写一遍
+    （``right - left`` 与 ``bottom - top`` 写错就是抓错一块画面）。
+    """
+    left, top, right, bottom = (int(value) for value in rect)
+    return (right - left, bottom - top)
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,21 @@ class VirtualDesktop:
         return (
             self.left - tolerance_px <= px <= self.right + tolerance_px
             and self.top - tolerance_px <= py <= self.bottom + tolerance_px
+        )
+
+    def contains_rect(
+        self, rect: tuple[int, int, int, int], tolerance_px: float = 0.0
+    ) -> bool:
+        """矩形是否**整个**落在虚拟桌面内（含容差外扩）。
+
+        越界**不夹取**（架构备忘 §3）：宁可报错，也不给一块不是用户要的画面。
+        """
+        left, top, right, bottom = rect
+        return (
+            self.left - tolerance_px <= left
+            and self.top - tolerance_px <= top
+            and right <= self.right + tolerance_px
+            and bottom <= self.bottom + tolerance_px
         )
 
     def to_absolute_input(self, px: float, py: float) -> tuple[int, int]:

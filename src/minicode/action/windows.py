@@ -13,7 +13,7 @@ import ctypes
 from ctypes import wintypes
 
 from .executor import DoubleClickParams
-from .geometry import VirtualDesktop
+from .geometry import VirtualDesktop, rect_size
 from .ports import CapturedFrame, ControlCandidate, ControlTreeSnapshot, InjectionBlocked
 
 __all__ = [
@@ -142,6 +142,32 @@ class WindowsCaptureSource:
         from minicode.exec import capture
 
         frame, meta = capture.grab_frame()
+        if hasattr(frame, "tobytes"):
+            payload = frame.tobytes()
+        else:
+            payload = frame.to_bytes()
+        return CapturedFrame(
+            width=meta.width,
+            height=meta.height,
+            left=meta.left,
+            top=meta.top,
+            payload=payload,
+            backend=meta.backend,
+            source=meta.source,
+        )
+
+    def capture_region(self, rect: tuple[int, int, int, int]) -> CapturedFrame:
+        """抓一块**物理像素**矩形（``screenshot`` 动作给了 region 时用）。
+
+        ``rect`` 是 ``(left, top, right, bottom)``；冻结原型的
+        ``capture.grab_frame`` 收的是 ``(left, top, width, height)`` ——
+        换算只此一处。
+        """
+        from minicode.exec import capture
+
+        left, top, right, bottom = (int(value) for value in rect)
+        width, height = rect_size((left, top, right, bottom))
+        frame, meta = capture.grab_frame((left, top, width, height))
         if hasattr(frame, "tobytes"):
             payload = frame.tobytes()
         else:

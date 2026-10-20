@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from .geometry import rect_size
 from .ports import (
     CapturedFrame,
     ControlTreeSnapshot,
@@ -68,6 +69,23 @@ class FakeCaptureSource:
             left=0,
             top=0,
             payload=self._payload,
+            backend=self.backend,
+            source=self.source,
+        )
+
+    def capture_region(self, rect: tuple[int, int, int, int]) -> CapturedFrame:
+        """抓一块区域（合成画面）：尺寸取区域大小，内容确定。"""
+        left, top, right, bottom = (int(value) for value in rect)
+        width, height = rect_size((left, top, right, bottom))
+        width = max(0, width)
+        height = max(0, height)
+        self.calls += 1
+        return CapturedFrame(
+            width=width,
+            height=height,
+            left=left,
+            top=top,
+            payload=bytes(width * height * 3),
             backend=self.backend,
             source=self.source,
         )

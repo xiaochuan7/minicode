@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import unittest
 
+from minicode.action.capture import CapturePort
 from minicode.action.errors import ErrorCode
 from minicode.action.executor import (
     SCROLL_DELTA_PER_LINE,
@@ -14,8 +15,12 @@ from minicode.action.executor import (
     DoubleClickParams,
     TimingPolicy,
 )
-from minicode.action.fakes import FakeInputInjector, VirtualClock
+from minicode.action.fakes import FakeCaptureSource, FakeInputInjector, VirtualClock
+from minicode.action.ports import CapturedFrame
 from minicode.action.protocol import (
+    BUTTON_LEFT,
+    BUTTON_RIGHT,
+    CLICK_DOUBLE,
     DEFERRED_KINDS,
     EXECUTABLE_KINDS,
     POINT_KINDS,
@@ -25,15 +30,18 @@ from minicode.action.protocol import (
 
 #: 每个动作种类所需的参数。
 _PARAMS = {
+    ActionKind.SCREENSHOT: {},
     ActionKind.CLICK: {"x": 100, "y": 200},
-    ActionKind.DOUBLE_CLICK: {"x": 100, "y": 200},
-    ActionKind.RIGHT_CLICK: {"x": 100, "y": 200},
     ActionKind.MOVE: {"x": 100, "y": 200},
     ActionKind.DRAG: {"from_x": 10, "from_y": 20, "to_x": 30, "to_y": 40},
     ActionKind.SCROLL: {"x": 100, "y": 200, "lines": 3},
-    ActionKind.TYPE_TEXT: {"text": "你好"},
+    ActionKind.TYPE: {"text": "你好"},
     ActionKind.KEY: {"combo": ["ctrl", "s"]},
+    ActionKind.WAIT: {"ms": 100},
 }
+
+#: 双击：`click` 的参数（**不是**独立动作种类）。
+_DOUBLE_CLICK_PARAMS = {"x": 100, "y": 200, "click_count": CLICK_DOUBLE}
 
 
 class ClickTimingTest(unittest.TestCase):
@@ -86,6 +94,7 @@ class ActionSetTest(unittest.TestCase):
 
     def _executor(self, injector, **kwargs):
         kwargs.setdefault("double_click_params", DoubleClickParams(time_ms=500, distance_px=4))
+        kwargs.setdefault("screenshot_port", CapturePort((FakeCaptureSource(2560, 1600),)))
         return ActionExecutor(injector, sleeper=self.clock.sleep, clock=self.clock.time, **kwargs)
 
     def test_all_eight_executable_kinds_run_without_error(self):
@@ -115,8 +124,8 @@ class ActionSetTest(unittest.TestCase):
         executor = ActionExecutor(injector, sleeper=self.clock.sleep, clock=self.clock.time)
         result = executor.execute(
             Action(
-                kind=ActionKind.DOUBLE_CLICK,
-                params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]),
+                kind=ActionKind.CLICK,
+                params=dict(_DOUBLE_CLICK_PARAMS),
                 intent="双击",
             )
         )
@@ -148,7 +157,7 @@ class DoubleClickTest(unittest.TestCase):
 
     def test_double_click_injects_two_presses_with_a_small_gap(self):
         result = self.executor.execute(
-            Action(kind=ActionKind.DOUBLE_CLICK, params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]), intent="双击")
+            Action(kind=ActionKind.CLICK, params=dict(_DOUBLE_CLICK_PARAMS), intent="双击")
         )
         self.assertTrue(result.ok)
         self.assertEqual([e[0] for e in self.injector.events].count("button_down"), 2)
@@ -156,7 +165,7 @@ class DoubleClickTest(unittest.TestCase):
 
     def test_the_recorded_gap_is_the_measured_interval_between_the_two_presses(self):
         result = self.executor.execute(
-            Action(kind=ActionKind.DOUBLE_CLICK, params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]), intent="双击")
+            Action(kind=ActionKind.CLICK, params=dict(_DOUBLE_CLICK_PARAMS), intent="双击")
         )
         # 第二次点击序列自带一段停顿，所以实测间隔 > 我们请求的那段 sleep。
         self.assertGreater(
@@ -166,7 +175,7 @@ class DoubleClickTest(unittest.TestCase):
 
     def test_double_click_does_not_move_between_the_two_presses(self):
         self.executor.execute(
-            Action(kind=ActionKind.DOUBLE_CLICK, params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]), intent="双击")
+            Action(kind=ActionKind.CLICK, params=dict(_DOUBLE_CLICK_PARAMS), intent="双击")
         )
         moves = [e for e in self.injector.events if e[0] == "move"]
         self.assertEqual(len(moves), 2)
@@ -201,8 +210,8 @@ class DoubleClickTest(unittest.TestCase):
         )
         result = executor.execute(
             Action(
-                kind=ActionKind.DOUBLE_CLICK,
-                params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]),
+                kind=ActionKind.CLICK,
+                params=dict(_DOUBLE_CLICK_PARAMS),
                 intent="双击",
             )
         )
@@ -221,8 +230,8 @@ class DoubleClickTest(unittest.TestCase):
         )
         result = executor.execute(
             Action(
-                kind=ActionKind.DOUBLE_CLICK,
-                params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]),
+                kind=ActionKind.CLICK,
+                params=dict(_DOUBLE_CLICK_PARAMS),
                 intent="双击",
             )
         )
@@ -298,7 +307,7 @@ class TypeTextTest(unittest.TestCase):
         injector = FakeInputInjector()
         injector.write_clipboard("用户原来的内容")
         result = self._executor(injector).execute(
-            Action(kind=ActionKind.TYPE_TEXT, params=dict(_PARAMS[ActionKind.TYPE_TEXT]), intent="输入")
+            Action(kind=ActionKind.TYPE, params=dict(_PARAMS[ActionKind.TYPE]), intent="输入")
         )
         self.assertTrue(result.ok)
         self.assertEqual(injector.read_clipboard(), "用户原来的内容")
@@ -307,14 +316,14 @@ class TypeTextTest(unittest.TestCase):
         injector = FakeInputInjector()
         injector.write_clipboard(None)
         self._executor(injector).execute(
-            Action(kind=ActionKind.TYPE_TEXT, params=dict(_PARAMS[ActionKind.TYPE_TEXT]), intent="输入")
+            Action(kind=ActionKind.TYPE, params=dict(_PARAMS[ActionKind.TYPE]), intent="输入")
         )
         self.assertIsNone(injector.read_clipboard())
 
     def test_paste_channel_failure_falls_back_to_unicode_injection(self):
         injector = FakeInputInjector(fail_paste=True)
         result = self._executor(injector).execute(
-            Action(kind=ActionKind.TYPE_TEXT, params=dict(_PARAMS[ActionKind.TYPE_TEXT]), intent="输入")
+            Action(kind=ActionKind.TYPE, params=dict(_PARAMS[ActionKind.TYPE]), intent="输入")
         )
         self.assertTrue(result.ok)
         kinds = [e[0] for e in injector.events]
@@ -325,7 +334,7 @@ class TypeTextTest(unittest.TestCase):
         injector = FakeInputInjector(fail_paste=True)
         injector.write_clipboard("用户原来的内容")
         self._executor(injector).execute(
-            Action(kind=ActionKind.TYPE_TEXT, params=dict(_PARAMS[ActionKind.TYPE_TEXT]), intent="输入")
+            Action(kind=ActionKind.TYPE, params=dict(_PARAMS[ActionKind.TYPE]), intent="输入")
         )
         self.assertEqual(injector.read_clipboard(), "用户原来的内容")
 
@@ -334,10 +343,188 @@ class TypeTextTest(unittest.TestCase):
         injector = FakeInputInjector(non_text_clipboard=True)
         injector.write_clipboard("用户原来的内容")
         result = self._executor(injector).execute(
-            Action(kind=ActionKind.TYPE_TEXT, params=dict(_PARAMS[ActionKind.TYPE_TEXT]), intent="输入")
+            Action(kind=ActionKind.TYPE, params=dict(_PARAMS[ActionKind.TYPE]), intent="输入")
         )
         self.assertTrue(result.ok)
         kinds = [e[0] for e in injector.events]
         self.assertIn("type_unicode", kinds)
         self.assertNotIn("press_combo", kinds)
         self.assertEqual(injector.read_clipboard(), "用户原来的内容")
+
+
+class ClickParamsTest(unittest.TestCase):
+    """双击与右键是 `click` 的**参数**（工单 M21）。"""
+
+    def setUp(self):
+        self.clock = VirtualClock()
+        self.injector = FakeInputInjector()
+        self.executor = ActionExecutor(
+            self.injector,
+            sleeper=self.clock.sleep,
+            clock=self.clock.time,
+            double_click_params=DoubleClickParams(time_ms=500, distance_px=4),
+        )
+
+    def test_a_left_click_presses_the_left_button(self):
+        result = self.executor.execute(
+            Action(
+                kind=ActionKind.CLICK,
+                params={"x": 100, "y": 200, "button": BUTTON_LEFT},
+                intent="点击",
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [e for e in self.injector.events if e[0] == "button_down"],
+            [("button_down", "left")],
+        )
+
+    def test_a_right_click_is_a_click_with_the_right_button_parameter(self):
+        result = self.executor.execute(
+            Action(
+                kind=ActionKind.CLICK,
+                params={"x": 100, "y": 200, "button": BUTTON_RIGHT},
+                intent="右键点击",
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [e for e in self.injector.events if e[0] == "button_down"],
+            [("button_down", "right")],
+        )
+
+    def test_an_unknown_button_value_is_rejected_without_injecting(self):
+        result = self.executor.execute(
+            Action(
+                kind=ActionKind.CLICK,
+                params={"x": 100, "y": 200, "button": 2},
+                intent="点击",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+        self.assertEqual(self.injector.events, [])
+
+    def test_an_unsupported_click_count_is_rejected_without_injecting(self):
+        result = self.executor.execute(
+            Action(
+                kind=ActionKind.CLICK,
+                params={"x": 100, "y": 200, "click_count": 3},
+                intent="点击",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+        self.assertEqual(self.injector.events, [])
+
+
+class ScreenshotTest(unittest.TestCase):
+    """`screenshot` 动作：给了 region 是一块物理像素矩形，不给是整屏（工单 M21）。"""
+
+    def setUp(self):
+        self.clock = VirtualClock()
+        self.source = FakeCaptureSource(2560, 1600)
+        self.port = CapturePort((self.source,))
+        self.executor = ActionExecutor(
+            FakeInputInjector(),
+            sleeper=self.clock.sleep,
+            clock=self.clock.time,
+            screenshot_port=self.port,
+        )
+
+    def test_a_screenshot_without_a_region_covers_the_whole_screen(self):
+        result = self.executor.execute(
+            Action(kind=ActionKind.SCREENSHOT, params={}, intent="截一张图")
+        )
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.captured)
+        self.assertEqual((result.captured.width, result.captured.height), (2560, 1600))
+
+    def test_a_screenshot_with_a_region_covers_only_that_rectangle(self):
+        result = self.executor.execute(
+            Action(
+                kind=ActionKind.SCREENSHOT,
+                params={"region": (100, 200, 500, 600)},
+                intent="截取区域",
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual((result.captured.width, result.captured.height), (400, 400))
+        self.assertEqual((result.captured.left, result.captured.top), (100, 200))
+
+    def test_the_captured_frame_is_reported_as_a_digest_not_as_pixels(self):
+        result = self.executor.execute(
+            Action(kind=ActionKind.SCREENSHOT, params={}, intent="截一张图")
+        )
+        payload = result.to_dict()["captured"]
+        self.assertEqual(payload["sha256"], result.captured.digest())
+        self.assertNotIn("payload", payload)
+
+    def test_a_screenshot_without_a_capture_port_fails(self):
+        executor = ActionExecutor(FakeInputInjector())
+        result = executor.execute(
+            Action(kind=ActionKind.SCREENSHOT, params={}, intent="截一张图")
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+
+    def test_an_empty_frame_is_reported_as_capture_empty(self):
+        class _EmptyPort:
+            def screenshot(self, region=None):
+                return CapturedFrame(width=0, height=0, payload=b"")
+
+        executor = ActionExecutor(FakeInputInjector(), screenshot_port=_EmptyPort())
+        result = executor.execute(
+            Action(kind=ActionKind.SCREENSHOT, params={}, intent="截一张图")
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.CAPTURE_EMPTY)
+
+    def test_a_degenerate_region_is_rejected(self):
+        result = self.executor.execute(
+            Action(
+                kind=ActionKind.SCREENSHOT,
+                params={"region": (100, 200, 100, 600)},
+                intent="截取区域",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+
+
+class WaitTest(unittest.TestCase):
+    """`wait` 动作：等待时长**可注入**，可压到 0（工单 M21）。"""
+
+    def setUp(self):
+        self.clock = VirtualClock()
+        self.executor = ActionExecutor(
+            FakeInputInjector(), sleeper=self.clock.sleep, clock=self.clock.time
+        )
+
+    def test_the_wait_length_comes_from_the_ms_parameter(self):
+        result = self.executor.execute(
+            Action(kind=ActionKind.WAIT, params={"ms": 300}, intent="等 300 ms")
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(self.clock.sleeps, [0.3])
+
+    def test_a_zero_length_wait_does_not_wait_at_all(self):
+        result = self.executor.execute(
+            Action(kind=ActionKind.WAIT, params={"ms": 0}, intent="等 0 ms")
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(self.clock.sleeps, [0.0])
+
+    def test_a_wait_without_ms_is_rejected(self):
+        result = self.executor.execute(
+            Action(kind=ActionKind.WAIT, params={}, intent="等")
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+
+    def test_a_negative_wait_is_rejected(self):
+        result = self.executor.execute(
+            Action(kind=ActionKind.WAIT, params={"ms": -1}, intent="等 -1 ms")
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)

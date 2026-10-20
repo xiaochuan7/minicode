@@ -29,6 +29,8 @@ __all__ = [
     "ControlTreeSnapshot",
     "InjectionBlocked",
     "CaptureSource",
+    "RegionCaptureSource",
+    "ScreenshotPort",
     "ControlTree",
     "InputInjector",
     "WindowController",
@@ -138,6 +140,31 @@ class CaptureSource(Protocol):
 
     def capture(self) -> CapturedFrame:
         """抓一帧。拿到 0×0 画面时如实返回，由上层跳过该捕获源。"""
+        ...
+
+
+@runtime_checkable
+class RegionCaptureSource(Protocol):
+    """能抓**指定区域**的截图源。
+
+    ``screenshot`` 动作给了 ``region`` 时用它（工单 M21）。
+    ``rect`` 是 ``(left, top, right, bottom)``，**物理像素**。
+    """
+
+    def capture_region(self, rect: tuple[int, int, int, int]) -> CapturedFrame:
+        """抓一块矩形区域。拿到 0×0 画面时如实返回，由上层跳过该捕获源。"""
+        ...
+
+
+@runtime_checkable
+class ScreenshotPort(Protocol):
+    """抓一帧画面作为观察（``screenshot`` 动作的端口）。
+
+    ``region`` 给了就抓那一块**物理像素**矩形 ``(left, top, right, bottom)``，
+    不给就抓整屏。
+    """
+
+    def screenshot(self, region: tuple[int, int, int, int] | None = None) -> CapturedFrame:
         ...
 
 

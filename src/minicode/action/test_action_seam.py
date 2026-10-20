@@ -461,6 +461,7 @@ class ActionRecordTest(unittest.TestCase):
                 json.loads(line)
 
     def test_double_click_and_two_independent_clicks_produce_different_records(self):
+        """双击与两次单击**动作种类相同**（都是 ``click``），靠参数区分。"""
         with tempfile.TemporaryDirectory() as tmp:
             sink = ListTraceSink()
             seam, _, _, clock = _build_seam(
@@ -468,7 +469,11 @@ class ActionRecordTest(unittest.TestCase):
                 double_click_params=DoubleClickParams(time_ms=500, distance_px=4),
             )
             seam.run(
-                SeamRequest(target_description="开始", action_kind=ActionKind.DOUBLE_CLICK)
+                SeamRequest(
+                    target_description="开始",
+                    action_kind=ActionKind.CLICK,
+                    params={"click_count": 2},
+                )
             )
             seam.run(SeamRequest(target_description="开始", action_kind=ActionKind.CLICK))
             clock.sleep(0.6)
@@ -476,9 +481,12 @@ class ActionRecordTest(unittest.TestCase):
             log = ActionLog(tmp)
             for trace in sink.traces:
                 log.append(build_record(trace))
-            actions = [record["action"] for record in log.records()]
-            self.assertEqual(actions, ["double_click", "click", "click"])
-            self.assertTrue(log.records()[0]["result"]["ok"])
+            records = log.records()
+            self.assertEqual([record["action"] for record in records], ["click", "click", "click"])
+            self.assertEqual(records[0]["params"]["click_count"], 2)
+            self.assertNotIn("click_count", records[1]["params"])
+            self.assertNotEqual(records[0]["intent"], records[1]["intent"])
+            self.assertTrue(records[0]["result"]["ok"])
 
     def test_the_record_carries_the_cursor_readback_and_its_delta(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -497,3 +505,139 @@ class ActionRecordTest(unittest.TestCase):
         self.assertEqual(len(payload["rejected_candidates"]), 2)
         self.assertEqual(payload["rejected_candidates"][0]["name"], "开始")
         self.assertIsNone(payload["point"])
+
+
+class StandaloneActionTest(unittest.TestCase):
+    """缝上跑 `screenshot` 与 `wait`（工单 M21）：返回形状与既有动作一致。
+
+    全程假实现：不碰真实桌面、不需要凭据、不产生费用。
+    """
+
+    def test_a_screenshot_action_returns_the_same_shape_as_the_other_actions(self):
+        sink = ListTraceSink()
+        seam, _, _, _ = _build_seam(trace_sink=sink)
+        result = seam.run(SeamRequest(target_description="", action_kind=ActionKind.SCREENSHOT))
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action.kind, ActionKind.SCREENSHOT)
+        self.assertIsNone(result.final_point)
+        self.assertTrue(result.intent)
+        self.assertEqual(len(sink.traces), 1)
+
+    def test_a_screenshot_without_a_region_covers_the_whole_screen(self):
+        seam, _, _, _ = _build_seam()
+        result = seam.run(SeamRequest(target_description="", action_kind=ActionKind.SCREENSHOT))
+        captured = result.result.captured
+        self.assertIsNotNone(captured)
+        self.assertEqual((captured.width, captured.height), (640, 480))
+
+    def test_a_screenshot_with_a_region_captures_only_that_rectangle(self):
+        seam, _, _, _ = _build_seam()
+        result = seam.run(
+            SeamRequest(
+                target_description="",
+                action_kind=ActionKind.SCREENSHOT,
+                params={"region": (10, 20, 110, 120)},
+            )
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action.params["region"], (10, 20, 110, 120))
+        self.assertEqual(result.action.params["space"], "physical-surface")
+        captured = result.result.captured
+        self.assertEqual((captured.width, captured.height), (100, 100))
+        self.assertEqual((captured.left, captured.top), (10, 20))
+
+    def test_a_screenshot_skips_a_capture_source_that_only_returns_an_empty_frame(self):
+        empty = FakeCaptureSource(width=0, height=0, name="empty")
+        good = FakeCaptureSource(width=2560, height=1600, name="good")
+        seam, _, _, _ = _build_seam(sources=(empty, good))
+        result = seam.run(SeamRequest(target_description="", action_kind=ActionKind.SCREENSHOT))
+        self.assertTrue(result.ok)
+        self.assertEqual((result.result.captured.width, result.result.captured.height), (2560, 1600))
+
+    def test_a_screenshot_produces_exactly_one_record_carrying_the_frame_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sink = ListTraceSink()
+            seam, _, _, _ = _build_seam(trace_sink=sink)
+            seam.run(SeamRequest(target_description="", action_kind=ActionKind.SCREENSHOT))
+            log = ActionLog(tmp)
+            log.append(build_record(sink.traces[-1]))
+            records = log.records()
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["action"], "screenshot")
+            self.assertEqual(len(records[0]["screenshot_sha256"]), 64)
+            self.assertIsNone(records[0]["point"])
+
+    def test_a_wait_action_returns_the_same_shape_and_waits_the_requested_time(self):
+        sink = ListTraceSink()
+        seam, _, _, clock = _build_seam(trace_sink=sink)
+        result = seam.run(
+            SeamRequest(target_description="", action_kind=ActionKind.WAIT, params={"ms": 300})
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action.kind, ActionKind.WAIT)
+        self.assertIsNone(result.final_point)
+        self.assertIn("300", result.intent)
+        self.assertEqual(clock.sleeps, [0.3])
+        self.assertEqual(len(sink.traces), 1)
+
+    def test_a_wait_of_zero_ms_does_not_wait_at_all(self):
+        seam, _, _, clock = _build_seam()
+        result = seam.run(
+            SeamRequest(target_description="", action_kind=ActionKind.WAIT, params={"ms": 0})
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(clock.sleeps, [0.0])
+
+    def test_an_action_that_needs_no_landing_point_but_is_not_a_standalone_one_is_rejected(self):
+        with self.assertRaises(ValueError):
+            SeamRequest(target_description="开始", action_kind=ActionKind.TYPE)
+
+    def test_a_region_outside_the_virtual_desktop_is_rejected_and_not_clamped(self):
+        """越界不夹取（架构备忘 §3）：宁可报错，也不给一块不是用户要的画面。"""
+        sink = ListTraceSink()
+        seam, _, _, _ = _build_seam(trace_sink=sink)
+        result = seam.run(
+            SeamRequest(
+                target_description="",
+                action_kind=ActionKind.SCREENSHOT,
+                params={"region": (3000, 500, 3100, 600)},
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.result.error_code, ErrorCode.CLIPPED_BY_DESKTOP)
+        self.assertIsNone(result.final_point)
+        self.assertEqual(sink.traces[-1].failures["execute"], "clipped_by_desktop")
+
+    def test_a_region_two_pixels_outside_the_desktop_is_still_captured(self):
+        seam, _, _, _ = _build_seam()
+        result = seam.run(
+            SeamRequest(
+                target_description="",
+                action_kind=ActionKind.SCREENSHOT,
+                params={"region": (2559, 1599, 2561, 1601)},
+            )
+        )
+        self.assertTrue(result.ok)
+
+
+class ClickIntentTest(unittest.TestCase):
+    """点击的意图动词由**参数**决定（双击 / 右键都是 `click` 的参数）。"""
+
+    def _intent(self, params):
+        seam, _, _, _ = _build_seam()
+        result = seam.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK, params=params)
+        )
+        return result.intent
+
+    def test_a_plain_click_says_click(self):
+        self.assertEqual(self._intent({}), "点击「开始」")
+
+    def test_a_double_click_says_double_click(self):
+        self.assertEqual(self._intent({"click_count": 2}), "双击「开始」")
+
+    def test_a_right_click_says_right_click(self):
+        self.assertEqual(self._intent({"button": 3}), "右键点击「开始」")
+
+    def test_a_right_double_click_says_right_double_click(self):
+        self.assertEqual(self._intent({"button": 3, "click_count": 2}), "右键双击「开始」")

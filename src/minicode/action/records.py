@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from minicode.redact.patterns import PASSWORD_PLACEHOLDER
 
-from .ports import ControlCandidate
+from .ports import CapturedFrame, ControlCandidate
 from .protocol import PROTOCOL_VERSION, Action, ActionResult
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入（避免循环依赖）
@@ -39,6 +39,7 @@ __all__ = [
     "TraceSink",
     "ListTraceSink",
     "build_record",
+    "frame_fields",
     "trace_candidates",
     "POINT_SPACE",
     "FAILURE_FIELDS",
@@ -49,6 +50,15 @@ POINT_SPACE = "physical-surface"
 
 #: 三类失败字段的固定名字。
 FAILURE_FIELDS = ("locate", "decision", "execute")
+
+#: **不进动作记录**的参数键：输入文本的正文可能含敏感内容
+#: （与 C-15 同源：界面内容不进日志）。
+_UNRECORDED_PARAM_KEYS = frozenset({"text"})
+
+
+def _recorded_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """动作记录里要落的参数（去掉正文类参数）。"""
+    return {key: value for key, value in params.items() if key not in _UNRECORDED_PARAM_KEYS}
 
 
 @dataclass(frozen=True)
@@ -150,6 +160,8 @@ class ActionRecord:
     #: **查询口径**：``"window-anchored"``（窗口锚定）/ ``"desktop-level"``（桌面级）
     #: / 空（这条通道不查控件树）。工单 M3 AC 8 要求写明，不许两种口径混用。
     query_scope: str = ""
+    #: 动作参数（机器可解析）。**输入文本的正文不落**（可能含敏感内容）。
+    params: Mapping[str, Any] | None = None
     failure_locate: str | None = None
     failure_decision: str | None = None
     failure_execute: str | None = None
@@ -198,6 +210,7 @@ class ActionRecord:
                 "landing_verified": self.landing_verified,
             },
             "query_scope": self.query_scope,
+            "params": dict(self.params) if self.params is not None else None,
             "failures": {
                 "locate": self.failure_locate,
                 "decision": self.failure_decision,
@@ -206,6 +219,26 @@ class ActionRecord:
             "redaction": dict(self.redaction) if self.redaction is not None else None,
             "notes": list(self.notes),
         }
+
+
+def frame_fields(frame: CapturedFrame | None) -> dict[str, Any]:
+    """追踪记录里**帧相关**的那几个字段（抓图尺寸 / 截图哈希 / 图像来源）。
+
+    **只落哈希，不落原图** —— 与动作记录同一条红线。
+    """
+    if frame is None:
+        return {
+            "capture_width": None,
+            "capture_height": None,
+            "screenshot_sha256": None,
+            "image_source": None,
+        }
+    return {
+        "capture_width": frame.width,
+        "capture_height": frame.height,
+        "screenshot_sha256": frame.digest(),
+        "image_source": f"{frame.source}|{frame.backend}",
+    }
 
 
 def trace_candidates(
@@ -274,6 +307,7 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         failure_decision=failures.get("decision"),
         failure_execute=failures.get("execute"),
         query_scope=trace.query_scope,
+        params=_recorded_params(trace.action.params) if trace.action is not None else None,
         redaction=(
             trace.model_view.report.to_dict() if trace.model_view is not None else None
         ),

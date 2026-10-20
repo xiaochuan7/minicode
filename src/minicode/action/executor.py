@@ -20,9 +20,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import ActionError, ErrorCode
-from .geometry import is_sentinel
-from .ports import InjectionBlocked, InputInjector
-from .protocol import DEFERRED_KINDS, Action, ActionKind, ActionResult
+from .geometry import is_sentinel, rect_size
+from .ports import InjectionBlocked, InputInjector, ScreenshotPort
+from .protocol import (
+    BUTTON_LEFT,
+    CLICK_DOUBLE,
+    DEFERRED_KINDS,
+    Action,
+    ActionKind,
+    ActionResult,
+    int_param,
+    parse_click_params,
+)
 
 __all__ = [
     "ActionExecutor",
@@ -83,7 +92,16 @@ def _empty_timing() -> dict[str, Any]:
         "double_click_requested_gap_ms": None,
         "scroll_settle_ms": 0.0,
         "scroll_delta": 0,
+        "wait_ms": 0,
     }
+
+
+def _int_param(action: Action, name: str, default: int) -> int:
+    """取一个整数参数。给了但不是整数 → 执行失败（不猜）。"""
+    try:
+        return int_param(action.params, name, default)
+    except ValueError as exc:
+        raise ActionError(ErrorCode.EXECUTE_FAILED, str(exc)) from exc
 
 
 class ActionExecutor:
@@ -97,10 +115,13 @@ class ActionExecutor:
         clock: Callable[[], float] = time.perf_counter,
         timing: TimingPolicy | None = None,
         double_click_params: DoubleClickParams | None = None,
+        screenshot_port: ScreenshotPort | None = None,
     ):
         self.injector = injector
         self.timing = timing or TimingPolicy()
         self.double_click_params = double_click_params
+        #: ``screenshot`` 动作的端口（抓帧）。缺省 = 该动作不可执行。
+        self.screenshot_port = screenshot_port
         self._sleep = sleeper
         self._clock = clock
 
@@ -122,21 +143,21 @@ class ActionExecutor:
             )
         try:
             if kind is ActionKind.CLICK:
-                return self._click(action, "left")
-            if kind is ActionKind.RIGHT_CLICK:
-                return self._click(action, "right")
-            if kind is ActionKind.DOUBLE_CLICK:
-                return self._double_click(action)
+                return self._click(action)
             if kind is ActionKind.MOVE:
                 return self._move(action)
             if kind is ActionKind.DRAG:
                 return self._drag(action)
             if kind is ActionKind.SCROLL:
                 return self._scroll(action)
-            if kind is ActionKind.TYPE_TEXT:
-                return self._type_text(action)
+            if kind is ActionKind.TYPE:
+                return self._type(action)
             if kind is ActionKind.KEY:
                 return self._key(action)
+            if kind is ActionKind.SCREENSHOT:
+                return self._screenshot(action)
+            if kind is ActionKind.WAIT:
+                return self._wait(action)
         except InjectionBlocked as exc:
             return ActionResult(
                 ok=False,
@@ -164,13 +185,20 @@ class ActionExecutor:
     # 各类动作
     # ------------------------------------------------------------------
 
-    def _click(self, action: Action, button: str) -> ActionResult:
+    def _click(self, action: Action) -> ActionResult:
+        """点击。**双击与右键是参数**（``click_count`` / ``button``），不是动作种类。"""
+        try:
+            button, click_count = parse_click_params(action.params)
+        except ValueError as exc:
+            raise ActionError(ErrorCode.EXECUTE_FAILED, str(exc)) from exc
         x, y = self._point(action)
-        timing, _, _ = self._click_sequence(x, y, button)
+        side = "left" if button == BUTTON_LEFT else "right"
+        if click_count == CLICK_DOUBLE:
+            return self._double_click(action, x, y, side)
+        timing, _, _ = self._click_sequence(x, y, side)
         return self._finish(x, y, timing)
 
-    def _double_click(self, action: Action) -> ActionResult:
-        x, y = self._point(action)
+    def _double_click(self, action: Action, x: int, y: int, side: str) -> ActionResult:
         params = self.double_click_params
         if params is None:
             raise ActionError(
@@ -188,9 +216,9 @@ class ActionExecutor:
                 f"系统的双击时间 {params.time_ms} ms 放不下一次点击序列，做不出双击",
             )
         gap_s = min(0.080, budget_s / 2.0)
-        _first, first_pressed_at, _ = self._click_sequence(x, y, "left")
+        _first, first_pressed_at, _ = self._click_sequence(x, y, side)
         self._sleep(gap_s)
-        second, second_pressed_at, _ = self._click_sequence(x, y, "left")
+        second, second_pressed_at, _ = self._click_sequence(x, y, side)
         timing = second
         # 记**实测**的两次按下间隔（Windows 判双击看的是按下与按下之间），
         # 而不是我们请求的那段 sleep——第二次点击序列自带一段停顿。
@@ -243,7 +271,7 @@ class ActionExecutor:
         timing["scroll_delta"] = delta
         return self._finish(x, y, timing)
 
-    def _type_text(self, action: Action) -> ActionResult:
+    def _type(self, action: Action) -> ActionResult:
         text = str(action.params.get("text", ""))
         notes: list[str] = []
         # 剪贴板里有非文本内容（图片、文件列表）时**不走粘贴通道**：
@@ -282,6 +310,60 @@ class ActionExecutor:
             raise ActionError(ErrorCode.EXECUTE_FAILED, "key 动作缺少 combo 参数")
         self.injector.press_combo(combo)
         return ActionResult(ok=True)
+
+    def _screenshot(self, action: Action) -> ActionResult:
+        """截图。给了 ``region`` 就是一块**物理像素**矩形，不给就是整屏。"""
+        port = self.screenshot_port
+        if port is None:
+            raise ActionError(
+                ErrorCode.EXECUTE_FAILED,
+                "screenshot 动作需要截图端口（本执行器没有注入截图端口）",
+            )
+        region = self._region(action)
+        frame = port.screenshot(region)
+        if frame.is_empty:
+            return ActionResult(
+                ok=False,
+                error_code=ErrorCode.CAPTURE_EMPTY,
+                error_message="截图拿到 0×0 画面",
+            )
+        return ActionResult(ok=True, captured=frame)
+
+    def _wait(self, action: Action) -> ActionResult:
+        """显式等待。等待时长**可注入**（``ms``）—— 单测里压到 0 即可。"""
+        if "ms" not in action.params:
+            raise ActionError(ErrorCode.EXECUTE_FAILED, "wait 动作缺少 ms 参数（毫秒）")
+        ms = _int_param(action, "ms", 0)
+        if ms < 0:
+            raise ActionError(ErrorCode.EXECUTE_FAILED, f"wait 的 ms 参数不能为负：{ms}")
+        started = self._clock()
+        self._sleep(ms / 1000.0)
+        timing = _empty_timing()
+        timing["total_ms"] = (self._clock() - started) * 1000.0
+        timing["wait_ms"] = ms
+        return ActionResult(ok=True, timing=timing)
+
+    @staticmethod
+    def _region(action: Action) -> tuple[int, int, int, int] | None:
+        """``screenshot`` 的 ``region`` 参数：``(left, top, right, bottom)`` 物理像素。"""
+        raw = action.params.get("region")
+        if raw is None:
+            return None
+        try:
+            left, top, right, bottom = (int(value) for value in raw)
+        except (TypeError, ValueError) as exc:
+            raise ActionError(
+                ErrorCode.EXECUTE_FAILED,
+                f"screenshot 的 region 参数非法（要 4 个整数 left/top/right/bottom）：{exc}",
+            ) from exc
+        width, height = rect_size((left, top, right, bottom))
+        if width <= 0 or height <= 0:
+            raise ActionError(
+                ErrorCode.EXECUTE_FAILED,
+                f"screenshot 的 region 非法（right/bottom 必须大于 left/top）："
+                f"{(left, top, right, bottom)}",
+            )
+        return (left, top, right, bottom)
 
     # ------------------------------------------------------------------
     # 内部

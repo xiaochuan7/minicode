@@ -44,11 +44,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from minicode.coord.coordinates import CoordinateOutOfBounds
+from minicode.coord.coordinates import DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX, CoordinateOutOfBounds
 from minicode.redact.config import ModelContextConfig
 from minicode.redact.errors import ChannelUnavailableError
 from minicode.redact.redactor import TreeRedactor
 
+from .capture import CapturePort
 from .errors import ErrorCode
 from .executor import ActionExecutor, DoubleClickParams, TimingPolicy
 from .geometry import VirtualDesktop
@@ -66,8 +67,24 @@ from .ports import (
     WindowAnchor,
     WindowController,
 )
-from .protocol import POINT_KINDS, Action, ActionKind, ActionResult
-from .records import FAILURE_FIELDS, POINT_SPACE, ActionTrace, TraceSink, trace_candidates
+from .protocol import (
+    BUTTON_RIGHT,
+    CLICK_DOUBLE,
+    POINT_KINDS,
+    STANDALONE_KINDS,
+    Action,
+    ActionKind,
+    ActionResult,
+    parse_click_params,
+)
+from .records import (
+    FAILURE_FIELDS,
+    POINT_SPACE,
+    ActionTrace,
+    TraceSink,
+    frame_fields,
+    trace_candidates,
+)
 from .surface import SurfaceSpec
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
@@ -77,13 +94,28 @@ __all__ = ["SeamRequest", "SeamResult", "ActionExecutionSeam"]
 
 #: 动作种类 → 意图动词。
 _INTENT_VERBS = {
-    ActionKind.CLICK: "点击",
-    ActionKind.DOUBLE_CLICK: "双击",
-    ActionKind.RIGHT_CLICK: "右键点击",
     ActionKind.MOVE: "移动到",
     ActionKind.SCROLL: "滚动",
     ActionKind.DRAG: "拖拽",
 }
+
+
+def _click_verb(params: Mapping[str, Any]) -> str:
+    """点击的意图动词：**由参数决定**（双击 / 右键是 `click` 的参数）。
+
+    参数怎么读由协议层说了算（:func:`~minicode.action.protocol.parse_click_params`），
+    本函数不自己另立一套规则。
+    """
+    try:
+        button, click_count = parse_click_params(params)
+    except ValueError:
+        # 参数非法时执行器会报执行失败；这里只给个默认说法。
+        return "点击"
+    if click_count == CLICK_DOUBLE:
+        return "右键双击" if button == BUTTON_RIGHT else "双击"
+    if button == BUTTON_RIGHT:
+        return "右键点击"
+    return "点击"
 
 
 @dataclass(frozen=True)
@@ -95,7 +127,7 @@ class SeamRequest:
     frame: CapturedFrame | None = None
     #: 可选的控件树快照。缺省时由控件树通道读一次。
     tree_snapshot: ControlTreeSnapshot | None = None
-    #: 动作种类。只接受需要一个落点的动作种类。
+    #: 动作种类。需要一个落点的动作种类，外加截图 / 等待（这两个没有落点）。
     action_kind: ActionKind = ActionKind.CLICK
     #: 动作的额外参数（如 scroll 的 lines）。
     params: Mapping[str, Any] = field(default_factory=dict)
@@ -104,9 +136,10 @@ class SeamRequest:
     control_type: str = ""
 
     def __post_init__(self) -> None:
-        if self.action_kind not in POINT_KINDS:
+        if self.action_kind not in POINT_KINDS and self.action_kind not in STANDALONE_KINDS:
             raise ValueError(
-                f"动作执行缝只处理需要一个落点的动作种类，收到 {self.action_kind.value!r}；"
+                f"动作执行缝只处理需要一个落点的动作种类或截图/等待，"
+                f"收到 {self.action_kind.value!r}；"
                 "输入文本 / 按键等动作请直接用动作执行器。"
             )
 
@@ -167,6 +200,8 @@ class ActionExecutionSeam:
         anchor: WindowAnchor | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
+        #: 缝内唯一的抓屏入口（整屏 / 区域）。
+        self._capture_port = CapturePort(self.capture_sources)
         self.tree = tree
         self.injector = injector
         self.window_controller = window_controller
@@ -179,6 +214,7 @@ class ActionExecutionSeam:
             clock=clock,
             timing=timing,
             double_click_params=double_click_params,
+            screenshot_port=self._capture_port,
         )
         self.trace_sink = trace_sink
         self.capture_to_physical_scale = float(capture_to_physical_scale)
@@ -204,11 +240,15 @@ class ActionExecutionSeam:
 
     def run(self, request: SeamRequest) -> SeamResult:
         """跑一次动作，返回「动作 + 最终落点 + 意图」。"""
+        if request.action_kind in STANDALONE_KINDS:
+            # 截图 / 等待不需要定位目标：没有最终落点，但返回形状一样。
+            return self._run_standalone(request)
         skipped: list[str] = []
         frame = request.frame
         if frame is None:
-            frame = self._capture_usable(skipped)
-            if frame is None:
+            frame = self._capture_port.screenshot()
+            skipped.extend(self._capture_port.skipped)
+            if frame.is_empty:
                 return self._fail(
                     request,
                     ErrorCode.CAPTURE_EMPTY,
@@ -367,12 +407,9 @@ class ActionExecutionSeam:
             ),
             selected=_traced_candidate(selected),
             landing_point=final_point,
-            capture_width=frame.width,
-            capture_height=frame.height,
-            screenshot_sha256=frame.digest(),
+            **frame_fields(frame),
             sent_width=frame.width,
             sent_height=frame.height,
-            image_source=f"{frame.source}|{frame.backend}",
             skipped_capture_sources=tuple(skipped),
             locate_ms=locate_ms,
             decision_ms=0.0,
@@ -393,6 +430,82 @@ class ActionExecutionSeam:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    def _run_standalone(self, request: SeamRequest) -> SeamResult:
+        """跑一个**不需要定位目标**的动作（截图 / 等待）。
+
+        返回形状与既有动作一致：动作 + 最终落点（这两个动作没有落点，是 ``None``）
+        + 意图 + 结果；同样产出**恰好一条**追踪记录。
+        """
+        region = request.params.get("region")
+        if region is not None and self._region_out_of_desktop(region):
+            # 越界不夹取（架构备忘 §3）：区域越出物理表面就报错，
+            # 不给一块不是用户要的画面。
+            return self._fail(
+                request,
+                ErrorCode.CLIPPED_BY_DESKTOP,
+                f"screenshot 的 region {tuple(region)} 越出虚拟桌面（越界不夹取）",
+                failure_field="execute",
+            )
+        action = self._build_standalone_action(request)
+        execute_started = self._clock()
+        result = self.executor.execute(action)
+        execute_verify_ms = (self._clock() - execute_started) * 1000.0
+        captured = result.captured
+        failures = {name: None for name in FAILURE_FIELDS}
+        if not result.ok and result.error_code is not None:
+            failures["execute"] = result.error_code.value
+        trace = ActionTrace(
+            action=action,
+            intent=action.intent,
+            target_description=request.target_description,
+            landing_point=None,
+            **frame_fields(captured),
+            # 「送模型尺寸」是**送**给模型的图有多大；截图动作没送模型 → 留空。
+            skipped_capture_sources=(
+                self._capture_port.skipped if action.kind is ActionKind.SCREENSHOT else ()
+            ),
+            locate_ms=0.0,
+            decision_ms=0.0,
+            execute_verify_ms=execute_verify_ms,
+            failures=failures,
+            result=result,
+        )
+        self._emit(trace)
+        return SeamResult(
+            action=action,
+            final_point=None,
+            intent=action.intent,
+            result=result,
+        )
+
+    def _region_out_of_desktop(self, region: Any) -> bool:
+        """``screenshot`` 的 region 是否越出虚拟桌面。
+
+        形状非法（不是 4 个整数）时**不判越界** —— 那是执行器要报的形状错误。
+        """
+        try:
+            rect = tuple(int(value) for value in region)
+        except (TypeError, ValueError):
+            return False
+        if len(rect) != 4:
+            return False
+        return not self.virtual_desktop.contains_rect(
+            rect, tolerance_px=DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX
+        )
+
+    def _build_standalone_action(self, request: SeamRequest) -> Action:
+        params = dict(request.params)
+        if request.action_kind is ActionKind.SCREENSHOT:
+            region = params.get("region")
+            # 坐标空间**显式声明**（C-04）：region 是物理像素的矩形。
+            params["space"] = POINT_SPACE
+            intent = (
+                f"截取区域 {tuple(region)} 的画面" if region is not None else "截一张图"
+            )
+        else:
+            intent = f"等 {params.get('ms', 0)} ms"
+        return Action(kind=request.action_kind, params=params, intent=intent)
 
     def _execute(
         self,
@@ -438,16 +551,6 @@ class ActionExecutionSeam:
             return None
         return self._redactor.render(candidates)
 
-    def _capture_usable(self, skipped: list[str]) -> CapturedFrame | None:
-        """依次尝试各捕获源，跳过只拿到 0×0 画面的源。"""
-        for source in self.capture_sources:
-            frame = source.capture()
-            if frame.is_empty:
-                skipped.append(getattr(source, "name", source.__class__.__name__))
-                continue
-            return frame
-        return None
-
     def _surface_for(self, frame: CapturedFrame) -> SurfaceSpec:
         return SurfaceSpec(
             virtual_desktop=self.virtual_desktop,
@@ -484,7 +587,10 @@ class ActionExecutionSeam:
         return matches[0], ()
 
     def _build_action(self, request: SeamRequest, final_point: tuple[int, int]) -> Action:
-        verb = _INTENT_VERBS.get(request.action_kind, request.action_kind.value)
+        if request.action_kind is ActionKind.CLICK:
+            verb = _click_verb(request.params)
+        else:
+            verb = _INTENT_VERBS.get(request.action_kind, request.action_kind.value)
         intent = f"{verb}「{request.target_description}」"
         params: dict[str, Any] = dict(request.params)
         params.update({"x": final_point[0], "y": final_point[1], "space": POINT_SPACE})
@@ -503,10 +609,14 @@ class ActionExecutionSeam:
         frame: CapturedFrame | None = None,
         model_view: ModelTreeView | None = None,
         query_scope: str = "",
+        failure_field: str = "",
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。"""
         failures = {name: None for name in FAILURE_FIELDS}
-        if code in (
+        if failure_field:
+            # 调用方指名归哪一类（三类失败分开记，架构备忘 §2.5 ③）。
+            failures[failure_field] = code.value
+        elif code in (
             ErrorCode.TARGET_NOT_FOUND,
             ErrorCode.AMBIGUOUS_TARGET,
             ErrorCode.TOO_MANY_CANDIDATES,
@@ -526,12 +636,9 @@ class ActionExecutionSeam:
             target_description=request.target_description,
             selected=_traced_candidate(selected),
             rejected_candidates=trace_candidates(rejected),
-            capture_width=frame.width if frame else None,
-            capture_height=frame.height if frame else None,
-            screenshot_sha256=frame.digest() if frame else None,
+            **frame_fields(frame),
             sent_width=frame.width if frame else None,
             sent_height=frame.height if frame else None,
-            image_source=f"{frame.source}|{frame.backend}" if frame else None,
             skipped_capture_sources=tuple(skipped),
             locate_ms=locate_ms,
             decision_ms=0.0,
