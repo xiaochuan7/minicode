@@ -14,7 +14,13 @@ from ctypes import wintypes
 
 from .executor import DoubleClickParams
 from .geometry import VirtualDesktop, rect_size
-from .ports import CapturedFrame, ControlCandidate, ControlTreeSnapshot, InjectionBlocked
+from .ports import (
+    CapturedFrame,
+    ControlCandidate,
+    ControlTreeSnapshot,
+    InjectionBlocked,
+    PixelFormat,
+)
 
 __all__ = [
     "WindowsMetrics",
@@ -154,6 +160,7 @@ class WindowsCaptureSource:
             payload=payload,
             backend=meta.backend,
             source=meta.source,
+            pixel_format=_pixel_format(frame),
         )
 
     def capture_region(self, rect: tuple[int, int, int, int]) -> CapturedFrame:
@@ -180,7 +187,18 @@ class WindowsCaptureSource:
             payload=payload,
             backend=meta.backend,
             source=meta.source,
+            pixel_format=_pixel_format(frame),
         )
+
+
+def _pixel_format(frame) -> PixelFormat:
+    """抓屏后端给的像素排布：``BGR``（3 字节/像素）或 ``BGRA``（4 字节/像素）。
+
+    冻结原型的 ``_to_array`` 有 numpy 时给 BGR 三通道，没有 numpy 时给
+    ``RawFrame``（带 ``.bgra`` 的四通道字节）—— **两种排布要分清**，
+    否则编码出来的图颜色是反的。
+    """
+    return PixelFormat.BGRA if hasattr(frame, "bgra") else PixelFormat.BGR
 
 
 # ---------------------------------------------------------------------------

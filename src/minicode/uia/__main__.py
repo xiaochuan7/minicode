@@ -1,4 +1,4 @@
-"""命令行入口：UIA 通道在真机上跑一遍（**零模型调用、零费用**）。
+"""命令行入口：UIA 通道在真机上跑一遍。
 
 ::
 
@@ -6,6 +6,9 @@
     python -m minicode.uia --target "开始" --window Shell_TrayWnd --out runs
 
 **动真机前必须持有 ``.scratch/desktop.lock``**（人类占用时本命令直接拒绝）。
+
+加 ``--disambiguate`` 时**接上模型**（工单 M4）：候选不唯一就在候选集内让模型
+只做指认（消歧），模型**不产坐标**。凭据与两个脱敏开关都只从**仓库 ``.env``** 读。
 """
 
 from __future__ import annotations
@@ -28,7 +31,10 @@ LOCK_SCRIPT = REPO_ROOT / "scripts" / "desktop_lock.py"
 def _parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="minicode.uia",
-        description="M3 UIA 通道：定点查询 → 唯一定位 → 执行前重读 → 点中（零模型调用）",
+        description=(
+            "UIA 通道（M3/M4）：定点查询 → 唯一定位 → 执行前重读 → 点中；"
+            "加 --disambiguate 时候选不唯一就让模型在候选集内指认"
+        ),
     )
     parser.add_argument("--target", required=True, help="目标控件名（例：开始）")
     parser.add_argument(
@@ -44,7 +50,14 @@ def _parse_args(argv):
     )
     parser.add_argument("--out", default="runs", help="动作记录落盘目录")
     parser.add_argument(
-        "--ticket", default="M3", help="本轮票号（写进真机占用锁；默认 M3）"
+        "--ticket",
+        default="M4",
+        help="本轮票号（写进真机占用锁；默认 M4 —— 改了这条 CLI 的票就改它）",
+    )
+    parser.add_argument(
+        "--disambiguate",
+        action="store_true",
+        help="接上模型做消歧（工单 M4）：候选不唯一时让模型在候选集内指认",
     )
     return parser.parse_args(argv)
 
@@ -133,7 +146,13 @@ def _run(args) -> int:
     table = CapabilityTable(
         WindowsCapabilityProbe(), unblocker=WindowsTreeUnblocker()
     )
-    channel = UiaChannel(query=port, capability=table)
+    pointer, redactor = _disambiguation_ends(args)
+    channel = UiaChannel(
+        query=port,
+        capability=table,
+        pointer=pointer,
+        redactor=redactor,
+    )
     sink = ListTraceSink()
     desktop = current_virtual_desktop()
     seam = ActionExecutionSeam(
@@ -155,7 +174,7 @@ def _run(args) -> int:
     trace = sink.traces[-1] if sink.traces else None
     entry = table.availability(anchor)
 
-    print("========== M3 UIA 通道 ==========")
+    print("========== UIA 通道 ==========")
     print(f"窗口锚点：hwnd={hwnd} 应用={anchor.app} 版本={anchor.version}")
     print(
         f"能力表  ：{entry.availability.value}（{entry.reason}）"
@@ -163,17 +182,32 @@ def _run(args) -> int:
     )
     print(f"动作结果：ok={result.ok} 落点={result.final_point}")
     print(f"定点查询：最近一次 {port.last_query_ms:.1f} ms（要求 < 1000 ms）")
+    print(
+        f"候选上限：{channel.max_candidates}（来源：{channel.candidate_limit_source}）"
+    )
     if result.result.error_code:
         print(f"错误码  ：{result.result.error_code.value}")
         print(f"错误信息：{result.result.error_message}")
     if result.rejected_candidates:
-        print(f"候选集  ：{len(result.rejected_candidates)} 个（唯一性拒绝时回报）")
+        print(f"候选集  ：{len(result.rejected_candidates)} 个（拒绝执行时回报）")
     if trace is not None:
         print(
             f"三段耗时：定位={trace.locate_ms:.1f}ms 决策={trace.decision_ms:.1f}ms "
             f"执行+校验={trace.execute_verify_ms:.1f}ms"
         )
         print(f"说明    ：{'；'.join(trace.result.notes) or '（无）'}")
+        print(
+            f"允许切视觉：{trace.allows_visual_fallback}"
+            "（只有覆盖失败为真；本单不实现切视觉）"
+        )
+        if trace.selection_echo is not None:
+            echo = trace.selection_echo
+            print(
+                f"每步回显：模型选择={list(echo.chosen_numbers)}"
+                f" 名字={list(echo.chosen_names)}"
+                f" 实际发送图片尺寸={echo.sent_width}x{echo.sent_height}"
+                f" 模型调用={echo.model_calls}"
+            )
         if trace.selected is not None and result.final_point is not None:
             left, top, right, bottom = trace.selected.rect
             center = rect_center(trace.selected.rect)
@@ -193,6 +227,35 @@ def _run(args) -> int:
         print(f"动作记录：{path}")
     print("================================")
     return 0 if result.ok else 1
+
+
+def _disambiguation_ends(args):
+    """消歧的两端：指认端（模型）与脱敏器。
+
+    没给 ``--disambiguate`` → 两端都是 ``None``（**零模型调用**的 M3 形态）。
+    给了 → 凭据与两个脱敏开关都只从**仓库 ``.env``** 读；
+    脱敏开关没开时**明确拒绝**（fail-closed，架构决策备忘 §2.6 C-15）。
+    """
+    if not args.disambiguate:
+        return None, None
+
+    from minicode.model.client import ModelClient
+    from minicode.model.config import load_config
+    from minicode.model.request_log import JsonlRequestLog
+    from minicode.redact.config import load_model_context_config
+    from minicode.redact.redactor import TreeRedactor
+    from minicode.uia.pointer import ModelCandidatePointer
+
+    config = load_config()
+    client = ModelClient(config, JsonlRequestLog(Path(args.out) / "model-requests.jsonl"))
+    context = load_model_context_config()
+    if not (context.send_tree_to_model and context.redaction_enabled):
+        raise SystemExit(
+            "脱敏未上线：仓库 .env 里 MINICODE_SEND_TREE_TO_MODEL 与 "
+            "MINICODE_REDACTION_ENABLED 都得打开，才允许把控件树送模型"
+            "（架构决策备忘 §2.6 C-15）"
+        )
+    return ModelCandidatePointer(client), TreeRedactor(context)
 
 
 if __name__ == "__main__":  # pragma: no cover

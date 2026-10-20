@@ -1,4 +1,4 @@
-"""minicode.uia —— UIA 通道（结构感知通道，工单 M3）。
+"""minicode.uia —— UIA 通道（结构感知通道，工单 M3；候选选择在 M4）。
 
 对外入口：
 
@@ -6,6 +6,7 @@
 * :mod:`minicode.uia.elements` —— 元素与**控件框的读法**（按 4 个 int 读）。
 * :mod:`minicode.uia.capability` —— **能力表**（三态 + 「应用 + 版本」+ 静态缓存）。
 * :mod:`minicode.uia.channel` —— 通道本体：描述 → 唯一定位 → 执行前重读 → 落点。
+* :mod:`minicode.uia.pointer` —— **消歧指认**（模型只做指认，工单 M4）。
 * :mod:`minicode.uia.windows` —— 真机适配器（惰性接冻结原型的 UIA）。
 * :mod:`minicode.uia.fakes` —— 端口的假实现。
 
@@ -25,6 +26,11 @@
 >   ``CONTEXT.md`` 指的是**精定位门控**（是否开启 crop 精定位）；
 >   本包指的是「控件树被门控、需要先解开才读得到」（工单 M3 AC 10）。
 >   本包内一律写「**树被门控**」，别与精定位门控混。
+> * **每步回显** —— 一步做完之后，把**模型自己发出的东西**与**实际发送的图片尺寸**
+>   回显出来（架构决策备忘 §3）。UIA 通道的消歧模型**不产坐标**，那一档回显的是
+>   **选中项**（工单 M4 AC 9）。
+> * **通道被拒绝启用** —— 硬闸门（如脱敏没上线）把整条通道挡下来时的失败；
+>   它**既不是覆盖失败也不是选择失败**（工单 M4 AC 7）。
 """
 
 from __future__ import annotations
@@ -35,5 +41,6 @@ __all__ = [
     "elements",
     "errors",
     "fakes",
+    "pointer",
     "ports",
 ]

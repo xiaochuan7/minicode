@@ -179,13 +179,15 @@ class DisambiguationTest(unittest.TestCase):
 
     def test_without_a_redactor_the_model_is_never_asked(self):
         # fail-closed：脱敏没上线，不许把候选集送给模型（架构决策备忘 §2.6 C-15）。
+        # 工单 M4 AC 7：这种情况**明确拒绝启用**这条通道，而不是含糊地报「选不出」。
         pointer = FakeCandidatePointer()
         channel = _channel([self._two_candidates()], pointer=pointer)
         result = channel.locate(
             LocateRequest(target_description="开始", anchor=_ANCHOR)
         )
         self.assertEqual(pointer.calls, 0)
-        self.assertEqual(result.error_code, ErrorCode.AMBIGUOUS_TARGET)
+        self.assertEqual(result.error_code, ErrorCode.CHANNEL_DISABLED)
+        self.assertIn("脱敏未上线", result.error_message)
 
     def test_a_unique_pointer_answer_selects_that_candidate(self):
         pointer = FakeCandidatePointer(chosen_ids=("stub",))
@@ -207,7 +209,9 @@ class DisambiguationTest(unittest.TestCase):
 
     def test_an_empty_pointer_answer_is_a_uniqueness_rejection(self):
         pointer = FakeCandidatePointer(chosen_ids=())
-        channel = _channel([self._two_candidates()], pointer=pointer)
+        channel = _channel(
+            [self._two_candidates()], pointer=pointer, redactor=_redactor()
+        )
         result = channel.locate(
             LocateRequest(target_description="开始", anchor=_ANCHOR)
         )
@@ -216,7 +220,9 @@ class DisambiguationTest(unittest.TestCase):
 
     def test_an_answer_outside_the_candidate_set_is_a_uniqueness_rejection(self):
         pointer = FakeCandidatePointer(chosen_ids=("obs1#99",))
-        channel = _channel([self._two_candidates()], pointer=pointer)
+        channel = _channel(
+            [self._two_candidates()], pointer=pointer, redactor=_redactor()
+        )
         result = channel.locate(
             LocateRequest(target_description="开始", anchor=_ANCHOR)
         )
@@ -225,7 +231,9 @@ class DisambiguationTest(unittest.TestCase):
 
     def test_two_answers_are_a_uniqueness_rejection(self):
         pointer = FakeCandidatePointer(chosen_ids=("a", "b"))
-        channel = _channel([self._two_candidates()], pointer=pointer)
+        channel = _channel(
+            [self._two_candidates()], pointer=pointer, redactor=_redactor()
+        )
         result = channel.locate(
             LocateRequest(target_description="开始", anchor=_ANCHOR)
         )

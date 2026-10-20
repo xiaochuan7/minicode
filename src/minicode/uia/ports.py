@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from minicode.action.ports import ControlCandidate, WindowAnchor
+from minicode.action.ports import CapturedFrame, ControlCandidate, SelectionEcho, WindowAnchor
 
 from .elements import UiaElement
 
@@ -98,11 +98,14 @@ class PointerRequest:
 
     ``model_view`` 是**已脱敏**的模型侧文本（脱敏器是模型侧文本的唯一出口）；
     ``candidates`` 是同一批候选的结构化形状（元素 id 与之一一对应）。
+    ``frame`` 是这一帧画面（物理像素）—— 送模型当上下文，
+    **模型不从画面里取坐标**（工单 M4）。
     """
 
     target_description: str
     candidates: tuple[ControlCandidate, ...]
     model_view: str
+    frame: CapturedFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,8 @@ class PointerResult:
     """
 
     chosen_ids: tuple[str, ...] = ()
+    #: **每步回显**：模型发出的选择结果 + 实际发送的图片尺寸（**不含坐标**）。
+    echo: SelectionEcho | None = None
 
 
 @runtime_checkable

@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .errors import ErrorCode
@@ -28,6 +29,7 @@ __all__ = [
     "ControlCandidate",
     "ControlTreeSnapshot",
     "InjectionBlocked",
+    "PixelFormat",
     "CaptureSource",
     "RegionCaptureSource",
     "ScreenshotPort",
@@ -37,6 +39,7 @@ __all__ = [
     "WindowAnchor",
     "LocateRequest",
     "LocateResult",
+    "SelectionEcho",
     "ControlLocator",
     "ElementInvoker",
 ]
@@ -50,11 +53,24 @@ class InjectionBlocked(Exception):
     """
 
 
+class PixelFormat(StrEnum):
+    """帧的像素排布（**行优先**，每像素固定字节数）。"""
+
+    #: 蓝绿红（3 字节/像素）：mss 带 numpy 时的路径。
+    BGR = "bgr"
+    #: 蓝绿红 + 透明度（4 字节/像素）：没有 numpy 时冻结原型的垫片。
+    BGRA = "bgra"
+
+
 @dataclass(frozen=True)
 class CapturedFrame:
     """一帧截图（物理像素）。
 
     ``payload`` 是原始像素字节。本项目**只落它的摘要，不落原图**。
+
+    ``pixel_format`` 说明 ``payload`` 的排布：**行优先**，每像素 3 字节（``"bgr"``）
+    或 4 字节（``"bgra"``）。抓屏后端决定它（有 numpy 的 mss 路径给 BGR，
+    没有 numpy 时冻结原型的垫片给 BGRA）—— 要把这帧编码成图片送模型时必须知道。
     """
 
     width: int
@@ -64,6 +80,8 @@ class CapturedFrame:
     payload: bytes = b""
     backend: str = "fake"
     source: str = "virtual-desktop"
+    #: 像素排布：``"bgr"``（3 字节/像素）或 ``"bgra"``（4 字节/像素）。
+    pixel_format: PixelFormat = PixelFormat.BGR
 
     @property
     def is_empty(self) -> bool:
@@ -281,6 +299,38 @@ class WindowAnchor:
 
 
 @dataclass(frozen=True)
+class SelectionEcho:
+    """**每步回显**：模型发出的**选择结果** + 实际发送的图片尺寸。
+
+    架构决策备忘 §3 的回显格式是「模型自己发出的东西 + 实际发送尺寸」，
+    便于模型对账。**UIA 通道的消歧不产坐标**（模型只做指认，工单 M4），
+    因此这里**没有坐标** —— 不许伪造成坐标回显（工单 M4 AC 9）。
+
+    * ``chosen_numbers`` —— 模型回答的**行号**（1 起，指候选清单里的第几项）；
+    * ``chosen_names`` —— 那些行对应的控件名；
+    * ``sent_width`` / ``sent_height`` —— **实际发送**的那张图的尺寸
+      （**没发图就是 ``None``** —— 不拿抓图尺寸冒充）。
+    """
+
+    chosen_numbers: tuple[int, ...] = ()
+    chosen_names: tuple[str, ...] = ()
+    sent_width: int | None = None
+    sent_height: int | None = None
+    #: 本次回显背后的模型调用次数（消歧恰好 1 次）。
+    model_calls: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """落盘形状（**回显自己知道怎么渲染**，跟动作记录一个规矩）。"""
+        return {
+            "chosen_numbers": list(self.chosen_numbers),
+            "chosen_names": list(self.chosen_names),
+            "sent_width": self.sent_width,
+            "sent_height": self.sent_height,
+            "model_calls": self.model_calls,
+        }
+
+
+@dataclass(frozen=True)
 class LocateRequest:
     """控件定位的输入。"""
 
@@ -289,6 +339,9 @@ class LocateRequest:
     #: 控件类型提示（``"Button"`` 之类）。给了它，通道才能在**控件类型条件**下
     #: 做名字匹配（自然语言描述不是控件名时需要）。
     control_type: str = ""
+    #: 这一帧画面（物理像素）。**消歧时它会被送给模型**当上下文
+    #: （模型只做指认，不从画面里取坐标）。
+    frame: CapturedFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -327,6 +380,14 @@ class LocateResult:
     #: （桌面级）。工单 M3 AC 8 要求验收记录里写明用的是哪一种
     #: （416 ms 与 8 秒两个口径不许混用）。
     query_scope: str = ""
+    #: **每步回显**（消歧时才有）：模型发出的选择结果 + 实际发送的图片尺寸。
+    selection_echo: SelectionEcho | None = None
+    #: **允许切视觉**吗？只有**覆盖失败**（候选集为空）为真；
+    #: 选择失败与「通道被拒绝启用」一律为假（架构决策备忘 §2.5 ①）。
+    allows_visual_fallback: bool = False
+    #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
+    candidate_limit: int = 0
+    candidate_limit_source: str = ""
 
     def __post_init__(self) -> None:
         if self.error_code is None and (self.selected is None or self.landing_point is None):

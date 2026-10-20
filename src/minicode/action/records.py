@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from minicode.redact.patterns import PASSWORD_PLACEHOLDER
 
-from .ports import CapturedFrame, ControlCandidate
+from .ports import CapturedFrame, ControlCandidate, SelectionEcho
 from .protocol import PROTOCOL_VERSION, Action, ActionResult
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入（避免循环依赖）
@@ -97,6 +97,14 @@ class ActionTrace:
     #: 工单 M3 AC 8：验收记录里要写明用的是窗口锚定还是桌面级查询
     #: （416 ms 与 8 秒两个口径不许混用）。
     query_scope: str = ""
+    #: **每步回显**（消歧时才有）：模型发出的选择结果 + 实际发送的图片尺寸。
+    #: **不含坐标** —— UIA 通道的消歧不产坐标（工单 M4 AC 9）。
+    selection_echo: SelectionEcho | None = None
+    #: **允许切视觉**吗？只有覆盖失败为真（架构决策备忘 §2.5 ①）。
+    allows_visual_fallback: bool = False
+    #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
+    candidate_limit: int = 0
+    candidate_limit_source: str = ""
     result: ActionResult = field(default_factory=lambda: ActionResult(ok=True))
 
 
@@ -168,6 +176,14 @@ class ActionRecord:
     #: 脱敏计数（密码框替换数 / 正则命中数 / 丢弃正文类字段数 / 输出长度）。
     #: 没走过脱敏时是 ``None`` —— 「某条通道没走脱敏」因此能被看见。
     redaction: Mapping[str, Any] | None = None
+    #: **每步回显**（消歧时才有）：模型发出的选择结果 + 实际发送的图片尺寸。
+    #: **不含坐标**（UIA 通道的消歧不产坐标，工单 M4 AC 9）。
+    selection_echo: Mapping[str, Any] | None = None
+    #: **允许切视觉**吗？只有覆盖失败为真（架构决策备忘 §2.5 ①）。
+    allows_visual_fallback: bool = False
+    #: 候选数上限（运行时参数）与**取值来源**（工单 M4 AC 4）。
+    candidate_limit: int = 0
+    candidate_limit_source: str = ""
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -217,6 +233,12 @@ class ActionRecord:
                 "execute": self.failure_execute,
             },
             "redaction": dict(self.redaction) if self.redaction is not None else None,
+            "selection_echo": (
+                dict(self.selection_echo) if self.selection_echo is not None else None
+            ),
+            "allows_visual_fallback": self.allows_visual_fallback,
+            "candidate_limit": self.candidate_limit,
+            "candidate_limit_source": self.candidate_limit_source,
             "notes": list(self.notes),
         }
 
@@ -311,6 +333,12 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         redaction=(
             trace.model_view.report.to_dict() if trace.model_view is not None else None
         ),
+        selection_echo=(
+            trace.selection_echo.to_dict() if trace.selection_echo is not None else None
+        ),
+        allows_visual_fallback=trace.allows_visual_fallback,
+        candidate_limit=trace.candidate_limit,
+        candidate_limit_source=trace.candidate_limit_source,
         notes=tuple(result.notes),
     )
 

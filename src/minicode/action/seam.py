@@ -64,6 +64,7 @@ from .ports import (
     InputInjector,
     LocateRequest,
     LocateResult,
+    SelectionEcho,
     WindowAnchor,
     WindowController,
 )
@@ -277,6 +278,9 @@ class ActionExecutionSeam:
                     target_description=request.target_description,
                     anchor=self.anchor,
                     control_type=request.control_type,
+                    # 这一帧要跟着走：消歧时它会被送给模型当上下文
+                    # （模型只做指认，不从画面里取坐标）。
+                    frame=frame,
                 )
             )
             if located.error_code is not None:
@@ -290,6 +294,10 @@ class ActionExecutionSeam:
                     skipped=skipped,
                     frame=frame,
                     query_scope=located.query_scope,
+                    selection_echo=located.selection_echo,
+                    allows_visual_fallback=located.allows_visual_fallback,
+                    candidate_limit=located.candidate_limit,
+                    candidate_limit_source=located.candidate_limit_source,
                 )
             selected = located.selected
             try:
@@ -416,6 +424,14 @@ class ActionExecutionSeam:
             execute_verify_ms=execute_verify_ms,
             failures=failures,
             query_scope=located.query_scope if located is not None else "",
+            selection_echo=located.selection_echo if located is not None else None,
+            allows_visual_fallback=(
+                located.allows_visual_fallback if located is not None else False
+            ),
+            candidate_limit=located.candidate_limit if located is not None else 0,
+            candidate_limit_source=(
+                located.candidate_limit_source if located is not None else ""
+            ),
             result=result,
             model_view=model_view,
         )
@@ -610,6 +626,10 @@ class ActionExecutionSeam:
         model_view: ModelTreeView | None = None,
         query_scope: str = "",
         failure_field: str = "",
+        selection_echo: SelectionEcho | None = None,
+        allows_visual_fallback: bool = False,
+        candidate_limit: int = 0,
+        candidate_limit_source: str = "",
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。"""
         failures = {name: None for name in FAILURE_FIELDS}
@@ -623,8 +643,11 @@ class ActionExecutionSeam:
             ErrorCode.LOCATE_FAILED,
             ErrorCode.RELOCATE_FAILED,
             ErrorCode.CLIPPED_BY_DESKTOP,
+            ErrorCode.CHANNEL_DISABLED,
+            ErrorCode.INVALID_TARGET,
         ):
-            # 定位层：没找到 / 找不唯一 / 通道不可用 / 落点不可用。
+            # 定位层：没找到 / 找不唯一 / 通道不可用 / 通道被拒绝启用 / 落点不可用。
+            # 「通道被拒绝启用」也算定位层：它发生在**定位阶段**，动作压根没下发。
             failures["locate"] = code.value
         else:
             # 其余都是执行层（抓帧失败也归这里：截图属于「执行+校验」段，架构备忘 §2.5 ③）。
@@ -645,6 +668,10 @@ class ActionExecutionSeam:
             execute_verify_ms=0.0,
             failures=failures,
             query_scope=query_scope,
+            selection_echo=selection_echo,
+            allows_visual_fallback=allows_visual_fallback,
+            candidate_limit=candidate_limit,
+            candidate_limit_source=candidate_limit_source,
             result=result,
             model_view=model_view,
         )
