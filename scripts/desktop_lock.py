@@ -23,7 +23,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 LOCK_PATH = Path(__file__).resolve().parent.parent / ".scratch" / "desktop.lock"
@@ -36,7 +36,7 @@ EXIT_HUMAN_OWNS = 3
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).astimezone()
+    return datetime.now(UTC).astimezone()
 
 
 def _stamp() -> str:
