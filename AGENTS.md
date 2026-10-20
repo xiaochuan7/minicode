@@ -24,9 +24,18 @@ minicode = Windows 桌面 computer-use agent。架构定稿见 `docs/research/01
 
 - 坐标契约：模型端 0~1000 归一化，工程端全程物理像素；最终落点只在 crop 上产生（`docs/00-现状.md` §3）。
 - 三个原型已验证、冻结不改：`src/minicode/coord`、`src/minicode/exec`、`src/minicode/verify`。
+- 业务代码在 `src/minicode/action`（M0 新增）：动作协议 v1、动作执行缝、动作记录。
 
 ```powershell
 cd src/minicode\coord  && python -m unittest test_coordinates
 cd ..\exec             && python selftest.py
 cd ..\verify           && python test_01_text_and_probe.py   # 真调 API，消耗额度
+
+# 全量单测（仓库根目录）
+python -m pytest
+
+# M0 最小闭环（真机一条命令）
+$env:PYTHONPATH="src"; python -m minicode.action --target "开始" --out runs
+# 同一套接线走假实现（CI 可跑，不碰真桌面）
+$env:PYTHONPATH="src"; python -m minicode.action --fake --out runs
 ```
