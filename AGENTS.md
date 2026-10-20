@@ -18,11 +18,40 @@ Single-context: one root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.
 
 **Naming a domain concept? Use the term `CONTEXT.md` defines it.** Read it before writing an issue title, a test name, or any prose that names a layer, a channel, a coordinate space, or a workflow object.
 
+## 真机占用锁（人机互斥）
+
+**本项目唯一的人机互斥约定。** 任何要动真机的动作（真机截图 / 真机点击 / 真机读控件树 / 真机跑端到端任务）**之前**必须先拿锁；做完必须释放。
+
+锁文件固定在 `.scratch/desktop.lock`（`.scratch/` 已 gitignore，**锁文件永远不进 git**），内容是一行 JSON：
+
+```json
+{"owner": "agent", "ticket": "M3", "since": "2026-10-20T15:31:59+08:00"}
+```
+
+```powershell
+python scripts/desktop_lock.py status                  # 看当前占用
+python scripts/desktop_lock.py acquire --ticket M3     # 动真机前：拿锁
+python scripts/desktop_lock.py release                 # 做完：释放
+python scripts/desktop_lock.py human                   # 人类要用电脑：占锁
+python scripts/desktop_lock.py release --owner human   # 人类用完：释放
+```
+
+判定规则：
+
+| 锁文件状态 | 本轮能不能动真机 |
+|---|---|
+| 不存在 | **能** —— 先原子写入 `{"owner":"agent","ticket":"<本轮票号>","since":"<now>"}` |
+| `owner == "human"` | **不能** —— 跳过所有真机票，改做一张纯软件票（若还有），并在报告里写明「因人类占用真机而跳过」 |
+| `owner == "agent"` 且 `since` 距今 **< 30 分钟** | **能** —— 视为本进程自己在用 |
+| `owner == "agent"` 且 `since` 距今 **≥ 30 分钟** | **能** —— 视为上次崩溃残留，允许抢占（覆盖写入） |
+
+写锁一律「先写临时文件再原子改名」，避免读到半个文件。
+
 ## 仓库速览
 
 minicode = Windows 桌面 computer-use agent。架构定稿见 `docs/research/01-架构决策备忘.md`，本机实测事实见 `docs/01-现状.md`，现状总览见 `docs/00-现状.md`。
 
-- 坐标契约：模型端 0~1000 归一化，工程端全程物理像素；最终落点只在 crop 上产生（`docs/00-现状.md` §3）。
+- 坐标契约：模型端 0~1000 归一化，工程端全程物理像素；**视觉通道内**最终落点只在 crop 上产生，**UIA 通道的落点直接取控件框的物理像素中心**（`docs/00-现状.md` §3）。
 - 三个原型已验证、冻结不改：`src/minicode/coord`、`src/minicode/exec`、`src/minicode/verify`。
 - 业务代码在 `src/minicode/action`（M0 新增）：动作协议 v1、动作执行缝、动作记录。
 
