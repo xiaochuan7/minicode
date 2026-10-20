@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -150,8 +153,47 @@ class MinimalLoopTest(unittest.TestCase):
                 self.assertFalse(path.name.lower().endswith((".png", ".jpg", ".bmp", ".gif")))
 
 
+class StdlibOnlyTest(unittest.TestCase):
+    """验收项 1：只装标准库即可跑。"""
+
+    def test_the_whole_loop_runs_with_third_party_imports_blocked(self):
+        src = str(Path(__file__).resolve().parents[2])
+        env = dict(os.environ)
+        env["PYTHONPATH"] = src
+        code = "\n".join(
+            [
+                "import sys",
+                "class Blocker:",
+                "    def find_spec(self, name, path=None, target=None):",
+                "        if name.split('.')[0] in ('numpy', 'mss', 'PIL'):",
+                "            raise ImportError('third-party blocked: ' + name)",
+                "        return None",
+                "sys.meta_path.insert(0, Blocker())",
+                "import tempfile",
+                "from minicode.action.fakes import (FakeCaptureSource, FakeControlTree,",
+                "    FakeInputInjector, FakeMetrics, FakeWindowController)",
+                "from minicode.action.geometry import VirtualDesktop",
+                "from minicode.action.ports import ControlCandidate",
+                "from minicode.action.runner import run_minimal_loop",
+                "candidate = ControlCandidate(name='开始', control_type='Button',",
+                "    rect=(1016, 1528, 1083, 1600), window_handle=1)",
+                "with tempfile.TemporaryDirectory() as tmp:",
+                "    out = run_minimal_loop(target_description='开始',",
+                "        capture_sources=(FakeCaptureSource(width=2560, height=1600),),",
+                "        tree=FakeControlTree((candidate,)), injector=FakeInputInjector(),",
+                "        window_controller=FakeWindowController(foreground=1),",
+                "        virtual_desktop=VirtualDesktop(0, 0, 2560, 1600),",
+                "        metrics=FakeMetrics(), log_directory=tmp)",
+                "    print('LOOP_OK' if out.ok else 'LOOP_FAIL')",
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env
+        )
+        self.assertIn("LOOP_OK", result.stdout, msg=result.stderr)
+
+
 class CaptureBackendRuleTest(unittest.TestCase):
-    """抓屏后端有规矩：禁止用 PrintWindow 顶替抓屏。"""
 
     def test_no_printwindow_call_exists_in_the_capture_path(self):
         package = Path(__file__).resolve().parent
