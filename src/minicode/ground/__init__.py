@@ -5,12 +5,13 @@
 
 模块地图：
 
-* :mod:`minicode.ground.channel` —— 通道本体（粗定位 → 裁剪计划 → 精定位 → 回落）；
+* :mod:`minicode.ground.channel` —— 通道本体（粗定位 → 门控 → 裁剪计划 → 精定位 → 回落）；
 * :mod:`minicode.ground.crop` —— 从**原始物理分辨率帧**上 1:1 裁一块；
+* :mod:`minicode.ground.gate` —— **精定位门控**（四个触发条件 + 运行时参数与取值来源）；
 * :mod:`minicode.ground.geometry` —— 帧元数据、裁剪计划字段、往返自检；
 * :mod:`minicode.ground.prompt` —— 三条提示词（粗定位 / 精定位 / 放大）与回答解析；
 * :mod:`minicode.ground.zoom` —— **放大**动作（回源重抓 + 模型报整屏坐标）；
-* :mod:`minicode.ground.stats` —— 落点误差的分布统计（验收判据用分布，不用单点）。
+* :mod:`minicode.ground.stats` —— 落点误差的**分布**统计（验收判据用分布，不用单点）。
 
 坐标换算链路的唯一真值来源仍是冻结原型 :mod:`minicode.coord`；
 本包只负责**流程**（取景、两级、回落、回显），不另写一套换算。
@@ -30,6 +31,20 @@ from minicode.action.ports import (
 
 from .channel import TwoStageGrounder
 from .crop import crop_frame
+from .gate import (
+    FallbackCause,
+    GateCondition,
+    GateDecision,
+    GateInputs,
+    GateMode,
+    GateParams,
+    GateReason,
+    GateReport,
+    GateSample,
+    build_gate_report,
+    default_gate_params,
+    evaluate_gate,
+)
 from .geometry import (
     crop_plan_fields,
     crop_roundtrip_error,
@@ -48,6 +63,15 @@ from .zoom import zoom_locate
 
 __all__ = [
     "ErrorDistribution",
+    "FallbackCause",
+    "GateCondition",
+    "GateDecision",
+    "GateInputs",
+    "GateMode",
+    "GateParams",
+    "GateReason",
+    "GateReport",
+    "GateSample",
     "GroundingEcho",
     "GroundingParseError",
     "TwoStageGrounder",
@@ -57,10 +81,13 @@ __all__ = [
     "ZoomLocator",
     "ZoomRequest",
     "ZoomResult",
+    "build_gate_report",
     "coarse_prompt",
     "crop_frame",
     "crop_plan_fields",
     "crop_roundtrip_error",
+    "default_gate_params",
+    "evaluate_gate",
     "full_screen_geometry",
     "not_worse_than",
     "parse_point",

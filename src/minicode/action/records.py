@@ -124,6 +124,16 @@ class ActionTrace:
     fallback: bool = False
     #: 回落到粗定位结果的**原因**（没回落时为空）。
     fallback_reason: str = ""
+    #: 回落原因的**枚举**（工单 M7 AC 4：回落原因要能机器读）。
+    fallback_cause: str = ""
+    #: **门控是否命中**（工单 M7 AC 4 的四个埋点字段之一）。
+    gate_hit: bool = False
+    #: **门控命中原因**（枚举，可多条）。
+    gate_reasons: tuple[str, ...] = ()
+    #: **门控不可判定的条件**（枚举）—— 不触发、也不否决其余条件，但必须显式可见。
+    gate_undecidable: tuple[str, ...] = ()
+    #: 这一步**是否真的开启了 crop 精定位**（整屏第二遍不算）。
+    refine_enabled: bool = False
     result: ActionResult = field(default_factory=lambda: ActionResult(ok=True))
 
 
@@ -216,6 +226,16 @@ class ActionRecord:
     fallback: bool = False
     #: 回落到粗定位结果的**原因**（没回落时为空）。
     fallback_reason: str = ""
+    #: 回落原因的**枚举**（工单 M7 AC 4）。
+    fallback_cause: str = ""
+    #: **门控是否命中**（工单 M7 AC 4）。
+    gate_hit: bool = False
+    #: **门控命中原因**（枚举，可多条）。
+    gate_reasons: tuple[str, ...] = ()
+    #: **门控不可判定的条件**（枚举）。
+    gate_undecidable: tuple[str, ...] = ()
+    #: 这一步**是否真的开启了 crop 精定位**（整屏第二遍不算）。
+    refine_enabled: bool = False
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -279,6 +299,11 @@ class ActionRecord:
             "grounding_echoes": [dict(echo) for echo in self.grounding_echoes],
             "fallback": self.fallback,
             "fallback_reason": self.fallback_reason,
+            "fallback_cause": self.fallback_cause,
+            "gate_hit": self.gate_hit,
+            "gate_reasons": list(self.gate_reasons),
+            "gate_undecidable": list(self.gate_undecidable),
+            "refine_enabled": self.refine_enabled,
             "notes": list(self.notes),
         }
 
@@ -387,6 +412,11 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         grounding_echoes=tuple(echo.to_dict() for echo in trace.grounding_echoes),
         fallback=trace.fallback,
         fallback_reason=trace.fallback_reason,
+        fallback_cause=trace.fallback_cause,
+        gate_hit=trace.gate_hit,
+        gate_reasons=tuple(trace.gate_reasons),
+        gate_undecidable=tuple(trace.gate_undecidable),
+        refine_enabled=trace.refine_enabled,
         notes=tuple(result.notes),
     )
 

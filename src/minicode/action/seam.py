@@ -513,6 +513,11 @@ class ActionExecutionSeam:
             grounding_echoes=visual.echoes if visual is not None else (),
             fallback=visual.fallback if visual is not None else False,
             fallback_reason=visual.fallback_reason if visual is not None else "",
+            fallback_cause=visual.fallback_cause if visual is not None else "",
+            gate_hit=visual.gate_hit if visual is not None else False,
+            gate_reasons=visual.gate_reasons if visual is not None else (),
+            gate_undecidable=visual.gate_undecidable if visual is not None else (),
+            refine_enabled=visual.refine_enabled if visual is not None else False,
             result=result,
             model_view=model_view,
         )
@@ -892,6 +897,11 @@ class ActionExecutionSeam:
             grounding_echoes=visual.echoes if visual is not None else (),
             fallback=visual.fallback if visual is not None else False,
             fallback_reason=visual.fallback_reason if visual is not None else "",
+            fallback_cause=visual.fallback_cause if visual is not None else "",
+            gate_hit=visual.gate_hit if visual is not None else False,
+            gate_reasons=visual.gate_reasons if visual is not None else (),
+            gate_undecidable=visual.gate_undecidable if visual is not None else (),
+            refine_enabled=visual.refine_enabled if visual is not None else False,
             result=result,
             model_view=model_view,
         )

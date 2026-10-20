@@ -541,7 +541,13 @@ class VisualLocateResult:
       crop 尺度上产生**；精定位失败并回落时它是粗定位点。
     * ``coarse_point`` —— 粗定位点（物理表面空间）。
     * ``crop_plan`` —— 裁剪计划（落盘形状，含「目标是否完整包含」）。
-    * ``fallback`` / ``fallback_reason`` —— 是否回落到粗定位结果 + 回落原因。
+    * ``gate_hit`` / ``gate_reasons`` / ``gate_undecidable`` —— **门控埋点**
+      （工单 M7 AC 4）：命中与否、命中原因（枚举）、**不可判定**的条件（枚举）。
+    * ``refine_enabled`` —— 这一步**是否真的开启了 crop 精定位**（门控命中，
+      且粗定位可用时才是真）。工单 AC 4 的「开启精定位的样本数」按它算 ——
+      **整屏第二遍不算精定位**（它不是 crop 精定位，也永不回落）。
+    * ``fallback`` / ``fallback_cause`` / ``fallback_reason`` —— 是否回落到
+      粗定位结果 + 回落原因（枚举）+ 人读的原因。
     * ``echoes`` —— 每步回显（模型发出的坐标 + 实际发送尺寸）。
     """
 
@@ -549,7 +555,12 @@ class VisualLocateResult:
     coarse_point: tuple[float, float] | None = None
     crop_plan: Mapping[str, Any] | None = None
     fallback: bool = False
+    fallback_cause: str = ""
     fallback_reason: str = ""
+    gate_hit: bool = False
+    gate_reasons: tuple[str, ...] = ()
+    gate_undecidable: tuple[str, ...] = ()
+    refine_enabled: bool = False
     error_code: ErrorCode | None = None
     error_message: str = ""
     echoes: tuple[GroundingEcho, ...] = ()

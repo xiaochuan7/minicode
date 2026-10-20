@@ -4,12 +4,13 @@
 
     $env:PYTHONPATH="src"; python -m minicode.ground --out runs --model-input 2048x1280
 
-它做四件事：
+它做五件事：
 
 1. **拿真机占用锁**（人类占用时直接拒绝）；
 2. **跑一次标定**（真调模型）→ 判定标度，并**如实报告准入判定**；
 3. 在一批 UIA 目标上跑**两级 grounding**，统计落点误差的**分布**；
-4. 把结论写成一条 JSON 记录。
+4. 报告**门控埋点**（命中率 / 回落率 / 命中原因分布 / N —— 与分数同一批样本）；
+5. 把结论写成一条 JSON 记录。
 
 ⚠️ **测量台绕过准入门**：生产路径上的视觉通道仍然只认 M5 的硬闸门
 （标定没过就是不可用）。测量台只回答「两级 grounding 的落点误差分布」
@@ -33,6 +34,7 @@ from minicode.model.effort import Effort
 from minicode.model.request_log import JsonlRequestLog
 
 from .bench import BenchReport, collect_targets, measure, summarize
+from .gate import GateMode
 
 __all__ = ["main"]
 
@@ -91,7 +93,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--out", default="runs", help="记录落盘目录")
     parser.add_argument(
-        "--ticket", default="M6", help="本轮票号（写进真机占用锁；改了这条 CLI 就改它）"
+        "--ticket", default="M7", help="本轮票号（写进真机占用锁；改了这条 CLI 就改它）"
     )
     parser.add_argument(
         "--window", default="Shell_TrayWnd", help="取真值目标的窗口类名（默认任务栏）"
@@ -116,6 +118,15 @@ def main(argv=None) -> int:
         help="思考预算档位（默认 low）",
     )
     parser.add_argument("--max-tokens", type=int, default=2000)
+    parser.add_argument(
+        "--gate-mode",
+        choices=[mode.value for mode in GateMode],
+        default=GateMode.ON_DEMAND.value,
+        help=(
+            "门控开 / 门控关：on_demand = 门控开（命中才做第二遍，工单 M7 默认）/ "
+            "always = 门控关（无条件精定位，工单 M8 的对照组）"
+        ),
+    )
     args = parser.parse_args(argv)
 
     holds_lock = _acquire_lock(args.ticket)
@@ -210,6 +221,7 @@ def _run(args) -> int:
         model_input_size=model_input,
         effort=args.effort,
         max_tokens=args.max_tokens,
+        gate_mode=args.gate_mode,
     )
     coarse, refine = summarize(outcomes)
     report = BenchReport(
@@ -261,6 +273,37 @@ def _run(args) -> int:
     print(
         f"判定：精定位分布{'不劣于' if verdict else '劣于'}粗定位"
         f"（样本 N={len(outcomes)}，其中 ≤16px 小图标 {report.small_icon_count} 个）"
+    )
+
+    # -- 门控埋点（工单 M7 AC 4）：命中率 / 回落率 / 命中原因分布 / N -------
+    gate = report.gate
+    print("=== 门控埋点（与上面这张表同一批样本）===")
+    print(
+        f"门控模式：{args.gate_mode}"
+        f"｜样本数 N={gate.samples}"
+        f"｜开启精定位 {gate.refine_enabled} 个（命中率 {gate.hit_rate:.1%}）"
+        f"｜门控判中 {gate.gate_hits} 个"
+    )
+    print(
+        f"回落 {gate.fallbacks} 次｜回落率 {gate.fallback_rate:.1%}"
+        f"（分母 = 开启精定位的样本数）"
+    )
+    print(
+        "命中原因分布："
+        + (
+            "，".join(f"{reason}×{count}" for reason, count in gate.reason_distribution.items())
+            or "（无）"
+        )
+    )
+    print(
+        "判不了的条件分布："
+        + (
+            "，".join(
+                f"{condition}×{count}"
+                for condition, count in gate.undecidable_distribution.items()
+            )
+            or "（无）"
+        )
     )
 
     out_dir = Path(args.out)

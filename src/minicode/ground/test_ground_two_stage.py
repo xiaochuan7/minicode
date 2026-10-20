@@ -22,6 +22,8 @@ from minicode.action.errors import ErrorCode
 from minicode.action.ports import CapturedFrame, GroundingEcho, PixelFormat
 from minicode.coord.coordinates import ModelScale
 from minicode.ground import (
+    GateMode,
+    GateParams,
     TwoStageGrounder,
     VisualLocateRequest,
     ZoomRequest,
@@ -158,13 +160,24 @@ def _grounder(
     scale: ModelScale = ModelScale.RELATIVE_0_1000,
     model_input_size: tuple[int, int] | None = None,
     full_screen_size: tuple[int, int] = (2560, 1600),
+    gate_mode: GateMode = GateMode.ALWAYS,
+    gate_params: GateParams | None = None,
 ) -> TwoStageGrounder:
+    """本模块的用例盯的是**精定位这一级**的行为。
+
+    ⚠️ 工单 M7 起，通道默认**门控开**（只有门控命中才做第二遍）；
+    这里显式用 ``GateMode.ALWAYS``（门控关 = 无条件精定位），
+    把「精定位这条路本身」钉死。门控的行为由
+    :mod:`minicode.ground.test_ground_gate` 单独盯。
+    """
     return TwoStageGrounder(
         model,
         scale=scale,
         model_input_size=model_input_size or full_screen_size,
         full_screen_size=full_screen_size,
         effort=Effort.LOW,
+        gate_mode=gate_mode,
+        gate_params=gate_params,
     )
 
 
@@ -383,14 +396,18 @@ class FallbackTests(unittest.TestCase):
         self.assertIsNotNone(result.landing_point)
 
     def test_coarse_failure_reports_locate_failed_without_landing_point(self):
-        result = self._locate(_text_reply("我不知道那个按钮在哪"))
+        """粗定位没有输出 → 整屏重定位也失败 → **报定位失败**，不落点。
+
+        （工单 M7：粗定位为空时开的是**整屏重定位**；它也失败时没有可回落的结果。）
+        """
+        result = self._locate(_text_reply("我不知道那个按钮在哪"), _text_reply("还是不知道"))
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, ErrorCode.LOCATE_FAILED)
         self.assertIsNone(result.landing_point)
         self.assertFalse(result.fallback)
 
     def test_coarse_out_of_bounds_reports_locate_failed(self):
-        result = self._locate(_reply(5000.0, 5000.0))
+        result = self._locate(_reply(5000.0, 5000.0), _reply(5000.0, 5000.0))
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, ErrorCode.LOCATE_FAILED)
         self.assertIsNone(result.landing_point)
@@ -513,7 +530,10 @@ class DenominatorTests(unittest.TestCase):
     def test_953_is_not_treated_as_absolute_pixels(self):
         """喂 0~1000 的 953 时，换算按 0~1000 走（不按数值大小改判量纲）。"""
         model = _StubModel(_reply(390.625, 500.0), _reply(953.0, 953.0))
-        grounder = _grounder(model)
+        # 本用例只验**换算**；把 M7 的「偏离粗定位」判据放宽（它由 M7 的用例单独盯）。
+        grounder = _grounder(
+            model, gate_params=GateParams(deviation_tolerance_px=100000.0)
+        )
         frame = _detail_frame(2560, 1600)
         result = grounder.locate(
             VisualLocateRequest(

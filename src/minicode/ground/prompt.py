@@ -27,6 +27,7 @@ __all__ = [
     "GroundingParseError",
     "coarse_prompt",
     "refine_prompt",
+    "whole_screen_prompt",
     "zoom_prompt",
     "parse_point",
 ]
@@ -67,6 +68,28 @@ def refine_prompt(target_description: str) -> str:
     return (
         "这是一张从 Windows 桌面截图里裁出的小区域（未缩放，1 像素 = 1 屏幕像素）。\n"
         f"请给出这张图里名为「{target_description}」的元素【中心】的位置。\n"
+        f"{_answer_format()}\n"
+        "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
+    )
+
+
+def whole_screen_prompt(target_description: str, *, retry_reason: str) -> str:
+    """**整屏第二遍**的提示词（工单 M7：粗定位为空 / 越界时开的那一遍）。
+
+    它与 :func:`coarse_prompt` **不是同一条请求**：
+
+    * 说的是**整屏**（不围绕粗点裁剪 —— 没有粗点就没有窗口中心）；
+    * 带上一次失败的原因（模型知道上一次没给出可用坐标），**不含任何量纲暗示**
+      （不写「0~1000」「归一化」，也不写「上次的坐标超出范围」这种带单位的说法）——
+      换算链路的分母只能来自标定（架构决策备忘 §2.6 C-04）。
+
+    ⚠️ **不是逐字重发**：逐字重发同一条请求，确定性模型会给出同一个答案
+    （工单 M7 AC 3：不得静默重试）。带上失败原因后它是**另一次问**。
+    """
+    return (
+        "这是一张 Windows 桌面截图。\n"
+        f"请给出界面上名为「{target_description}」的元素【中心】的位置。\n"
+        f"（上一次没能给出可用的位置：{retry_reason}。请再看一遍这张图。）\n"
         f"{_answer_format()}\n"
         "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
     )

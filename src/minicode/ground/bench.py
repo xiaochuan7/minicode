@@ -31,6 +31,7 @@ from minicode.model.effort import Effort
 from minicode.uia.ports import UiaFindRequest
 
 from .channel import TwoStageGrounder
+from .gate import GateMode, GateReport, GateSample, build_gate_report
 from .stats import ErrorDistribution, not_worse_than, summarize_errors
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "TargetOutcome",
     "BenchReport",
     "collect_targets",
+    "gate_report",
     "measure",
 ]
 
@@ -87,8 +89,17 @@ class TargetOutcome:
     size_logical: tuple[int, int] = (0, 0)
     coarse_error_px: float | None = None
     refine_error_px: float | None = None
+    #: **精定位落点离粗定位点多远**（物理像素）—— 回落判据的量，调阈值要用它。
+    refine_deviation_px: float | None = None
     fallback: bool = False
     fallback_reason: str = ""
+    #: 回落原因的枚举（工单 M7 AC 4）。
+    fallback_cause: str = ""
+    #: **门控埋点**（工单 M7 AC 4）：命中 / 命中原因 / 判不了的条件 / 是否开启精定位。
+    gate_hit: bool = False
+    gate_reasons: tuple[str, ...] = ()
+    gate_undecidable: tuple[str, ...] = ()
+    refine_enabled: bool = False
     coarse_point: tuple[float, float] | None = None
     landing_point: tuple[int, int] | None = None
     #: 两次模型请求的输入 token 数（粗定位 / 精定位）—— 用来核对服务端缩图。
@@ -130,6 +141,11 @@ class BenchReport:
         """样本里「≤16 px 小图标」的个数（**逻辑**像素口径，与目标收集同一处判据）。"""
         return sum(1 for outcome in self.outcomes if outcome.is_small_icon)
 
+    @property
+    def gate(self) -> GateReport:
+        """**门控埋点报告**（与分数同一批样本 —— 就是 ``self.outcomes``）。"""
+        return gate_report(self.outcomes)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "scale": self.scale,
@@ -146,14 +162,21 @@ class BenchReport:
             "coarse_distribution": self.coarse.to_dict() if self.coarse else None,
             "refine_distribution": self.refine.to_dict() if self.refine else None,
             "refine_not_worse_than_coarse": self.refine_not_worse,
+            "gate": self.gate.to_dict(),
             "outcomes": [
                 {
                     "name": outcome.name,
                     "size_px": list(outcome.size_px),
                     "coarse_error_px": outcome.coarse_error_px,
                     "refine_error_px": outcome.refine_error_px,
+                    "refine_deviation_px": outcome.refine_deviation_px,
                     "fallback": outcome.fallback,
                     "fallback_reason": outcome.fallback_reason,
+                    "fallback_cause": outcome.fallback_cause,
+                    "gate_hit": outcome.gate_hit,
+                    "gate_reasons": list(outcome.gate_reasons),
+                    "gate_undecidable": list(outcome.gate_undecidable),
+                    "refine_enabled": outcome.refine_enabled,
                     "landing_point": (
                         list(outcome.landing_point) if outcome.landing_point else None
                     ),
@@ -244,8 +267,15 @@ def measure(
     model_input_size: tuple[int, int],
     effort: Effort | str = Effort.LOW,
     max_tokens: int = 2000,
+    gate_mode: GateMode | str = GateMode.ON_DEMAND,
+    target_radius_px: float = 0.0,
 ) -> tuple[TargetOutcome, ...]:
-    """在给定目标上跑两级 grounding，返回逐目标的结果。"""
+    """在给定目标上跑两级 grounding，返回逐目标的结果。
+
+    ⚠️ ``target_radius_px`` 是门控「目标占比」的输入：**只能来自非真值来源**
+    （比如上一轮观测到的目标尺寸）。**不许拿 UIA 的真值框当门控输入** ——
+    那是拿答案去喂判据，量出来的分布不作数（真值只用来算误差）。
+    """
     outcomes: list[TargetOutcome] = []
     for target in targets:
         caller = _RecordingCaller(client)
@@ -256,6 +286,8 @@ def measure(
             full_screen_size=(frame.width, frame.height),
             effort=effort,
             max_tokens=max_tokens,
+            gate_mode=gate_mode,
+            target_radius_px=target_radius_px,
         )
         result = grounder.locate(
             _request(target.name, frame, surface)
@@ -276,6 +308,16 @@ def measure(
             if result.landing_point is not None
             else None
         )
+        # 精定位落点离粗定位点多远（**回落判据的量**，工单 M7 AC 3）：
+        # 调阈值要用它 —— 不知道它分布在哪，就不知道阈值该定多少。
+        deviation = (
+            math.hypot(
+                result.landing_point[0] - result.coarse_point[0],
+                result.landing_point[1] - result.coarse_point[1],
+            )
+            if result.landing_point is not None and result.coarse_point is not None
+            else None
+        )
         tokens = tuple(
             reply.input_tokens for reply in caller.replies[:2]
         )
@@ -288,8 +330,14 @@ def measure(
                 size_logical=target.size_logical,
                 coarse_error_px=coarse_error,
                 refine_error_px=refine_error,
+                refine_deviation_px=deviation,
                 fallback=result.fallback,
                 fallback_reason=result.fallback_reason,
+                fallback_cause=result.fallback_cause,
+                gate_hit=result.gate_hit,
+                gate_reasons=tuple(result.gate_reasons),
+                gate_undecidable=tuple(result.gate_undecidable),
+                refine_enabled=result.refine_enabled,
                 coarse_point=result.coarse_point,
                 landing_point=result.landing_point,
                 input_tokens=(tokens[0], tokens[1]),
@@ -297,6 +345,27 @@ def measure(
             )
         )
     return tuple(outcomes)
+
+
+def gate_report(outcomes: Sequence[TargetOutcome]) -> GateReport:
+    """**门控埋点报告**（工单 M7 AC 4）。
+
+    ⚠️ 这几个数与同一张表的分数**必须来自同一批样本** —— 这里收的就是
+    打分用的那批 outcome（``BenchReport.gate`` 就是这么来的）。
+    """
+    return build_gate_report(
+        [
+            GateSample(
+                gate_hit=outcome.gate_hit,
+                gate_reasons=tuple(outcome.gate_reasons),
+                gate_undecidable=tuple(outcome.gate_undecidable),
+                refine_enabled=outcome.refine_enabled,
+                fallback=outcome.fallback,
+                fallback_cause=outcome.fallback_cause,
+            )
+            for outcome in outcomes
+        ]
+    )
 
 
 def _request(name: str, frame: CapturedFrame, surface):
