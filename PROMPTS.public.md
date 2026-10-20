@@ -1,7 +1,6 @@
 # minicode — Matt Pocock 技能包全流程提示词包（去密钥版）
 
-> **本文件不含任何密钥**（真实值在 `.env`，已被 .gitignore 排除）。
-> 带密钥的本地版本在 `PROMPTS.md`（同样 gitignore）。
+> **本文件不含任何密钥**（真实值在 .env，已被 .gitignore 排除）。带密钥的本地版在 PROMPTS.md（同样 gitignore）。
 
 > 用途：在一个**全新的 DSH 会话**里，从零把 minicode 建起来。每个节点一条提示词，直接复制粘贴。
 > 约定：每条提示词都在 `C:\Users\22197\Desktop\minicode` 作为工作目录下发出。
@@ -106,7 +105,7 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 | `subagent_fork` | 同上，但**继承本会话已完成的轮次** | 紧接上文、需要上下文延续时 | 同上；fork 会带上全部历史，注意上下文成本 |
 | `workflow` | 写一段 JS 脚本批量编排 | 「几十个同类条目各查一遍再汇总」这种**规模化 fan-out** | 脚本里**没有 fs / 网络 / Node API**，只有 agent 能干活；**schema 只能用下面那 12 个关键字**（见下）；并发总数受子代理上限约束 |
 | `ralph` | 针对**一个不可变目标**的 **fresh-agent 迭代循环**：每轮开一个全新子代理，工作区当长期记忆，只回传结构化报告 | **审核 / 验证 / 收敛**类任务 | 工具描述原文：**"Use only when the direct human explicitly asks for Ralph"**；`maxRounds` 默认 256（自己给 3~5）；状态 `complete` / `blocked` / `budget-limited`；每轮子代理**没有**上一轮上下文 |
-| `create_goal` / `update_goal` | 跨自动续跑轮次的**持久目标**，同一会话继续 | 同一会话内的长任务 | 与 ralph 互补：**ralph = 每轮换新代理，goal = 同一会话接着干** |
+| `create_goal` / `update_goal` | 跨自动续跑轮次的**持久目标**，同一会话继续，上下文不丢 | **长任务的驱动机制**（一张工单的实现） | `phase` ∈ `active/paused/blocked/complete`；`update_goal` 必须带 `id`+`revision`（CAS 令牌）；**`blocked` 需同一条件连续 3 轮**才允许；会话 resume/fork 后 `activation` 变 `disarmed`，需 `action: resume` 重新上膛；**不要用 subagent/workflow/ralph 去"继续 goal"** |
 | `todo_write` | 步骤看板 | 多步任务 | 描述里写"恰好一个 in_progress"还是"允许多个"，取决于 `allowParallelInProgress` 配置 |
 | `skill` | 加载技能正文 | 每个 Matt Pocock 节点本身就是 skill | — |
 | `present` | 交付文件卡片 | 收尾 | 每次最多 4 个文件 |
@@ -264,6 +263,7 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 - 派之前先 `list_agents` 查占用，**成员数不要超过当前上限**（`maxMembers`）。
 - 派 3~4 个就够，**不要为了"并行"而并行**——如果四块里有一块内容很少，就只派三个。
 - **不要开 ralph**：写 spec 是综合判断，不是反复验证。
+- **如果这一轮明显做不完**（底稿多、要核对的地方多），先 `create_goal` 把目标设成「产出符合本规范的 spec 并发布到 GitHub Issue」，让会话跨自动续跑轮次接着走，别停在半路。（`update_goal` 的 `blocked` 需要同一条件连续 3 轮才允许，"还没干完"不算。）
 - 如果你判断这次综合根本不需要并行（底稿已经读过），**就单干**，别为了用工具而用工具。
 
 写 spec 前，按技能流程的第 2 步先向我确认**测试缝（seams）**。我的倾向是：唯一的缝在「动作执行层」——即"给定一个目标描述与一帧截图，产出坐标与动作"这一层，测试全部打在这一层；Windows 相关的部分用注入式假实现（假截图源、假 UIA 树、假 SendInput、假模型响应），让整套逻辑**不需要真桌面、不需要 API key 就能测**。请就这个缝的位置跟我确认。
@@ -356,6 +356,7 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 - 切片的数量就是团队规模，**不要超过切片数**（8~12 张工单就派 8~12 个；更多就分波）。
 - 合并时要**统一坐标口径与红线**（第 5、6 条），不能让各 agent 各写一套。
 - **不要开 ralph**：工单拆分是一次性综合判断，不是收敛问题。
+- **如果这一轮明显做不完**，先 `create_goal` 把目标设成「产出工单清单并等用户批准后发布到 GitHub Issues」，让会话跨自动续跑轮次接着走。
 
 按技能流程第 4 步，先把工单清单（编号 / 标题 / 阻塞边 / 交付什么）列给我，问粒度对不对、阻塞边对不对，我批准后再发布。
 ```
@@ -369,7 +370,59 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 ```
 /implement
 
-工单：.scratch/minicode/issues/<把工单号填这里>.md
+工单：<把工单号填这里，如 03>
+
+## ⛔ 开工第一件事：建立目标模式（goal）
+
+**用户明确要求这张工单以「目标模式」执行**——实现过程可能跨多个自动续跑轮次，不设目标就可能在半路停掉。
+
+开工第一件事（在做任何别的事之前）：
+
+```
+create_goal(
+  objective = "完成工单 <NN> 的全部验收标准。具体：<逐条抄工单的 Acceptance criteria>。"
+              "约束：只改 <允许的文件范围>；坐标换算链路只能有一个真值来源；"
+              "遇到与工单假设冲突的现实必须停下汇报，不得自行改需求。",
+  max_goal_rounds = 40
+)
+```
+
+- `max_goal_rounds` 给 **40**：给上限是为了防止无限续跑烧钱；一张工单正常 5~15 轮够用。
+- 目标里**必须抄全验收标准**——目标是跨轮次的唯一权威，不能只写"完成工单 03"。
+- 建完目标后**先 `get_goal()` 确认**它已 armed，再开始干活。
+
+### goal / ralph / subagent / workflow 是四件不同的事，不要混用
+
+| 机制 | 干什么 | 用在哪 |
+|---|---|---|
+| **goal** | 同一会话**跨自动续跑轮次**继续，上下文不丢 | **驱动这张工单的实现**（就是本次的目标模式） |
+| **ralph** | 每轮**换一个新代理**，只做审核/验证 | 收尾的 code-review 循环 |
+| `subagent` / `workflow` | 派出去的**可切分子块** | 确实能切开的独立调研/实现块 |
+
+**不要用 subagent、workflow 或 ralph 去"继续 goal"**——那是续跑机制自己的职责，绕开它会丢掉连续上下文。
+
+### 每轮续跑前后怎么做
+
+1. **开工/续跑先 `get_goal()`**：读出 `id`、`revision`（CAS 令牌）、`phase`、`roundsStarted`、`activation`。
+2. **如果 `activation == "disarmed"`**：会话 resume 或 fork 之后目标会解除上膛。用户说"继续/接着做"时，**用 `update_goal` action `resume` 重新上膛**，否则不会自动续跑。
+3. **所有 `update_goal` 调用都必须带上 `goal_id` 和 `revision`**（`revision` 用 `get_goal()` 读到的最新值，不要猜）。revision 不匹配会被拒。
+4. 动作语义（**别记错**）：
+
+| action | 什么时候用 | 限制 |
+|---|---|---|
+| `edit` | 目标真的变了（改 objective） | 只在人类明确要求时改 |
+| `pause` | 人类要求暂停 | **需要人类直接要求**，不能自己决定 |
+| `resume` | 人类要求继续，且 `activation` 是 `disarmed` | **需要人类直接要求** |
+| `complete` | 验收标准**真的全部达成** | 自动续跑中也允许 |
+| `blocked` | 真的卡死 | **同一个阻塞条件连续 3 轮**才允许，否则被拒；必须在 `blocked_reason` 里写 `{code, message}` 说清具体条件 |
+
+5. **`blocked` 的门槛**：`blockedAfterConsecutiveRounds` 默认 **3**。**"难""不确定""还有活没干完""需要更多信息"都不算 blocked**——那是 `complete` 之前该继续干的事。真的卡了（缺一个必须由人提供的凭据、依赖的外部服务挂了且短期修不了）就如实标 `blocked` 并把条件写清楚。
+
+### 中断自保（重要）
+
+- **每完成一个可验证的小块就 commit**。这样即使会话被打断，进度在 git 里，**不在上下文里**——上下文会丢，git 不会。
+- 目标里写全工单号与工单路径，续跑时以它为准。
+- `max_goal_rounds` 走完会停；停之前主动汇报：已完成到哪、测试状态、下一步是什么、要不要续。
 
 背景（这个新会话没有之前的所有上下文，请先读）：
 - docs/00-现状.md 与 docs/01-现状.md（机器参数、接入配方与三个坑、方案 B、三条红线、首批目标应用、已实测数字）
@@ -385,6 +438,7 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
    - `maxRounds` 给 **3**，不要用默认 256。
    - 目标里必须写全：审哪个分支、改动范围、输出写到哪、什么算通过——**每轮是全新代理，没有你的上下文**。
    - **审查用的 ralph 只看 diff 与文件，不许改代码**；发现问题写进报告，由你（主会话）决定要不要改。
+   - **顺序不能反**：先 `update_goal` action `complete`（目标达成），**再**开 ralph 做审查。**ralph 不是用来完成目标的。**
 5. 提交到当前分支（commit message 用中文，格式：`feat(<工单号>): <一句话>`）。
 6. 汇报时列出：改了哪些模块、测试全绿输出、code-review 的结论、以及**有没有遇到与工单假设不符的现实**（这比"做完了"更重要）。
 7. 如果这张工单大到一次会话做不完（超出上下文窗口），用 `create_goal` 建立持久目标，让本会话跨自动续跑轮次接着做——**不要用 ralph 写代码**（ralph 每轮换新代理，写代码需要连续上下文）。
@@ -455,8 +509,10 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 节点 3  /to-tickets                 → GitHub Issues + 原生 sub-issue 阻塞边
    ↓                                              【适合派团队：每切片一个 agent】
 节点 4  /implement  ←── 每张工单一个【全新会话】──┐
-   │   内部：tdd → code-review(ralph 循环,3 轮) → commit → push │
-   ↓                                                       【主会话单干】
+   │  ① create_goal（目标模式，驱动跨轮次续跑）              │
+   │  ② tdd 实现 → 每块 commit → goal complete               │
+   │  ③ code-review（ralph 循环,3 轮，只读）→ 改 → push       │
+   ↓                                    【主会话单干 + goal 驱动】
    └── 下一张工单（工单自包含，上下文可弃）────────┘
 
 跳过：/grill-me、/grill-with-docs（本项目已讨论透，直接进 to-spec）

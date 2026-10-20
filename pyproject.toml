@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minicode"
+version = "0.1.0"
+description = "Windows 桌面 computer-use agent"
+requires-python = ">=3.11"
+# core 路径只依赖标准库：坐标换算、执行层(ctypes)、协议骨架都必须能在零第三方依赖下跑起来。
+dependencies = []
+
+[project.optional-dependencies]
+# 开发工具
+dev = ["ruff>=0.17", "pytest>=9.0"]
+# 执行层截图（proto/exec/capture.py 需要 mss + numpy）
+exec = ["mss>=10.0", "numpy>=1.26"]
+# 视觉通道：crop / 降采样 / 图像编码
+vision = ["pillow>=10.0", "numpy>=1.26"]
+# 需要第三方 HTTP 客户端时才装；当前 verify 原型走标准库 urllib
+http = ["httpx>=0.27"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["minicode*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# proto/ 下三份原型是已验证资产，保持原样不改；lint 只报不自动修。
+ignore = ["E501", "UP038"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/minicode"]
+# src/minicode/verify/ 下是「脚本式」实测程序：import 就会真的调 API / 截图 / 点鼠标，
+# 不是 pytest 风格的用例，所以默认不收集。需要单跑某个实测时手动指定文件。
+addopts = "--ignore=src/minicode/verify"
