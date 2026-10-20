@@ -392,20 +392,12 @@ ADR 文件名按 `ADR-FORMAT.md` 的约定（`docs/adr/0001-*.md` 这样的编�
 - `AGENTS.md`、`docs/agents/` —— 仓库约定（议题跟踪器、分诊标签、领域文档怎么用）
 
 **发布方式：本地双写 + 联网后补发（当前无网络）。**
-1. **本地真值来源**：每张工单写成仓库内一个文件 **`docs/tickets/M<N>-<slug>.md`**（tracked，要提交）。正文照抄技能的 issue 模板，字段一字不改：
-   ```
-   ## What to build
-   ## Acceptance criteria
-   ## Blocked by
-   ```
+1. **本地真值来源**：每张工单写成仓库内一个文件 **`docs/tickets/M<N>-<slug>.md`**（tracked，要提交）。正文照抄技能的 issue 模板，字段一字不改，三个小节依次是：`## What to build` / `## Acceptance criteria` / `## Blocked by`。
    文件顶部再加一行元信息：`M<N> | <标题> | Blocked by: M<a>, M<b> | Status: ready-for-agent`。
    **编号从 M0 开始，按就绪边顺序**（没有阻塞的先编号）。
 2. **GitHub 是镜像，不是真值**：等我说"可以发 issue 了"，再按 `docs/agents/issue-tracker.md` 的流程发 issue（**`gh` 用全路径** `& "$env:ProgramFiles\GitHub CLI\gh.exe"`），标题前缀 `M<N> `，打 `ready-for-agent` 标签。
-   **阻塞边用 GitHub 原生依赖关系，命令是这个**（注意参数是**阻塞者的数据库 id**，不是 `#number`、不是 `node_id`）：
-   ```
-   gh api --method POST repos/xiaochuan7/minicode/issues/<子单号>/dependencies/blocked_by -F issue_id=<阻塞者的数据库id>
-   # 数据库 id 的取法：gh api repos/xiaochuan7/minicode/issues/<阻塞者号> --jq .id
-   ```
+   **阻塞边用 GitHub 原生依赖关系，命令是这个**（注意参数是**阻塞者的数据库 id**，不是 `#number`、不是 `node_id`），命令是：`gh api --method POST repos/xiaochuan7/minicode/issues/<子单号>/dependencies/blocked_by -F issue_id=<阻塞者的数据库id>`
+   数据库 id 的取法：`gh api repos/xiaochuan7/minicode/issues/<阻塞者号> --jq .id`
    **`sub_issues` 端点表达的是"父单-子单"（这张工单属于哪个里程碑），不是阻塞关系**，两件事别混；要表达父子关系时才用 sub_issues。
 3. **发 Issue 的时机**：**当前是本地开发模式，不要执行任何 `gh` 命令**。只写本地文件，Issue 号先留 `<待回填>`，等用户说"可以发了"再补发。**本地文件是唯一真值，GitHub 是镜像。**
 
