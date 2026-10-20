@@ -381,7 +381,15 @@ ADR 文件名按 `ADR-FORMAT.md` 的约定（`docs/adr/0001-*.md` 这样的编�
 ```
 /to-tickets
 
-把刚才的 spec 拆成 tracer-bullet 工单。
+把 **`docs/spec.md` 里的 spec**（已发布为 GitHub Issue #2）拆成 tracer-bullet 工单。
+
+**你要读的输入（自己读，不用我贴；文件都在仓库里）：**
+- `docs/spec.md` —— 要拆的那份 spec（87 条 user stories + 七节决策）
+- `CONTEXT.md` —— 105 个词条的领域词汇表，**术语一律按它来**
+- `docs/adr/0001`~`0007` —— 7 条已接受的不可逆决策，拆工单时不能违背
+- `docs/00-现状.md`、`docs/01-现状.md` —— 机器参数、方案 B 组成、本机实测数字
+- `docs/research/01-架构决策备忘.md` —— §2.6 检查项表 C-01~C-16 是验收标准的来源
+- `AGENTS.md`、`docs/agents/` —— 仓库约定（议题跟踪器、分诊标签、领域文档怎么用）
 
 **发布方式：本地双写 + 联网后补发（当前无网络）。**
 1. **本地真值来源**：每张工单写成仓库内一个文件 **`docs/tickets/M<N>-<slug>.md`**（tracked，要提交）。正文照抄技能的 issue 模板，字段一字不改：
