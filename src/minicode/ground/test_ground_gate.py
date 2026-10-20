@@ -311,6 +311,117 @@ class GatePipelineTests(unittest.TestCase):
         self.assertIsNotNone(result.crop_plan)
 
 
+class SecondOpinionTests(unittest.TestCase):
+    """C-16 的「两次粗定位不一致」条件：**给了端口才判得了**。
+
+    工单 M7 记下的现状是「生产接线拿不到第二个粗定位结果 → 该条件判不了」；
+    工单 M8 的评测需要一个**可判定**的一致性条件，于是给通道加了一个
+    **可选的第二次独立粗定位**端口（工单 M8）。
+    """
+
+    def test_without_the_hook_the_condition_is_undecidable(self):
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertIn("consistency", result.gate_undecidable)
+        self.assertNotIn("coarse_inconsistent", result.gate_reasons)
+
+    def test_disagreeing_second_opinion_hits_the_gate(self):
+        """第二次粗定位与第一次差得远 → 门控命中（开精定位）。
+
+        第一次粗定位给的是 0~1000 量纲下的 390.625（= 1000 物理 px），
+        第二次给 700（= 1792 物理 px）→ 相距 **792 物理 px** > 容差 128 px
+        → 命中。**距离是通道换算出来的**（端口给的是模型自己的量纲）。
+        """
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
+        grounder = _grounder(
+            model,
+            gate_mode=GateMode.ON_DEMAND,
+            second_opinion=lambda frame, target: (700.0, 500.0),
+        )
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertIn("coarse_inconsistent", result.gate_reasons)
+        self.assertNotIn("consistency", result.gate_undecidable)
+        self.assertTrue(result.refine_enabled)
+
+    def test_disagreement_just_under_the_tolerance_does_not_hit(self):
+        """相距刚好在容差以内 → 不命中（**换算归通道**这条契约被钉住）。"""
+        model = _StubModel(_reply(390.625, 500.0))
+        # 390.625 + 50（0~1000 量纲）= 440.625 → 相距 50/1000×2560 = 128 物理 px
+        # = 容差 → 不大于容差 → 不命中。
+        grounder = _grounder(
+            model,
+            gate_mode=GateMode.ON_DEMAND,
+            second_opinion=lambda frame, target: (440.625, 500.0),
+        )
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertNotIn("coarse_inconsistent", result.gate_reasons)
+        self.assertNotIn("consistency", result.gate_undecidable)
+
+    def test_agreeing_second_opinion_closes_the_gate(self):
+        """两次一致 → 这条条件不触发（门控仍可由别的条件命中）。"""
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = _grounder(
+            model,
+            gate_mode=GateMode.ON_DEMAND,
+            second_opinion=lambda frame, target: (390.625, 500.0),
+        )
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertNotIn("coarse_inconsistent", result.gate_reasons)
+        self.assertNotIn("consistency", result.gate_undecidable)
+        self.assertFalse(result.refine_enabled)
+
+    def test_failing_second_opinion_leaves_it_undecidable(self):
+        """第二次粗定位失败 → 照旧记「不可判定」（不静默当成一致）。"""
+
+        def _boom(frame, target):
+            raise RuntimeError("第二次粗定位炸了")
+
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = _grounder(
+            model, gate_mode=GateMode.ON_DEMAND, second_opinion=_boom
+        )
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertIn("consistency", result.gate_undecidable)
+
+    def test_hook_returns_raw_model_coordinates(self):
+        """端口给的是**模型自己那个坐标系**里的原始坐标 → 换算由通道做。
+
+        端口收到的是**那一帧画面**与**目标描述**；它给的数值不被端口自己换算
+        （换算在通道的适配器里做，**坐标换算链路只有一个真值来源**）。
+        """
+        seen: list[tuple] = []
+
+        def _hook(frame, target):
+            seen.append((frame.width, frame.height, target))
+            return (500.0, 500.0)
+
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = _grounder(
+            model, gate_mode=GateMode.ON_DEMAND, second_opinion=_hook
+        )
+        grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][:2], (2560, 1600))
+        self.assertEqual(seen[0][2], "开始")
+
+    def test_second_point_without_a_coarse_point_is_undecidable(self):
+        """第一次粗定位为空、第二次有点 → **比不了** → 记「不可判定」（不静默）。
+
+        ⚠️ 这一支以前是静默的（既不记命中也不记不可判定）；工单 M8 的端口
+        让它可达，按 README 的口径必须显式记。
+        """
+        model = _StubModel(_reply(5000.0, 5000.0))
+        grounder = _grounder(
+            model,
+            gate_mode=GateMode.ON_DEMAND,
+            second_opinion=lambda frame, target: (500.0, 500.0),
+        )
+        # 粗定位**越界** → coarse_point 为 None（有第二次结果也比不了）。
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertIn("consistency", result.gate_undecidable)
+
+
 class GateInstrumentationTests(unittest.TestCase):
     """AC 4 · 埋点：四个字段齐 + 报告口径写死 + 与分数同一批样本。"""
 

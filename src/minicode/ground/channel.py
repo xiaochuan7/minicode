@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 from minicode.action.errors import ErrorCode
 from minicode.action.image import encode_frame_base64
@@ -66,7 +67,51 @@ from .prompt import (
     whole_screen_prompt,
 )
 
-__all__ = ["TwoStageGrounder"]
+__all__ = [
+    "TwoStageGrounder",
+    "SecondOpinion",
+    "ask_model_point",
+    "default_crop_size",
+]
+
+#: **第二次独立粗定位**的端口形状（工单 M8 用它把 C-16 的「一致性」条件变成可判定）。
+#:
+#: 拿到的是**模型自己那个坐标系**里的原始坐标（不换算）—— 换算由本模块的
+#: 适配器做（**坐标换算链路只有一个真值来源**）。
+#: 拿不到就返回 ``None`` → 一致性条件**不可判定**（照旧显式记进追踪记录）。
+SecondOpinion = Callable[[CapturedFrame, str], "tuple[float, float] | None"]
+
+
+def default_crop_size() -> tuple[int, int]:
+    """**裁剪窗口的默认尺寸**（物理像素）—— 取冻结原型的那份默认值。
+
+    评测台要报「裁剪参数」，就得报**实际用的那个尺寸**（不另写一份常量）。
+    """
+    return (DEFAULT_CROP_WIDTH_PX, DEFAULT_CROP_HEIGHT_PX)
+
+
+def ask_model_point(
+    model: ModelCaller,
+    prompt: str,
+    frame: CapturedFrame,
+    *,
+    effort: Effort | str,
+    max_tokens: int,
+) -> tuple[float, float]:
+    """问模型要一个点（**数值原样带回**，不乘分母、不猜量纲）。
+
+    粗定位与「第二次独立粗定位」都走这里 —— **「问模型要一个点」只有这一处实现**。
+    """
+    image_base64 = encode_frame_base64(frame)
+    if image_base64 is None:
+        raise GroundingParseError("画面编不成 PNG（像素数与尺寸对不上），送不出图")
+    reply = model.complete(
+        prompt,
+        effort=effort,
+        max_tokens=max_tokens,
+        image_base64=image_base64,
+    )
+    return parse_point(reply.text)
 
 #: 粗定位这一级的名字（回显与追踪记录里用）。
 STAGE_COARSE = "coarse"
@@ -107,6 +152,13 @@ class TwoStageGrounder:
     target_radius_px
         目标半径（物理像素）。**给了它，门控的「目标占比」才判得了**；
         没给就是「只给点不给框」→ 占比**不可判定**（工单 M7 AC 1）。
+    second_opinion
+        **第二次独立粗定位**（可空）。给了它，C-16 的「两次粗定位不一致」
+        这一条才**可判定**；不给就是**不可判定**（工单 M7 已记下的现状：
+        生产接线拿不到第二个粗定位结果）。工单 M8 的评测用它当门控输入 ——
+        两次独立粗定位互相矛盾，通常意味着这个目标小或含糊，值不值得再看一眼。
+        ⚠️ 它**必须是另一次问**（逐字重发同一条请求会拿到同一个答案，
+        确定性模型下「一致性」永远成立）。
     gate_params
         **门控参数**（运行时参数 + 取值来源）。缺省 = 带来源的默认值。
     gate_mode
@@ -132,6 +184,7 @@ class TwoStageGrounder:
         target_radius_px: float = 0.0,
         gate_params: GateParams | None = None,
         gate_mode: GateMode | str = GateMode.ON_DEMAND,
+        second_opinion: SecondOpinion | None = None,
     ):
         self.model = model
         self.scale = scale
@@ -148,6 +201,7 @@ class TwoStageGrounder:
         self.target_radius_px = float(target_radius_px)
         self.gate_params = gate_params or default_gate_params()
         self.gate_mode = GateMode(gate_mode)
+        self.second_opinion = second_opinion
         self.adapter = CoordinateAdapter(
             scale, out_of_bounds_tolerance_px=self.out_of_bounds_tolerance_px
         )
@@ -216,13 +270,14 @@ class TwoStageGrounder:
 
         # -- 门控：命中才开第二遍（工单 M7 AC 1）-----------------------------
         left, top, right, bottom = (int(value) for value in request.surface)
+        second_coarse = self._second_coarse_point(request, frame, geometry)
         decision = evaluate_gate(
             GateInputs(
                 coarse_point=coarse,
                 coarse_out_of_bounds=coarse_out_of_bounds,
                 target_radius_px=self.target_radius_px or None,
                 coarse_confidence=None,
-                second_coarse_point=None,
+                second_coarse_point=second_coarse,
                 surface_size=(right - left, bottom - top),
             ),
             self.gate_params,
@@ -235,7 +290,7 @@ class TwoStageGrounder:
             # 取自整屏粗定位点，不是 crop 尺度上的点。见 `docs/00-现状.md` §3
             # 与 `docs/adr/0006-crop-local-coordinate-contract.md` 的补充说明。
             if coarse is None:
-                return self._failure(coarse_issue or "粗定位不可用", echoes, model_calls)
+                return self._failure(coarse_issue or "粗定位不可用", echoes, model_calls, decision)
             return self._result(
                 landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
                 coarse=coarse,
@@ -260,7 +315,7 @@ class TwoStageGrounder:
             crop = crop_frame(frame, plan)
         except (CoordinateError, ValueError) as exc:
             # 裁剪计划/裁剪本身失败 → **报定位失败**（不落点、不挪到别处）。
-            return self._failure(f"裁剪窗口不可用：{exc}", echoes, model_calls)
+            return self._failure(f"裁剪窗口不可用：{exc}", echoes, model_calls, decision)
 
         # -- 精定位（L1）：crop 内 -------------------------------------------
         crop_input = self.crop_model_input_size or (plan.width, plan.height)
@@ -356,18 +411,39 @@ class TwoStageGrounder:
     # 内部
     # ------------------------------------------------------------------
 
+    def _second_coarse_point(
+        self,
+        request: VisualLocateRequest,
+        frame: CapturedFrame,
+        geometry,
+    ) -> tuple[float, float] | None:
+        """**第二次独立粗定位**的结果（物理表面空间）。
+
+        拿不到（没给端口 / 调用失败 / 坐标不可用）→ ``None``
+        → 一致性条件**不可判定**（照旧显式记进追踪记录，不静默）。
+        """
+        if self.second_opinion is None:
+            return None
+        try:
+            raw = self.second_opinion(frame, request.target_description)
+        except Exception:
+            return None
+        if raw is None:
+            return None
+        try:
+            return self.adapter.to_screen(raw[0], raw[1], geometry)
+        except CoordinateError:
+            return None
+
     def _ask(self, prompt: str, frame: CapturedFrame) -> tuple[float, float]:
-        """问模型一次坐标。**数值原样带回**（不乘分母、不猜量纲）。"""
-        image_base64 = encode_frame_base64(frame)
-        if image_base64 is None:
-            raise GroundingParseError("画面编不成 PNG（像素数与尺寸对不上），送不出图")
-        reply = self.model.complete(
+        """问模型一次坐标（走 :func:`ask_model_point` —— 只有那一处实现）。"""
+        return ask_model_point(
+            self.model,
             prompt,
+            frame,
             effort=self.effort,
             max_tokens=self.max_tokens,
-            image_base64=image_base64,
         )
-        return parse_point(reply.text)
 
     def _whole_screen(
         self,
@@ -395,7 +471,7 @@ class TwoStageGrounder:
                 frame,
             )
         except Exception as exc:
-            return self._failure(f"整屏第二遍失败：{exc}", echoes, model_calls)
+            return self._failure(f"整屏第二遍失败：{exc}", echoes, model_calls, decision)
         model_calls += 1
         echoes.append(
             GroundingEcho(
@@ -410,7 +486,7 @@ class TwoStageGrounder:
         try:
             point = self.adapter.to_screen(raw[0], raw[1], geometry)
         except CoordinateError as exc:
-            return self._failure(f"整屏第二遍结果不可用：{exc}", echoes, model_calls)
+            return self._failure(f"整屏第二遍结果不可用：{exc}", echoes, model_calls, decision)
         return self._result(
             landing_point=(int(round(point[0])), int(round(point[1]))),
             coarse=None,
@@ -453,12 +529,29 @@ class TwoStageGrounder:
         )
 
     def _failure(
-        self, message: str, echoes: list[GroundingEcho], model_calls: int
+        self,
+        message: str,
+        echoes: list[GroundingEcho],
+        model_calls: int,
+        decision: GateDecision | None = None,
     ) -> VisualLocateResult:
-        """粗定位失败 → **没有可回落的结果**（不落点、不挪到最近的可行位置）。"""
+        """粗定位失败 → **没有可回落的结果**（不落点、不挪到最近的可行位置）。
+
+        ⚠️ **门控的判定字段照样落盘**（哪怕这次定位失败了）：
+        「判不了的条件必须显式记进追踪记录」—— 失败的那一次也该记
+        （否则最需要查的那类失败恰好没有埋点）。
+        """
         return VisualLocateResult(
             error_code=ErrorCode.LOCATE_FAILED,
             error_message=message,
+            gate_hit=decision.hit if decision is not None else False,
+            gate_reasons=tuple(
+                reason.value for reason in (decision.reasons if decision else ())
+            ),
+            gate_undecidable=tuple(
+                condition.value for condition in (decision.undecidable if decision else ())
+            ),
+            refine_enabled=False,
             echoes=tuple(echoes),
             model_calls=model_calls,
             scale=self.scale.value,

@@ -27,6 +27,7 @@ __all__ = [
     "GroundingParseError",
     "coarse_prompt",
     "refine_prompt",
+    "second_opinion_prompt",
     "whole_screen_prompt",
     "zoom_prompt",
     "parse_point",
@@ -90,6 +91,21 @@ def whole_screen_prompt(target_description: str, *, retry_reason: str) -> str:
         "这是一张 Windows 桌面截图。\n"
         f"请给出界面上名为「{target_description}」的元素【中心】的位置。\n"
         f"（上一次没能给出可用的位置：{retry_reason}。请再看一遍这张图。）\n"
+        f"{_answer_format()}\n"
+        "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
+    )
+
+
+def second_opinion_prompt(target_description: str) -> str:
+    """**第二次独立粗定位**的提示词（工单 M8）。
+
+    **不是逐字重发**（逐字重发同一条请求，确定性模型会给出同一个答案 →
+    「两次粗定位是否一致」永远判不出）。措辞与粗定位那条不同，
+    但**不含任何量纲暗示**（量纲只由标定判定，架构备忘 §2.6 C-04）。
+    """
+    return (
+        "这是一张桌面软件的界面截图。\n"
+        f"请在图里找到符合这个描述的元素：{target_description}\n"
         f"{_answer_format()}\n"
         "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
     )

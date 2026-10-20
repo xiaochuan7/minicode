@@ -278,7 +278,12 @@ def evaluate_gate(
     # ④ 两次独立粗定位互相不一致
     if inputs.second_coarse_point is None:
         undecidable.append(GateCondition.CONSISTENCY)
-    elif inputs.coarse_point is not None:
+    elif inputs.coarse_point is None:
+        # 第二次有点、第一次没有 → **比不了**（一致性判不了）。
+        # ⚠️ 这一支以前是**静默**的（既不记命中也不记不可判定）——
+        # README 的口径要求「判不了的条件必须显式记进追踪记录」。
+        undecidable.append(GateCondition.CONSISTENCY)
+    else:
         distance = math.hypot(
             inputs.second_coarse_point[0] - inputs.coarse_point[0],
             inputs.second_coarse_point[1] - inputs.coarse_point[1],

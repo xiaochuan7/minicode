@@ -1,0 +1,394 @@
+"""命令行入口：**ScreenSpot-Pro 门控评测**（工单 M8）。
+
+::
+
+    $env:PYTHONPATH="src"; python -m minicode.eval --dataset .scratch/sspro --out runs/m8 --per-stratum 10
+
+它做五件事：
+
+1. **读数据集**（ScreenSpot-Pro 的标注 + 图片）→ 按 (平台 × 文本/图标)
+   **分层抽样**（确定性的，同一个种子 → 同一批样本）；
+2. **每个图像尺寸各标定一次**（真调模型）→ 判定标度与「模型实际看到的那张图」
+   的尺寸（**量出来的，不是猜的**）；
+3. 跑**两臂**（门控开 / 门控关），**同一条样本的两臂共用同一帧画面**；
+4. 判**硬判据**（门控开 ≥ 门控关）与**防掩盖**（逐子集对比），
+   出那张 **7 行表**；
+5. 把结论写成一份 JSON 记录 + 一份 markdown 表格。
+
+⚠️ **不碰真桌面**：数据来自数据集文件，不需要真机占用锁。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import platform
+import sys
+import threading
+import time
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from minicode.ground.gate import default_gate_params
+from minicode.model.client import ModelClient
+from minicode.model.config import load_config
+from minicode.model.effort import Effort
+from minicode.model.request_log import JsonlRequestLog
+
+from .formats import SCREENSPOT_PRO, self_check_hit_rate
+from .sspro import (
+    GATE_INPUT_SOURCES,
+    OFFICIAL_ROWS,
+    MemoizingModelCaller,
+    compare_arms,
+    gate_params_snapshot,
+    load_samples,
+    make_second_opinion,
+    render_table,
+    run_arms,
+    stratified_subset,
+    table_rows,
+)
+
+__all__ = ["main"]
+
+#: **候选的「模型输入宽度」**（物理像素）—— 用来量出服务端的缩放规则。
+#:
+#: 取值来源：**2048 宽**是本机实测的服务端上限（MiniMax 端点把本机 2560 宽的图
+#: 缩到约 2048 宽，见 `docs/00-现状.md`）；其余是常见上限值，用来兜住别的档位。
+#: 逐个试，取**误差最小**的那一个 —— **量出来的，不是猜的**。
+MODEL_INPUT_CANDIDATE_WIDTHS = (2048, 1600, 1280, 1024)
+
+
+def _crop_size() -> tuple[int, int]:
+    """**实际用的裁剪窗口尺寸**（取冻结原型那份默认值，不另写常量）。"""
+    from minicode.ground.channel import default_crop_size
+
+    return default_crop_size()
+
+
+def _parse_size(text: str) -> tuple[int, int]:
+    parts = text.lower().replace("*", "x").split("x")
+    if len(parts) != 2:
+        raise ValueError(f"尺寸格式应为 WxH，收到 {text!r}")
+    return (int(parts[0]), int(parts[1]))
+
+
+def _reconfigure_output() -> None:
+    """控制台按 UTF-8 输出（默认代码页是 GBK，中文与符号会变成乱码）。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # pragma: no cover - 老解释器没有这个方法
+            pass
+
+
+class _LockedSink:
+    """**线程安全**的请求日志出口（评测按样本并行调用模型 → 落盘不能交错）。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._lock = threading.Lock()
+
+    def write(self, record) -> None:
+        with self._lock:
+            self._inner.write(record)
+
+
+def main(argv=None) -> int:
+    _reconfigure_output()
+    parser = argparse.ArgumentParser(
+        prog="minicode.eval",
+        description="ScreenSpot-Pro 门控评测：门控开 vs 门控关（工单 M8）",
+    )
+    parser.add_argument(
+        "--dataset", default=".scratch/sspro", help="数据集根目录（里面有 annotations/ 与 images/）"
+    )
+    parser.add_argument("--out", default="runs/m8", help="记录落盘目录")
+    parser.add_argument(
+        "--per-stratum",
+        type=int,
+        default=10,
+        help="每个 (平台 × 文本/图标) 分层取几条（默认 10）",
+    )
+    parser.add_argument("--seed", type=int, default=20251020, help="抽样种子（决定性）")
+    parser.add_argument(
+        "--effort",
+        choices=[effort.value for effort in Effort],
+        default=Effort.LOW.value,
+        help="思考预算档位（默认 low）",
+    )
+    parser.add_argument("--max-tokens", type=int, default=2000)
+    parser.add_argument(
+        "--consistency-tolerance",
+        type=float,
+        default=0.0,
+        help=(
+            "「两次粗定位一致性」容差（物理像素）的覆盖值；0 = 用门控自带值。"
+            "**调它就是调门控**（工单 M8：硬判据不满足时调门控，不改判据）"
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="按样本并行的线程数（只缩短墙钟时间，不改变任何判定）",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=0, help="最多跑多少条样本（0 = 不限；调试用）"
+    )
+    args = parser.parse_args(argv)
+
+    started = time.time()
+    dataset = Path(args.dataset)
+    samples = load_samples(dataset)
+    print(f"=== 数据集：{len(samples)} 条（{dataset}）===")
+    chosen = stratified_subset(samples, args.per_stratum, seed=args.seed)
+    missing = [sample for sample in chosen if not sample.image_path.exists()]
+    if missing:
+        print(f"⚠️ 有 {len(missing)} 条样本的图片不在本地（数据集没下全），跳过它们")
+        chosen = [sample for sample in chosen if sample.image_path.exists()]
+    if args.limit:
+        chosen = chosen[: args.limit]
+    print(f"分层抽样后：{len(chosen)} 条（种子 {args.seed}）")
+    for key in sorted({(s.platform, s.ui_type) for s in chosen}):
+        count = sum(1 for s in chosen if (s.platform, s.ui_type) == key)
+        print(f"  {key[0]}/{key[1]}: {count} 条")
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    client = ModelClient(config, _LockedSink(JsonlRequestLog(out_dir / "model-requests.jsonl")))
+
+    # -- 标定：每个图像尺寸各标一次（真调模型）--------------------------
+    sizes = sorted({sample.image_size for sample in chosen})
+    scale_by_size: dict[tuple[int, int], Any] = {}
+    model_input_by_size: dict[tuple[int, int], tuple[int, int]] = {}
+    calibrations: list[dict[str, object]] = []
+    for width, height in sizes:
+        record = _calibrate(client, config.model, width, height, args)
+        scale_by_size[(width, height)] = record["scale"]
+        model_input_by_size[(width, height)] = record["model_input_size"]
+        calibrations.append(record)
+
+    # -- 跑两臂 ----------------------------------------------------------
+    # ⚠️ **两臂共用同一次粗定位回答**（应答记忆端口）：模型端不确定，
+    # 两臂各自重问会把随机性混进「唯一差异是门控」这个对比里。
+    memoized = MemoizingModelCaller(client)
+    second_opinion = make_second_opinion(
+        memoized, effort=args.effort, max_tokens=args.max_tokens
+    )
+    gate_params = default_gate_params()
+    if args.consistency_tolerance:
+        gate_params = replace(
+            gate_params, consistency_tolerance_px=args.consistency_tolerance
+        )
+        print(
+            f"门控参数覆盖：一致性容差 {args.consistency_tolerance} px"
+            f"（自带值 {default_gate_params().consistency_tolerance_px} px）"
+        )
+    print(f"=== 跑两臂（门控开 / 门控关），N={len(chosen)} ===")
+    on_demand, always = run_arms(
+        chosen,
+        memoized,
+        scale_by_size=scale_by_size,
+        model_input_by_size=model_input_by_size,
+        effort=args.effort,
+        max_tokens=args.max_tokens,
+        second_opinion=second_opinion,
+        progress=lambda line: print(line, flush=True),
+        workers=args.workers,
+        gate_params=gate_params,
+    )
+
+    comparison = compare_arms(on_demand, always)
+    crop_size = _crop_size()
+    rows = table_rows(
+        comparison=comparison,
+        official=OFFICIAL_ROWS,
+        model_id=config.model,
+        crop_size=crop_size,
+    )
+    table = render_table(rows)
+
+    # -- 防假象自检（GT 中心当预测点，命中率必须 ≈100%）-------------------
+    self_check = self_check_hit_rate(
+        [sample.as_eval_sample() for sample in chosen], SCREENSPOT_PRO
+    )
+
+    report = {
+        "dataset": {
+            "root": str(dataset),
+            "source": "Hugging Face 数据集 likaixin/ScreenSpot-Pro（本次经 hf-mirror 镜像下载）",
+            "license": "MIT（官方仓 LICENSE + 数据集卡片 cardData.license）",
+            "total_samples": len(samples),
+            "evaluated_samples": len(chosen),
+            "seed": args.seed,
+            "sampling": "按 (平台 × 文本/图标) 分层，每层固定条数（确定性）",
+        },
+        "model": {
+            "id": config.model,
+            "endpoint": config.base_url,
+            "effort": args.effort,
+            "max_tokens": args.max_tokens,
+            "crop_size": list(crop_size),
+        },
+        "calibration": [
+            {**record, "scale": record["scale"].value} for record in calibrations
+        ],
+        "gate": {
+            "params": gate_params_snapshot(gate_params),
+            "input_sources": GATE_INPUT_SOURCES,
+        },
+        "self_check_hit_rate": self_check,
+        "comparison": comparison,
+        "model_calls": {
+            "sent": memoized.calls,
+            "replayed": memoized.replays,
+            "note": (
+                "应答记忆端口：两臂**共用同一次粗定位回答**"
+                "（模型端不确定，各自重问会把随机性混进对比里）"
+            ),
+        },
+        "official_rows": list(OFFICIAL_ROWS),
+        "table_markdown": table,
+        "outcomes": {
+            "on_demand": [outcome.to_dict() for outcome in on_demand],
+            "always": [outcome.to_dict() for outcome in always],
+        },
+        "environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+        },
+        "elapsed_seconds": round(time.time() - started, 1),
+    }
+    path = out_dir / "sspro-report.json"
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (out_dir / "sspro-table.md").write_text(table + "\n", encoding="utf-8")
+
+    _print_summary(report, comparison)
+    print(f"记录已写入：{path}")
+    return 0
+
+
+def _calibrate(client, model_id: str, width: int, height: int, args) -> dict[str, object]:
+    """给一个图像尺寸跑一次标定（真调模型）。
+
+    「模型实际看到的那张图」的尺寸**量出来**：先用探针尺寸声明一次，
+    若判出的标度是**绝对像素**那一档，就把常见的缩放宽度挨个试一遍，
+    取误差最小的那一个 —— **量出来的，不是猜的**。
+    """
+    from minicode.calib.calibrate import CalibrationProbe
+    from minicode.calib.probe import default_probe_spec
+
+    def probe_at(model_input: tuple[int, int]):
+        return CalibrationProbe(
+            client,
+            spec=default_probe_spec(width, height),
+            model_input_size=model_input,
+            call_path="image",
+            model_id=model_id,
+            effort=args.effort,
+            max_tokens=args.max_tokens,
+        ).run()
+
+    outcome = probe_at((width, height))
+    best = outcome.candidate(outcome.detected_scale)
+    model_input = (width, height)
+    scale = outcome.detected_scale
+    tried: list[list[int]] = [[width, height]]
+    if outcome.detected_scale.value.startswith("absolute"):
+        # 候选宽度（**取值来源**：服务端把大图缩到 2048 宽 —— 本机实测；
+        # 其余是常见的上限值，逐个试，取**误差最小**的那一个）。
+        # ⚠️ 这张表对**超宽图**不够（3840×1080 那一档就判错了）—— 已知缺陷，
+        # 见 `docs/reviews/M8.md` §3.4。
+        for candidate_width in MODEL_INPUT_CANDIDATE_WIDTHS:
+            if candidate_width >= width:
+                continue
+            candidate_height = round(height * candidate_width / width)
+            trial = probe_at((candidate_width, candidate_height))
+            trial_best = trial.candidate(trial.detected_scale)
+            tried.append([candidate_width, candidate_height])
+            if trial_best.max_error_px < best.max_error_px:
+                best = trial_best
+                outcome = trial
+                model_input = (candidate_width, candidate_height)
+                scale = trial.detected_scale
+    print(
+        f"标定 {width}×{height}：标度 {scale.value}（判定 {outcome.scale_verdict}）"
+        f"｜模型输入 {model_input[0]}×{model_input[1]}"
+        f"｜最大误差 {best.max_error_px:.2f} px｜标定成功 {outcome.calibration_ok}"
+    )
+    # 逐目标的误差（**模型输入空间**的像素）：看它是系统偏差还是随机误差。
+    truth = {name: (x, y) for name, x, y in outcome.targets}
+    factor = model_input[0] / width if width else 1.0
+    point_errors = []
+    for name, raw_x, raw_y in outcome.raw_points:
+        if name not in truth:
+            continue
+        expected_x = truth[name][0] * factor
+        expected_y = truth[name][1] * (model_input[1] / height if height else 1.0)
+        point_errors.append(
+            {
+                "target": name,
+                "error_px": round(
+                    ((raw_x - expected_x) ** 2 + (raw_y - expected_y) ** 2) ** 0.5, 2
+                ),
+            }
+        )
+    return {
+        "image_size": [width, height],
+        "scale": scale,
+        "scale_verdict": outcome.scale_verdict,
+        "landing_equivalence": outcome.landing_equivalence,
+        "model_input_size": list(model_input),
+        "max_error_px": round(best.max_error_px, 3),
+        "calibration_ok": outcome.calibration_ok,
+        "model_input_candidates_tried": tried,
+        "point_errors_px": point_errors,
+        "probe_digest": outcome.probe_digest,
+        "probe_size": list(outcome.probe_size),
+    }
+
+
+def _print_summary(report: dict, comparison: dict) -> None:
+    overall = comparison["overall"]
+    print("=== 硬判据（门控开 ≥ 门控关）===")
+    print(
+        f"门控开 {overall['on_demand'] * 100:.1f}% ｜门控关 {overall['always'] * 100:.1f}%"
+        f" ｜差 {overall['delta_pp']:+.1f} pp"
+        f" ｜{'成立' if overall['criterion_met'] else '不成立'}"
+    )
+    print("=== 防掩盖（逐子集，任何单一子集不得比门控关低 1 pp 以上）===")
+    for item in comparison["strata"]:
+        print(
+            f"  {item['stratum']:<18} 开 {item['on_demand'] * 100:5.1f}%"
+            f" ｜关 {item['always'] * 100:5.1f}% ｜差 {item['delta_pp']:+.1f} pp"
+            f" {'✓' if item['within_tolerance'] else '✗'}"
+        )
+    print(f"防掩盖：{'通过' if comparison['anti_masking_met'] else '未通过'}")
+    gate = comparison["on_demand"]["gate"]
+    print(
+        f"=== 门控埋点（与分数同一批样本 N={gate['samples']}）==="
+    )
+    print(
+        f"门控开这一臂：开启精定位 {gate['refine_enabled']} 次"
+        f"｜门控判中 {gate['gate_hits']} 次"
+        f"｜**门控关闭率** {1 - gate['hit_rate']:.1%}"
+    )
+    print(f"命中原因：{gate['reason_distribution']}")
+    print(f"判不了的条件：{gate['undecidable_distribution']}")
+    print(
+        f"模型调用次数：门控开 {comparison['on_demand']['model_calls']} 次"
+        f"｜门控关 {comparison['always']['model_calls']} 次"
+    )
+    print(f"防假象自检（GT 中心当预测点）：{report['self_check_hit_rate'] * 100:.1f}%")
+    print("=== 那张 7 行表 ===")
+    print(report["table_markdown"])
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
