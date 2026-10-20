@@ -216,34 +216,28 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 
 ---
 
-## 节点 1 — `/setup-matt-pocock-skills`（仓库骨架）
+## 节点 1 — `/setup-matt-pocock-skills`（仓库骨架） ✅ **已完成 2026-10-20，HEAD = `55d5408`**
 
-```
-/setup-matt-pocock-skills
+> **不用再跑了。** setup 已执行完，产出 4 个文件：
+>
+> | 文件 | 内容 |
+> |---|---|
+> | `AGENTS.md` | 仓库约定入口（议题跟踪器 / 分诊标签 / 领域文档三节 + 「仓库速览」段）——**选了 `AGENTS.md` 而不是 `CLAUDE.md`**（DSH 两个都读，但以 AGENTS.md 为主，且它是厂商中立标准） |
+> | `docs/agents/issue-tracker.md` | GitHub 跟踪器配置 + 本机事实（`gh` 不在 PATH 要用全路径、`sub_issues` 实测 200、PRs as a request surface: no） |
+> | `docs/agents/triage-labels.md` | 默认五个标签的映射表（**已存在，别重建别改名**） |
+> | `docs/agents/domain.md` | 领域文档消费规则（single-context：根 `CONTEXT.md` + `docs/adr/`） |
+>
+> **没有建** `CONTEXT.md` 和 `docs/adr/`——技能规定这两样由 `/domain-modeling` 按需懒建，不提前占位。
+>
+> ⚠️ **技能模板里藏着一条本项目要用的关键机制**（`docs/agents/issue-tracker.md` 的 "Wayfinding operations" 段）：
+> **GitHub 阻塞边用 `issues/<child>/dependencies/blocked_by`，参数是阻塞者的数据库 id，不是 `#number`**：
+> ```
+> gh api --method POST repos/xiaochuan7/minicode/issues/<子单号>/dependencies/blocked_by -F issue_id=<阻塞者的数据库id>
+> # 数据库 id 的取法：gh api repos/xiaochuan7/minicode/issues/<阻塞者号> --jq .id
+> ```
+> **`sub_issues` 表达的是"父单-子单"（这张工单属于哪个里程碑），不是阻塞关系。两件事别混。**
 
-**工作方式：这一节点单干，不要建团队、不要开 workflow、不要开 ralph。** 这个技能的核心是"分节问用户、每节带推荐答案"，分身没法替你回答，必须主会话自己来。
-
-这是 minicode——一个 Windows 桌面 computer-use agent 的新仓库，目标是控制鼠标键盘操作 GUI 应用。
-
-请先读 docs/00-现状.md、docs/01-现状.md 和 docs/research/01-架构决策备忘.md 的第 0 节和第 9 节，了解项目是什么，再执行 setup。
-
-我已知的信息（供你判断，不要重复问我）：
-- issue tracker：选 **GitHub Issues**。仓库 https://github.com/xiaochuan7/minicode 已建好（private），`gh` CLI v2.102.0 已装并已认证（账号 xiaochuan7，keyring），5 个 triage 标签已建好（needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix），**`sub_issues` 端点实测 200，所以阻塞关系用 GitHub 原生 sub-issue 表达**。记录时把「PRs as a request surface」保持关闭。
-  - ⚠️ **`gh` 不在 PATH**，要调就用全路径 `& "$env:ProgramFiles\GitHub CLI\gh.exe" ...`。
-  - ⚠️ **当前这台机器连不上 github.com（没开 VPN）**。所以**这一轮不要执行任何 `gh issue` / `gh api` 调用**——技能流程里凡是"发布到 issue tracker"的步骤，**这一轮一律跳过**，并在报告里写明"待网络恢复后补发"。setup 本身只写仓库内的配置文件，不依赖网络，照常做。
-- triage 标签：**用默认五个**，不要覆盖——这五个**我已经在仓库里建好了**，你只需确认存在。
-- domain docs：**single-context** —— 根目录一个 CONTEXT.md + docs/adr/。
-- 仓库根没有 CLAUDE.md 也没有 AGENTS.md：按技能规则应该问我要建哪个。请问我。
-- 项目是单包 Python，不是 monorepo。
-- 首批目标应用**已经定了**，不用再问：Windows 设置 → Chrome（BOSS直聘页）→ 微信 → DSH / Tabbit（Electron）→ cc-switch。
-
-请按技能流程执行：探索 → 分节问我（每节带推荐答案）→ 给我看草稿 → 确认后写入。
-
-写入完成后：**本地 `git add -A && git commit`（commit message 用中文）**，**不要 push**（当前无网络；等我说"可以推了"再推）。报告里附上 `git log --oneline origin/main..HEAD`。
-```
-
-**这一节点在教什么**：`setup` 技能是**一次性的、prompt-driven 的**，不是脚本。它会先探索仓库再分节问你，每节都带推荐答案让你一个词就能接受。三个决策（issue tracker / triage 标签 / domain docs）不是随便选的——它们决定了后面 `to-spec`、`to-tickets`、`triage` 这几个技能往哪儿写、读什么。**选 GitHub Issues 的代价**：要装 `gh`、要认证、离线时发不了 issue（所以本项目额外约定"本地留真值副本 + 联网后补发"）；**收益**：原生 sub-issue 阻塞边、PR 作为请求面、多个会话/多个 agent 共享同一份工单池——这正是 tracer-bullet 工单流需要的。
-
+**这一节点在教什么**：`setup` 技能是**一次性的、prompt-driven 的**，不是脚本。它会先探索仓库再分节问你，每节都带推荐答案让你一个词就能接受。三个决策（issue tracker / triage 标签 / domain docs）不是随便选的——它们决定了后面 `to-spec`、`to-tickets`、`triage` 这几个技能往哪儿写、读什么。**选 GitHub Issues 的代价**：要装 `gh`、要认证、离线时发不了 issue（所以本项目额外约定"本地留真值副本 + 联网后补发"）；**收益**：原生依赖边（UI 里直接看得见的阻塞）、PR 作为请求面、多个会话/多个 agent 共享同一份工单池——这正是 tracer-bullet 工单流需要的。
 ---
 
 ## 节点 2 — `/to-spec`（把讨论变成 spec，跳过拷问）
@@ -254,6 +248,7 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 这是 minicode——Windows 桌面 computer-use agent。规格要覆盖**整个产品**，不只第一个里程碑。
 
 不要访谈我，直接综合下面的材料产出 spec：
+- AGENTS.md 与 docs/agents/（节点 1 的产物：仓库约定的入口，别忽略）
 - docs/00-现状.md（现状总览：机器参数、方案 B 组成、坐标契约、三条红线）
 - docs/01-现状.md（**本机实测**的接入配方与实测数字、还没测的四项边界）
 - docs/research/01-架构决策备忘.md（完整的技术方案、坐标协议、动作协议、检查项 C-01~C-16）
@@ -262,9 +257,15 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 - docs/research/bottom-drafts/ 下的 11 份底稿（01-czdcode-review / 02-coordinate-systems / 03-gui-agent-landscape / 04-windows-stack / 05-api-cost / 06-action-protocol / 07-继承清单 / 08-文档复核 / 09-zoom开源实现调研 / 10-anthropic-zoom源码细节 / dom-vs-pixel-2026）
 - src/minicode/coord/、src/minicode/exec/、src/minicode/verify/（已通过测试的原型与实测脚本）
 
+**产出的形状必须照抄技能的 spec 模板，小节名与标题级别一字不改**（将来发布成 GitHub Issue 时要能直接贴）：
+`## Problem Statement` / `## Solution` / `## User Stories` / `## Implementation Decisions` / `## Testing Decisions` / `## Out of Scope` / `## Further Notes`。
+- **User Stories 必须是编号列表，每条写成 `1. As an <actor>, I want a <feature>, so that <benefit>`**，而且要**极其详尽**，覆盖全部方面，不止第一个里程碑。
+- **不要写具体文件路径和代码片段**（技能明写：它们很快会过期）。例外：原型产出的、编码了一个决定而非一段演示的片段（状态机、reducer、schema、类型形状）可以内联，并注明来自哪个原型。
+- 词汇用 `docs/00-现状.md` 的口径（`CONTEXT.md` 要到节点 2.5 才懒建，此刻还不存在）。
+
 **发布方式：双写（重要）。**
 1. 先把 spec 正文写到仓库内 **`docs/spec.md`**——这是**本地真值来源**，要提交。
-2. **当前机器连不上 github.com（没开 VPN）**，所以**这一轮不要执行 `gh issue create`**。等我说"可以推了 / 可以发 issue 了"，再把同一份 spec 发成 GitHub Issue 并打 `ready-for-agent` 标签，并把对应的 Issue 号记到 `docs/spec.md` 顶部。
+2. **当前机器连不上 github.com（没开 VPN）**，所以**这一轮不要执行 `gh issue create`**。等我说"可以推了 / 可以发 issue 了"，再把同一份 spec 发成 GitHub Issue、打 `ready-for-agent` 标签（按 `docs/agents/issue-tracker.md` 的流程，**`gh` 用全路径**），并把对应的 Issue 号记到 `docs/spec.md` 顶部。
 3. 报告里写清"spec 已写入 docs/spec.md，待网络恢复后发布为 Issue"。
 
 **工作方式：可以用团队并行核对底稿，但只在下面这个切法下用。** 底稿有 11 份，可按四块切开各派一个 agent 核对：**①坐标协议与 crop 精定位（底稿 02 + 09 + 10 + dom-vs-pixel-2026）②Windows 栈 / DPI / UIA（底稿 04）③方案格局与选型（底稿 03 + 01）④API 成本与模型接入（底稿 05）**。每个 agent 回报"这一块里哪些结论能进 spec、哪些不能进（附底稿行号）"，**由主会话合并成一份 spec**。
@@ -276,7 +277,7 @@ body: { "model": "minimax-m3.1-flash-free", "max_tokens": N, "messages": [...] }
 
 写 spec 前，按技能流程的第 2 步先向我确认**测试缝（seams）**。我的倾向是：唯一的缝在「动作执行层」——即"给定一个目标描述与一帧截图，产出坐标与动作"这一层，测试全部打在这一层；Windows 相关的部分用注入式假实现（假截图源、假 UIA 树、假 SendInput、假模型响应），让整套逻辑**不需要真桌面、不需要 API key 就能测**。请就这个缝的位置跟我确认。
 
-spec 要点（务必覆盖）：
+spec 内容上务必覆盖：
 - Problem / Solution 写**用户视角**的痛点：Windows 桌面 GUI 操作没有统一接口，坐标会漂移，而现有方案要么闭源要么接不上
 - User stories 要**长且全**，覆盖：坐标协议、UIA 通道、视觉兜底、crop 精定位、校验层、安全审批、动作日志、MCP 暴露、跨应用流程、失败恢复
 - Implementation Decisions 里必须包含：
@@ -295,8 +296,7 @@ spec 要点（务必覆盖）：
 写完后：**本地 `git add -A && git commit`（中文 message）**，**不要 push**。汇报后停下。
 ```
 
-**这一节点在教什么**：`to-spec` 的 description 明确写着 **"no interview, just synthesis of what you've already discussed"**——它就是为你这种"已经讨论透了、只想沉淀成文档"的场景设计的。所以提示词的重点不是"告诉我你要做什么"，而是**把材料的地图指给它，并规定产出里必须包含哪些决策**。注意它会先问你测试缝在哪——**这个问题的答案是整个项目质量的决定点**：缝定高了，测试就测实现细节；缝定低了，Windows 依赖让 CI 跑不起来。
-
+**这一节点在教什么**：`to-spec` 的 description 明确写着 **"no interview, just synthesis of what you've already discussed"**——它就是为你这种"已经讨论透了、只想沉淀成文档"的场景设计的。所以提示词的重点不是"告诉我你要做什么"，而是**把材料的地图指给它，并规定产出里必须包含哪些决策**。注意它会先问你测试缝在哪——**这个问题的答案是整个项目质量的决定点**：缝定高了，测试就测实现细节；缝定低了，Windows 依赖让 CI 跑不起来。技能同时规定 spec 里**不许写文件路径和代码片段**（会过期），这跟"spec 是要活过很多轮上下文的长期文档"是同一个道理。
 ---
 
 ## 节点 2.5 — `/domain-modeling`（可选，但强烈建议：把词汇钉死）
@@ -305,6 +305,13 @@ spec 要点（务必覆盖）：
 /domain-modeling
 
 minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义可能漂移的词。请帮我把 CONTEXT.md 建成这个项目的词汇表，并记录需要 ADR 的不可逆决策。
+
+**先读技能自带的两个格式文件**（路径以 `dsh-mattpocock-skills/skills/domain-modeling/` 为基准）：
+- `CONTEXT-FORMAT.md` —— CONTEXT.md 的条目格式
+- `ADR-FORMAT.md` —— ADR 的格式
+照它们的格式写，不要自创。
+
+**CONTEXT.md 必须是纯词汇表，一行实现细节都不许有**——它不是 spec、不是草稿本、不是实现决策的仓库。每个词条只说"这个词在本项目里指什么"，不写文件路径、不写函数名、不写怎么实现。
 
 请重点处理这些术语的歧义（这些词在 spec 里被反复用到，含义必须唯一）：
 - **坐标系**：物理像素 / 截图像素 / 模型输入像素 / 归一化(0~1000) / crop 内 / 整屏 —— 六个空间各叫什么，转换关系怎么表述
@@ -316,20 +323,28 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 - **动作（action）**：click / type / scroll / drag / inspect / execute_code 各自的边界
 - **思考预算（effort）**：本项目里 effort 各档用在哪（动作步 low / 规划步 high）
 - **真值来源（source of truth）**：本地工单文件 `docs/tickets/` 与 GitHub Issue 谁是权威、坐标换算链路的唯一真值在哪
+- **节点 1 引入的这批词也一并钉死**（它们现在同时出现在 `AGENTS.md`、`docs/agents/*.md` 和后面每一张工单里，不钉住必然漂移）：
+  · **议题跟踪器（issue tracker）** / **跟踪器配置**（= `docs/agents/issue-tracker.md`）
+  · **分诊标签（triage label）** / **就绪（ready-for-agent）** 到底意味着什么
+  · **领域文档（domain docs）** / **单上下文（single-context）** / **ADR**
+  · **工单（ticket）** / **阻塞边（blocking edge）** / **就绪边（frontier）** / **曳光弹（tracer bullet）**
+  · **父单（parent）** 与 **阻塞者（blocker）** 的区别——**这是本项目最容易混的一对**，GitHub 上是两个不同的原生关系
+  · **本地真值副本**（离线期工单落地的那个文件）与 **GitHub 镜像** 的区别
 
-以及这些不可逆决策（应为 ADR）：
-- 语言选 Python 而非 TypeScript（理由：UFO² 是 Python、UIA 绑定只有 Python 成熟、三个原型已在 Python）
-- **issue tracker 选 GitHub Issues（原生 sub-issue 阻塞边），不是 local markdown**
-- **工单真值来源选本地 `docs/tickets/` 文件（离线可写可读），GitHub Issue 作为联网后的镜像**
-- 坐标系契约选"crop 内坐标 + 偏移"而非 Anthropic 的"整屏坐标"（理由：实测 MiniMax M3.1 用 0~1000 且未被训练过 Anthropic 契约）
-- 决策层用"代码执行 harness"而非"逐条吐 action"（理由：OpenGCUA 消融 +15.5~33.6 分、步数 −55~63%）
-- 架构主线选"结构优先、视觉兜底"而非"视觉优先"
+以及这些不可逆决策。**每一条先按技能的三条件筛一遍再决定要不要写成 ADR**：①难逆转 ②没有上下文时反直觉 ③真实权衡的结果。**三条全中才写 ADR，不满足就别写。**
+- 语言选 Python 而非 TypeScript（理由：UFO² 是 Python、UIA 绑定只有 Python 成熟、三个原型已在 Python）——**三条全中，写**
+- **issue tracker 选 GitHub Issues，不是 local markdown**——**三条全中，写**
+- **工单真值来源选本地 `docs/tickets/` 文件，GitHub Issue 作为联网后的镜像**——**三条全中，写**
+- 坐标系契约选"crop 内坐标 + 偏移"而非 Anthropic 的"整屏坐标"（理由：实测 MiniMax M3.1 用 0~1000 且未被训练过 Anthropic 契约）——**三条全中，写**
+- 决策层用"代码执行 harness"而非"逐条吐 action"（理由：OpenGCUA 消融 +15.5~33.6 分、步数 −55~63%）——**三条全中，写**
+- 架构主线选"结构优先、视觉兜底"而非"视觉优先"——**三条全中，写**
+
+ADR 文件名按 `ADR-FORMAT.md` 的约定（`docs/adr/0001-*.md` 这样的编号序列）。
 
 写 CONTEXT.md 时用 `/writing-for-agents` 的规范（这是给 agent 读的文档，不是给人读的）。
 ```
 
-**这一节点在教什么**：这是技能包里**"跑在底下"的词汇层**，不产出工单，只产出词汇。为什么要单独做？因为坐标这个词在项目里至少有六个含义，**如果 agent 在写第 30 张工单时把"物理像素"和"截图像素"混了，bug 会以最贵的方式暴露**。CONTEXT.md 是"防止术语漂移"的第一道闸门。
-
+**这一节点在教什么**：这是技能包里**"跑在底下"的词汇层**，不产出工单，只产出词汇。为什么要单独做？因为坐标这个词在项目里至少有六个含义，**如果 agent 在写第 30 张工单时把"物理像素"和"截图像素"混了，bug 会以最贵的方式暴露**。CONTEXT.md 是"防止术语漂移"的第一道闸门。技能自己定的规矩是**只写词汇、不写实现**，并且 **ADR 要克制**——难逆转 + 反直觉 + 真权衡，三条全中才配得上一个 ADR，否则它只是一条笔记。
 ---
 
 ## 节点 3 — `/to-tickets`（拆 tracer-bullet 工单）
@@ -340,22 +355,36 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 把刚才的 spec 拆成 tracer-bullet 工单。
 
 **发布方式：本地双写 + 联网后补发（当前无网络）。**
-1. **本地真值来源**：每张工单写成仓库内一个文件 **`docs/tickets/M<N>-<slug>.md`**（tracked，要提交）。正文写「What to build / Acceptance criteria / Blocked by」。**编号从 M0 开始，按就绪边顺序**（没有阻塞的先编号）。文件顶部写一行元信息：`M<N> | <标题> | Blocked by: M<a>, M<b>`。
-2. **GitHub 是镜像，不是真值**：等我说"可以发 issue 了"，再用 `gh issue create`（全路径 `& "$env:ProgramFiles\GitHub CLI\gh.exe" issue create ...`）把同一份内容发成 Issue、标题前缀 `M<N> `、打 `ready-for-agent` 标签，并用 `gh api -X POST repos/xiaochuan7/minicode/issues/<父号>/sub_issues -f sub_issue_id=<子号>` 挂上原生阻塞边（**先建阻塞者再建被阻塞者**）。发完把 Issue 号回填到本地文件顶部。
+1. **本地真值来源**：每张工单写成仓库内一个文件 **`docs/tickets/M<N>-<slug>.md`**（tracked，要提交）。正文照抄技能的 issue 模板，字段一字不改：
+   ```
+   ## What to build
+   ## Acceptance criteria
+   ## Blocked by
+   ```
+   文件顶部再加一行元信息：`M<N> | <标题> | Blocked by: M<a>, M<b> | Status: ready-for-agent`。
+   **编号从 M0 开始，按就绪边顺序**（没有阻塞的先编号）。
+2. **GitHub 是镜像，不是真值**：等我说"可以发 issue 了"，再按 `docs/agents/issue-tracker.md` 的流程发 issue（**`gh` 用全路径** `& "$env:ProgramFiles\GitHub CLI\gh.exe"`），标题前缀 `M<N> `，打 `ready-for-agent` 标签。
+   **阻塞边用 GitHub 原生依赖关系，命令是这个**（注意参数是**阻塞者的数据库 id**，不是 `#number`、不是 `node_id`）：
+   ```
+   gh api --method POST repos/xiaochuan7/minicode/issues/<子单号>/dependencies/blocked_by -F issue_id=<阻塞者的数据库id>
+   # 数据库 id 的取法：gh api repos/xiaochuan7/minicode/issues/<阻塞者号> --jq .id
+   ```
+   **`sub_issues` 端点表达的是"父单-子单"（这张工单属于哪个里程碑），不是阻塞关系**，两件事别混；要表达父子关系时才用 sub_issues。
 3. **本轮不要执行任何 `gh` 命令**（github.com 连不上，跑了就是白等）。
 
 关键约束（务必遵守）：
 1. **每张工单必须是可独立验证的垂直切片**——不是"实现 L1 层"这种水平切片。理想是一张工单就能 demo。
 2. **每张工单要装得下一个全新的上下文窗口**。一张工单 ≈ 一次新会话。
 3. **按"就绪边"（frontier）顺序编号**：没有阻塞的先编号。
-4. **坐标契约的红线要落成可执行验收标准**，不能只写一句"注意精度"。可用的验收项（来自 docs/research/01-架构决策备忘.md 的 §2.6 检查项表）：
+4. **工单正文里不要写具体文件路径和代码片段**（技能明写：会很快过期）。要写清"交付什么行为"和"怎么验收"，不是"改哪个文件"。
+5. **坐标契约的红线要落成可执行验收标准**，不能只写一句"注意精度"。可用的验收项（来自 docs/research/01-架构决策备忘.md 的 §2.6 检查项表）：
    - C-03：标定探针 2560×1600、容差 1px、含最右边缘目标点；标定不唯一则**视觉通道不可用**
    - C-06：crop 必须从原始物理分辨率截图裁
    - C-16：crop 精定位必须门控；在 ScreenSpot-Pro 上与 5 个基线同表跑，整体分不得低于无条件基线
    - C-15：UIA 树脱敏器单测全绿，未上线则禁止启用任何把 UIA 树送模型的通道
-5. **坐标口径统一（写进代码规范）**：各家 eval 脚本口径不统一，混用会出现"接了官方脚本但分数全 0"的假象——ScreenSpot-Pro 官方 point 期望归一化 [0,1]、ZoomClick 副本期望像素、CCF 仓的 ScreenSpot-v2 脚本 bbox 是 `[x,y,W,H]`（宽高！）不是 `[x1,y1,x2,y2]`、ShowUI 用 0–999 网格。**内部一律用原图像素，只在 wrapper 返回前按目标脚本转一次。**
-6. **门控要有可抄的参照**：CCF `LufeMC/gui-g2-3b-ccf` 的 `src/cursor_ccf.py`（220 单测）、UI-Zoomer 的 `S = IoU均值 + avg_conf > 1.5 就不 zoom`、RegionFocus 的"问模型 is this position correct? 判 YES 就不 zoom"。三选一或融合，但**必须有失败回退路径**（CCF 实测无条件做整体 −0.3pp：Text −2.3 / Mobile −5.2）。
-7. **里程碑顺序：先做主线，治理类后置。**
+6. **坐标口径统一（写进代码规范）**：各家 eval 脚本口径不统一，混用会出现"接了官方脚本但分数全 0"的假象——ScreenSpot-Pro 官方 point 期望归一化 [0,1]、ZoomClick 副本期望像素、CCF 仓的 ScreenSpot-v2 脚本 bbox 是 `[x,y,W,H]`（宽高！）不是 `[x1,y1,x2,y2]`、ShowUI 用 0–999 网格。**内部一律用原图像素，只在 wrapper 返回前按目标脚本转一次。**
+7. **门控要有可抄的参照**：CCF `LufeMC/gui-g2-3b-ccf` 的 `src/cursor_ccf.py`（220 单测）、UI-Zoomer 的 `S = IoU均值 + avg_conf > 1.5 就不 zoom`、RegionFocus 的"问模型 is this position correct? 判 YES 就不 zoom"。三选一或融合，但**必须有失败回退路径**（CCF 实测无条件做整体 −0.3pp：Text −2.3 / Mobile −5.2）。
+8. **里程碑顺序：先做主线，治理类后置。**
    - M0 截图 → SendInput → 点中一个已知按钮，误差 <=2px
    - M1 定位层：UIA 通道 + 两级 grounding + 标定探针
    - M2 决策层：代码执行 harness + expect 校验 + 反思
@@ -363,15 +392,15 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
    - **UIA 脱敏器放在 M1 一起做**（不是后置）：czdcode 实测从微信输入框的 UIA 树里捞到过 API key，而本架构明确要把 UIA 树送进模型上下文；成本只是一个正则 + 一个单测 + 密码框 Value 替换，不做等于拿已知会发生的事故去赌
    - **模型客户端统一读仓库 `.env`** 放进 M0/M1（原型现在读 `~/.dsh/.credentials.yaml`，仓库 `.env` 目前是摆设）
    - **后置**：危险动作审批、动作日志回放、MCP 对外暴露、隐私策略
-8. **模型客户端工单必须包含那四个坑的回归测试**：① 不带 user-agent + x-opencode-client → 期望 Cloudflare 1010；② 走 /zen → 期望 FreeTierError；③ thinking disabled → 期望 400；④ **默认 effort → 期望"无 JSON 输出"**（思考链吃光 max_tokens）。这四个都要有测试，否则换网关就会静默失败。
-9. **首批目标应用按这个顺序推进（已定，别再问）**：**Windows 设置**（UWP，完全无 UIA 树 → 强制走视觉，是视觉兜底层的活体测试）→ **Chrome**（BOSS直聘页，扁平 DOM）→ **微信**（UIA 可用但有弹窗门控）→ **DSH / Tabbit**（Electron）→ **cc-switch**。
-10. **不要用宽重构**去切分；如果某步只能横向铺开（UIA 封装层、动作协议层），按 expand–contract 排成三张工单。
-11. **M0 的原型已经存在**：`src/minicode/exec/` 已经实现这一层的绝大部分（本机 5 PASS / 0 FAIL），工单是"把它组装成可运行的最小闭环并补上缺失的接线"，不是"从零实现"。
+9. **模型客户端工单必须包含那四个坑的回归测试**：① 不带 user-agent + x-opencode-client → 期望 Cloudflare 1010；② 走 /zen → 期望 FreeTierError；③ thinking disabled → 期望 400；④ **默认 effort → 期望"无 JSON 输出"**（思考链吃光 max_tokens）。这四个都要有测试，否则换网关就会静默失败。
+10. **首批目标应用按这个顺序推进（已定，别再问）**：**Windows 设置**（UWP，完全无 UIA 树 → 强制走视觉，是视觉兜底层的活体测试）→ **Chrome**（BOSS直聘页，扁平 DOM）→ **微信**（UIA 可用但有弹窗门控）→ **DSH / Tabbit**（Electron）→ **cc-switch**。
+11. **不要用宽重构**去切分；如果某步只能横向铺开（UIA 封装层、动作协议层），按 expand–contract 排成三张工单。
+12. **M0 的原型已经存在**：`src/minicode/exec/` 已经实现这一层的绝大部分（本机 5 PASS / 0 FAIL），工单是"把它组装成可运行的最小闭环并补上缺失的接线"，不是"从零实现"。
 
 **工作方式：这一节点适合派团队。** 每个候选垂直切片可以派一个 agent 独立分析三件事——**交付什么（用户视角的端到端行为）/ 被谁挡（阻塞边）/ 验收标准怎么写才可执行**。分析完由主会话合并成一份清单给我批准。
 - 派之前先 `list_agents` 查占用；**成员数不要超过当前上限**（`maxMembers`，默认 16）。
 - 切片的数量就是团队规模，**不要超过切片数**（8~12 张工单就派 8~12 个；更多就分波）。
-- 合并时要**统一坐标口径与红线**（第 5、6 条），不能让各 agent 各写一套。
+- 合并时要**统一坐标口径与红线**（第 6、7 条），不能让各 agent 各写一套。
 - **不要开 ralph**：工单拆分是一次性综合判断，不是收敛问题。
 - **如果这一轮明显做不完**，先 `create_goal` 把目标设成「产出工单清单并等用户批准后写入 docs/tickets/」，让会话跨自动续跑轮次接着走。
 
@@ -379,8 +408,7 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 写完：**本地 `git add -A && git commit`（中文 message）**，**不要 push**。汇报后停下。
 ```
 
-**这一节点在教什么**：`to-tickets` 的核心是 **tracer bullet（曳光弹）**——每张工单切一条窄但完整的路径，单独就能演示。GitHub Issues 有原生 blocking link（`sub_issues` 端点实测 200），所以阻塞边最终是**机器可读**的；但离线期先靠本地文件顶部的 `Blocked by` 行表达，联网后再镜像成原生关系。**编号即依赖序**这个约定在两边都成立：**阻塞者必须排在前面**。第 4 步它一定要你批准清单才发布——**这个批准点是全流程里最值钱的一次人工干预**，因为切错了粒度，后面每张工单都会受影响。
-
+**这一节点在教什么**：`to-tickets` 的核心是 **tracer bullet（曳光弹）**——每张工单切一条窄但完整的路径，单独就能演示。它是全流程里**最值钱的一次人工干预**：第 4 步一定要你批准清单才发布，因为切错粒度后面每张工单都受影响。工单正文照抄技能的 issue 模板（What to build / Acceptance criteria / Blocked by），且**不许写文件路径**——工单要活过好几轮上下文，写死路径就会过期。本项目额外踩过一个坑：**阻塞边用 `dependencies/blocked_by`（参数是数据库 id），父子关系才用 `sub_issues`**，混了就会挂错边。
 ---
 
 ## 节点 4 — `/implement`（每张工单一个全新会话）
@@ -388,7 +416,7 @@ minicode 的领域词汇现在还是散的，spec 里已经出现了一批含义
 ```
 /implement
 
-工单：**M<NN>** —— 正文在本地文件 `docs/tickets/M<NN>-<slug>.md`（这是真值来源）；若已联网发布过，同一份内容也是 GitHub Issue #<N>。
+工单：**M<NN>** —— 正文在本地文件 `docs/tickets/M<NN>-<slug>.md`（这是真值来源）；若已联网发布过，同一份内容也是 GitHub Issue（**本轮不要去联网取**）。
 
 ## ⛔ 开工第一件事：建立目标模式（goal）
 
@@ -443,6 +471,7 @@ create_goal(
 - `max_goal_rounds` 走完会停；停之前主动汇报：已完成到哪、测试状态、下一步是什么、要不要续。
 
 背景（这个新会话没有之前的所有上下文，请先读）：
+- **AGENTS.md 与 docs/agents/**（仓库约定：议题跟踪器、分诊标签、领域文档怎么用）——**先读这个**
 - docs/00-现状.md 与 docs/01-现状.md（机器参数、接入配方与三个坑、方案 B、三条红线、首批目标应用、已实测数字）
 - docs/research/01-架构决策备忘.md（尤其 §1 坐标协议、§2 分层架构、§3 动作协议、§2.6 检查项表）
 - **本工单正文 `docs/tickets/M<NN>-<slug>.md`（真值来源，先读这个）**
@@ -452,13 +481,17 @@ create_goal(
 1. 严格按工单的验收标准做，**验收标准里凡提到编号（C-03 / C-06 / C-15 / C-16 等）的，必须真去查 docs/research/01-架构决策备忘.md §2.6 那一行确认判据**。
 2. 按技能要求驱动 `tdd`：先写会失败的测试，再让它通过。**只测外部行为，不测实现细节。**
 3. 频繁跑类型检查、频繁跑单个测试文件，最后跑全量测试套件。
-4. 完工后按技能要求调用 `code-review` 审一遍（Standards + Spec 两轴）。
-   **审核用 ralph 循环**（用户明确要求使用 ralph 循环做审核验证）：目标写成一句不可变的话，例如「对本次改动做两轴对抗式审查，产出 `docs/reviews/<工单号>.md`，必须覆盖 C-03/C-06/C-15/C-16 四条红线、坐标换算链路是否单一真值源、UIA 树是否在脱敏后才进模型上下文、标定失败时视觉通道是否真的被禁用；每条结论必须给出文件与行号，找不到问题也要写明查过哪些」。
-   - `maxRounds` 给 **3**，不要用默认 256。
-   - 目标里必须写全：审哪个分支、改动范围、输出写到哪、什么算通过——**每轮是全新代理，没有你的上下文**。
-   - **审查用的 ralph 只看 diff 与文件，不许改代码**；发现问题写进报告，由你（主会话）决定要不要改。
-   - **顺序不能反**：先 `update_goal` action `complete`（目标达成），**再**开 ralph 做审查。**ralph 不是用来完成目标的。**
-5. 提交：**本地 `git add -A && git commit`（commit message 用中文，格式：`feat(<工单号>): <一句话>`）**。
+4. 完工后做审查，**两件事、按这个顺序**：
+   a. **先按技能跑 `code-review`**（它自己会并行发 Standards + Spec 两个 subagent）。⚠️ **但 Spec 轴的工单来源必须指向本地 `docs/tickets/M<NN>-<slug>.md`，不许走 `gh issue view`**——当前无网络，联网取工单必挂。技能的 spec 查找顺序是"commit message 里的 `#123` → 路径 → `docs/` 下的 spec 文件"，所以：
+      - **commit message 里不要写 `#123` 这类 GitHub issue 号**，工单号一律写 `M<NN>`
+      - 调用 code-review 时把 fixed point 与 spec 路径**显式传给它**（fixed point = 本轮开始前的 commit，spec 路径 = `docs/tickets/M<NN>-<slug>.md`）
+   b. **再开 ralph 循环做一次对抗式复核**（用户明确要求使用 ralph 循环做审核验证）：目标写成一句不可变的话，例如「对本次改动做两轴对抗式审查，产出 `docs/reviews/<工单号>.md`，必须覆盖 C-03/C-06/C-15/C-16 四条红线、坐标换算链路是否单一真值源、UIA 树是否在脱敏后才进模型上下文、标定失败时视觉通道是否真的被禁用、密钥是否只从仓库 `.env` 读；每条结论必须给出文件与行号，找不到问题也要写明查过哪些」。
+      - `maxRounds` 给 **3**，不要用默认 256。
+      - 目标里必须写全：审哪个分支、改动范围、输出写到哪、什么算通过——**每轮是全新代理，没有你的上下文**。
+      - **不许联网**：不要用 `gh`，工单只从 `docs/tickets/` 读。
+      - **审查用的 ralph 只看 diff 与文件，不许改代码**；发现问题写进报告，由你（主会话）决定要不要改。
+      - **顺序不能反**：先 `update_goal` action `complete`（目标达成），**再**开 ralph 做审查。**ralph 不是用来完成目标的。**
+5. 提交：**本地 `git add -A && git commit`（commit message 用中文，格式：`feat(M<NN>): <一句话>`，**不要带 `#123`**）**。
    **不要 push**——当前机器连不上 github.com，等用户说"可以推了"再推。
 6. 汇报时列出：改了哪些模块、测试全绿输出、code-review 的结论、以及**有没有遇到与工单假设不符的现实**（这比"做完了"更重要）。
 7. 如果这张工单大到一次会话做不完（超出上下文窗口），用 `create_goal` 建立持久目标，让本会话跨自动续跑轮次接着做——**不要用 ralph 写代码**（ralph 每轮换新代理，写代码需要连续上下文）。
@@ -472,7 +505,6 @@ create_goal(
 ```
 
 **这一节点在教什么**：`implement` 的定义只有 15 行，但它是**唯一真正写代码的节点**，它内部会自己调 `tdd`（纪律层）和 `code-review`（收尾）。技能包的设计哲学是：**每个工单一个全新会话**——因为工单是自包含的，上一张的上下文对下一张是负担。`ask-matt` 原文说得很直白：*"Each ticket is self-contained, so the last one's context is disposable."*
-
 ---
 
 ## 节点 5 — `/handoff`（会话之间搬运，必要时才用）
@@ -503,7 +535,9 @@ create_goal(
 
 **用 ralph 循环做这次审查**（用户明确要求使用 ralph 循环做审核验证）。`maxRounds` 给 3。每轮一个全新代理，**只读不写**，输出一份 `docs/reviews/<日期>-<主题>.md`。
 
-审一下当前分支相对 main 的改动，双轴审：Standards（是否符合 docs/00-现状.md 与 docs/research/01-架构决策备忘.md 里已定下的约定）和 Spec（是否符合 `docs/tickets/` 下对应工单的验收标准）。
+审一下当前分支相对 main 的改动，双轴审：Standards（是否符合 AGENTS.md、docs/00-现状.md 与 docs/research/01-架构决策备忘.md 里已定下的约定）和 Spec（是否符合 `docs/tickets/` 下对应工单的验收标准）。
+
+⚠️ **不许联网**：Spec 轴的工单来源直接给本地文件路径 `docs/tickets/M<NN>-<slug>.md`，不要用 `gh issue view` 去取（当前无网络，挂了会一直等）。fixed point 也显式给出，别让它自己猜。
 
 重点盯这几条红线有没有被绕过：
 - 坐标换算链路是否只有单一真值来源
@@ -524,18 +558,18 @@ create_goal(
 ```
 节点 0  物理脚手架   ✅ 已完成 (e4d1830)          ← 不用技能
    ↓
-节点 1  /setup-matt-pocock-skills  → docs/agents/ + CONTEXT.md 布局  【单干：一问一答】⚠️ 需要该 skill 存在
+节点 1  /setup-matt-pocock-skills  → AGENTS.md + docs/agents/  ✅ 已完成 (55d5408)  【单干：一问一答】
    ↓
 节点 2  /to-spec                   → docs/spec.md（本地真值）→ 联网后发 Issue  【可派 3~4 agent 核对四块底稿】
    ↓
 节点 2.5 /domain-modeling          → CONTEXT.md 词汇表 + docs/adr/*.md   【单干/1~2 agent】
    ↓
-节点 3  /to-tickets                → docs/tickets/M<N>-<slug>.md（本地真值）→ 联网后发 Issue + sub-issue
+节点 3  /to-tickets                → docs/tickets/M<N>-<slug>.md（本地真值）→ 联网后发 Issue + 原生依赖边
    ↓                                                【适合派团队：每切片一个 agent】
 节点 4  /implement  ←── 每张工单一个【全新会话】──┐
    │  ① create_goal（目标模式，驱动跨轮次续跑）              │
    │  ② tdd 实现 → 每块 commit → goal complete               │
-   │  ③ code-review（ralph 循环,3 轮，只读）→ 改 → commit       │
+   │  ③ code-review（技能双 subagent）+ ralph 复核 → 改 → commit │
    ↓                                    【主会话单干 + goal 驱动】
    └── 下一张工单（工单自包含，上下文可弃）────────┘
 
@@ -563,12 +597,14 @@ goal                → 同一会话的长任务；写代码用这个，不可�
 | 2 | 脚手架要不要从 `b70dc0b` 拆出来 | **不拆** | 已推送；force push 会动另一个会话的改动，收益只是 commit message 好看 |
 | 3 | 推送策略 | **本地优先**：本地 commit 必须做，push 等用户开 VPN | 实测前 9 次推送全败，第 10 次靠 VPN |
 | 4 | `gh` 调用方式 | 用**全路径** `C:\Program Files\GitHub CLI\gh.exe` | 实测不在 PATH |
-| 5 | issue tracker | **GitHub Issues**（不是 local markdown） | 仓库已建、gh 已认证、`sub_issues` 端点实测 200 |
+| 5 | issue tracker | **GitHub Issues**（不是 local markdown） | 仓库已建、gh 已认证、依赖端点实测 200 |
 | 6 | 本地工单真值来源 | **`docs/tickets/M<N>-<slug>.md`** | 离线时 GitHub 发不了，本地必须有一份能读能改的 |
-| 7 | 模型客户端密钥来源 | **统一读仓库 `.env`** | 原型读的是 `~/.dsh/.credentials.yaml`，`.env` 目前是摆设 |
-| 8 | 主线模型栈 | **`minimax-m3.1-flash-free` 一个**（兼任大脑和眼睛） | 已实测；`minimax-m3` / `deepseek-v4-flash` 是纯文本，带图时瞎猜 |
-| 9 | 语言 / 架构 | **Python** / **方案 B**（拼装骨架 + 自建两级 grounding 与校验反思层） | UIA 绑定只有 Python 成熟；UFO / UI-TARS 都没有 crop 精定位层 |
-| 10 | 哪些是已知未测 | 小图标(≤16px)、UWP 纯视觉路径、同名歧义、中文输入 | 架构备忘 §9 与 `docs/01-现状.md` §4 |
+| 7 | GitHub 阻塞边 | **`issues/<child>/dependencies/blocked_by` + 阻塞者的 database id**；`sub_issues` 只管父子 | 技能模板 issue-tracker-github.md 的 Wayfinding 段 |
+| 8 | 模型客户端密钥来源 | **统一读仓库 `.env`** | 原型读的是 `~/.dsh/.credentials.yaml`，`.env` 目前是摆设 |
+| 9 | 主线模型栈 | **`minimax-m3.1-flash-free` 一个**（兼任大脑和眼睛） | 已实测；`minimax-m3` / `deepseek-v4-flash` 是纯文本，带图时瞎猜 |
+| 10 | 语言 / 架构 | **Python** / **方案 B**（拼装骨架 + 自建两级 grounding 与校验反思层） | UIA 绑定只有 Python 成熟；UFO / UI-TARS 都没有 crop 精定位层 |
+| 11 | agent 约定文件 | **AGENTS.md**（不是 CLAUDE.md）+ `docs/agents/` 三件套 | 节点 1 已建；DSH 两个都读但以 AGENTS.md 为主 |
+| 12 | 哪些是已知未测 | 小图标(≤16px)、UWP 纯视觉路径、同名歧义、中文输入 | 架构备忘 §9 与 `docs/01-现状.md` §4 |
 
 **最后一条纪律：这些是工具，不是流程。** 每个节点先判断「任务能不能切成互不依赖的块」——
 能切且合并成本低 → 派团队；不能切 → 单干。**setup 这种一问一答的技能派团队是负收益。**
