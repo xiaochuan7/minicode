@@ -1,4 +1,4 @@
-M10 | 决策层：代码执行 harness | Blocked by: M0, M1, M3 | Status: ready-for-agent
+M10 | 决策层：代码执行 harness | Blocked by: M0, M1, M3, M21 | Status: ready-for-agent
 
 ## Parent
 
@@ -30,3 +30,4 @@ M10 | 决策层：代码执行 harness | Blocked by: M0, M1, M3 | Status: ready-
 - M0 — 最小闭环（动作协议 v1 与动作执行缝）
 - M1 — 模型客户端（统一档位与请求日志）
 - M3 — UIA 通道（动作程序要调用的定位能力）
+- M21 — 动作协议缺口（harness 要用**完整协议**：12 个动作种类齐全，截图与等待也在内）
