@@ -18,7 +18,7 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 - **Repo**: `xiaochuan7/minicode` (private); remote `https://github.com/xiaochuan7/minicode.git`.
 - **`gh` is not on PATH** on this machine. Call it by full path:
   `& "$env:ProgramFiles\GitHub CLI\gh.exe" issue list` — auth is via keyring (account `xiaochuan7`).
-- **Blocking / parent-child**: use GitHub's **native relations** — the `sub_issues` endpoint was verified to return **200** in this repo, so parent/child and blocking are expressed as sub-issues, not as plain-text "Blocked by:" markers.
+- **Parent/child and blocking are two different native relations.** Parent/child uses the `sub_issues` endpoint (verified **200** in this repo); blocking uses the native **issue dependency** relation (`dependencies/blocked_by`) — neither is expressed as a plain-text "Blocked by:" marker. The vocabulary for these (父单 / 子单 / 阻塞者 / 阻塞边) is pinned in `CONTEXT.md`.
 - **Triage labels**: the five defaults already exist — do not create, rename or re-spell them. See `docs/agents/triage-labels.md`.
 
 ## Pull requests as a triage surface

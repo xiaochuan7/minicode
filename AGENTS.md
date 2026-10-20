@@ -16,6 +16,8 @@ The five default roles, used verbatim: `needs-triage`, `needs-info`, `ready-for-
 
 Single-context: one root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
 
+**Naming a domain concept? Use the term `CONTEXT.md` defines it.** Read it before writing an issue title, a test name, or any prose that names a layer, a channel, a coordinate space, or a workflow object.
+
 ## 仓库速览
 
 minicode = Windows 桌面 computer-use agent。架构定稿见 `docs/research/01-架构决策备忘.md`，本机实测事实见 `docs/01-现状.md`，现状总览见 `docs/00-现状.md`。
