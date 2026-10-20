@@ -7,6 +7,12 @@
 
 追踪记录（:class:`ActionTrace`）走可注入的旁路出口，不进主返回类型——
 它是观测数据而不是控制流数据，这样以后换定位后端时上层调用方不用改。
+
+词汇对应
+--------
+* **动作日志**（`CONTEXT.md`）：落盘的动作记录集合，本模块的 :class:`ActionLog`。
+* **动作记录**（工单口径）：一次动作的那一条可解析记录，本模块的 :class:`ActionRecord`；
+  工单要求「每次动作恰好一条动作记录」。
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ __all__ = [
     "ListTraceSink",
     "build_record",
     "POINT_SPACE",
+    "FAILURE_FIELDS",
 ]
 
 #: 落点所在的坐标空间。本项目唯一真值空间。
@@ -113,6 +120,10 @@ class ActionRecord:
     error_message: str | None = None
     #: 注入后回读的光标位置（物理表面空间）。哨兵值 (−32000,−32000) 会被判执行失败。
     cursor_readback: tuple[int, int] | None = None
+    #: 光标回读与落点的偏差（物理像素）。验收要求它是 0。
+    cursor_delta_px: int | None = None
+    #: 唯一性拒绝时回报的候选集（拒绝执行时没有选中项）。
+    rejected_candidates: tuple[dict[str, Any], ...] = ()
     locate_ms: float = 0.0
     decision_ms: float = 0.0
     execute_verify_ms: float = 0.0
@@ -149,7 +160,9 @@ class ActionRecord:
                 "error_code": self.error_code,
                 "error_message": self.error_message,
                 "cursor_readback": list(self.cursor_readback) if self.cursor_readback else None,
+                "cursor_delta_px": self.cursor_delta_px,
             },
+            "rejected_candidates": [dict(item) for item in self.rejected_candidates],
             "timings_ms": {
                 "locate": self.locate_ms,
                 "decision": self.decision_ms,
@@ -191,6 +204,15 @@ def build_record(trace: ActionTrace, *, timestamp: str | None = None) -> ActionR
         error_code=result.error_code.value if result.error_code else None,
         error_message=result.error_message,
         cursor_readback=result.cursor_readback,
+        cursor_delta_px=result.cursor_delta_px,
+        rejected_candidates=tuple(
+            {
+                "name": candidate.name,
+                "control_type": candidate.control_type,
+                "rect": list(candidate.rect),
+            }
+            for candidate in trace.rejected_candidates
+        ),
         locate_ms=trace.locate_ms,
         decision_ms=trace.decision_ms,
         execute_verify_ms=trace.execute_verify_ms,

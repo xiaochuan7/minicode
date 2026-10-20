@@ -84,8 +84,9 @@ class ActionSetTest(unittest.TestCase):
     def setUp(self):
         self.clock = VirtualClock()
 
-    def _executor(self, injector):
-        return ActionExecutor(injector, sleeper=self.clock.sleep, clock=self.clock.time)
+    def _executor(self, injector, **kwargs):
+        kwargs.setdefault("double_click_params", DoubleClickParams(time_ms=500, distance_px=4))
+        return ActionExecutor(injector, sleeper=self.clock.sleep, clock=self.clock.time, **kwargs)
 
     def test_all_eight_executable_kinds_run_without_error(self):
         for kind in EXECUTABLE_KINDS:
@@ -107,6 +108,21 @@ class ActionSetTest(unittest.TestCase):
                 )
                 self.assertFalse(result.ok)
                 self.assertEqual(result.error_code, ErrorCode.ACTION_NOT_IMPLEMENTED)
+
+    def test_double_click_without_runtime_queried_parameters_fails(self):
+        """系统双击参数必须运行时查询后注入，本单不写死。"""
+        injector = FakeInputInjector()
+        executor = ActionExecutor(injector, sleeper=self.clock.sleep, clock=self.clock.time)
+        result = executor.execute(
+            Action(
+                kind=ActionKind.DOUBLE_CLICK,
+                params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]),
+                intent="双击",
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+        self.assertEqual(injector.events, [])
 
     def test_deferred_kinds_do_not_inject_anything(self):
         for kind in DEFERRED_KINDS:
@@ -136,6 +152,16 @@ class DoubleClickTest(unittest.TestCase):
         )
         self.assertTrue(result.ok)
         self.assertEqual([e[0] for e in self.injector.events].count("button_down"), 2)
+        self.assertLess(result.timing["double_click_gap_ms"], self.params.time_ms)
+
+    def test_the_recorded_gap_is_the_measured_interval_between_the_two_presses(self):
+        result = self.executor.execute(
+            Action(kind=ActionKind.DOUBLE_CLICK, params=dict(_PARAMS[ActionKind.DOUBLE_CLICK]), intent="双击")
+        )
+        # 第二次点击序列自带一段停顿，所以实测间隔 > 我们请求的那段 sleep。
+        self.assertGreater(
+            result.timing["double_click_gap_ms"], result.timing["double_click_requested_gap_ms"]
+        )
         self.assertLess(result.timing["double_click_gap_ms"], self.params.time_ms)
 
     def test_double_click_does_not_move_between_the_two_presses(self):

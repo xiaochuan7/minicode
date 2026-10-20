@@ -205,3 +205,17 @@ class CaptureBackendRuleTest(unittest.TestCase):
                     continue
                 text = path.read_text(encoding="utf-8")
                 self.assertNotIn(needle, text, msg=f"{path.name} 里出现了 PrintWindow 调用")
+
+    def test_the_action_layer_does_not_call_the_frozen_normaliser(self):
+        """换算链路单一来源：动作层不用冻结原型自己的归一化。
+
+        冻结原型 ``exec/input.py`` 里另有一份 0..65535 归一化公式（私有 ``_normalize``），
+        动作层**不调用**它——因此运行期不存在两份被同时使用的换算逻辑。
+        """
+        package = Path(__file__).resolve().parent
+        for path in package.glob("*.py"):
+            if path.name.startswith("test_"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            for needle in ("win_input.move_to", "win_input.click", "_normalize("):
+                self.assertNotIn(needle, text, msg=f"{path.name} 用了冻结原型自己的归一化")

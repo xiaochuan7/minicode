@@ -16,9 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-__all__ = ["main"]
+__all__ = ["main", "LANDING_TOLERANCE_PX"]
+
+#: 落点与控件框中心的允许偏差（物理像素）。验收项 6：≤2 px。
+LANDING_TOLERANCE_PX = 2
 
 #: 默认验收目标：任务栏「开始」按钮。
 #: 它的**名称稳定**（不像任务栏天气控件的名字会随天气变），
@@ -107,6 +111,7 @@ def _run_real(args):
         double_click_params=system_double_click_params(),
     )
     # 独立复验：动作之后再读一次控件树，落点与复验框中心的距离必须 ≤2 物理像素。
+    # **这一步是判定，不是打印**——超差就不能声称闭环打通。
     if outcome.ok and outcome.result and outcome.result.final_point:
         landing = outcome.result.final_point
         snapshot = tree.snapshot()
@@ -114,7 +119,13 @@ def _run_real(args):
             if candidate.name.strip() == args.target.strip():
                 cx, cy = candidate.center
                 delta = max(abs(landing[0] - cx), abs(landing[1] - cy))
-                print(f"落点复验：落点={landing} 复验框中心=({cx}, {cy}) 偏差={delta:.1f} px")
+                verdict = "通过" if delta <= LANDING_TOLERANCE_PX else "超差"
+                print(
+                    f"落点复验：落点={landing} 复验框中心=({cx}, {cy}) "
+                    f"偏差={delta:.1f} px（要求 ≤{LANDING_TOLERANCE_PX} px）→ {verdict}"
+                )
+                if delta > LANDING_TOLERANCE_PX:
+                    outcome = replace(outcome, ok=False, message=f"落点复验超差：偏差 {delta:.1f} px")
                 break
     return outcome
 

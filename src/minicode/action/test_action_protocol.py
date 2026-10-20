@@ -164,6 +164,18 @@ class SurfaceBoundsTest(unittest.TestCase):
 class VirtualDesktopTest(unittest.TestCase):
     """多屏语义（验收项 11）。"""
 
+    @staticmethod
+    def _round_trip(desktop, px, py):
+        """0..65535 的逆变换。
+
+        生产代码里只有 :meth:`VirtualDesktop.to_absolute_input` 这一份公式；
+        逆变换只用来验证往返，因此放在测试里。
+        """
+        nx, ny = desktop.to_absolute_input(px, py)
+        back_x = desktop.origin_x + round(nx * (desktop.width - 1) / 65535)
+        back_y = desktop.origin_y + round(ny * (desktop.height - 1) / 65535)
+        return back_x, back_y
+
     def test_normalisation_denominator_is_dimension_minus_one(self):
         desktop = VirtualDesktop(origin_x=-1920, origin_y=0, width=4480, height=1600)
         self.assertEqual(desktop.to_absolute_input(-1920 + 4479, 0 + 1599), (65535, 65535))
@@ -175,8 +187,7 @@ class VirtualDesktopTest(unittest.TestCase):
 
     def test_negative_virtual_origin_keeps_secondary_screen_points_correct(self):
         desktop = VirtualDesktop(origin_x=-1920, origin_y=0, width=4480, height=1600)
-        nx, ny = desktop.to_absolute_input(-1900, 100)
-        px, py = desktop.from_absolute_input(nx, ny)
+        px, py = self._round_trip(desktop, -1900, 100)
         self.assertLessEqual(abs(px - (-1900)), 1)
         self.assertLessEqual(abs(py - 100), 1)
 

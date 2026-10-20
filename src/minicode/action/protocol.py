@@ -119,6 +119,8 @@ class ActionResult:
     error_message: str | None = None
     landing_point: tuple[int, int] | None = None
     cursor_readback: tuple[int, int] | None = None
+    #: 光标回读与落点的偏差（物理像素）。验收要求它是 0。
+    cursor_delta_px: int | None = None
     notes: tuple[str, ...] = ()
     #: 实测时序（毫秒）。键固定：pre_move_ms / hold_ms / total_ms /
     #: double_click_gap_ms / scroll_settle_ms / scroll_delta。
@@ -131,6 +133,7 @@ class ActionResult:
             "error_message": self.error_message,
             "landing_point": list(self.landing_point) if self.landing_point else None,
             "cursor_readback": list(self.cursor_readback) if self.cursor_readback else None,
+            "cursor_delta_px": self.cursor_delta_px,
             "notes": list(self.notes),
             "timing": dict(self.timing) if self.timing else None,
         }

@@ -25,6 +25,8 @@ class ErrorCode(StrEnum):
     LOCATE_FAILED = "locate_failed"
 
     # -- 决策失败（本单没有模型参与，恒不出现）--
+    #: 决策失败。决策层（L3）不在动作执行缝内，本单用不上；
+    #: 留给决策层工单（M10/M11）按协议 v1 启用。
     DECIDE_FAILED = "decide_failed"
 
     # -- 执行失败（三类失败里的「执行失败」）--

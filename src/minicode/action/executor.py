@@ -60,12 +60,18 @@ class TimingPolicy:
 
 @dataclass(frozen=True)
 class DoubleClickParams:
-    """系统的双击参数。**运行时查询，不写死**。"""
+    """系统的双击参数。
+
+    **必须运行时查询，不写死**（架构备忘 §3：系统双击参数在运行时查询）。
+    因此这里**不给默认值**：没有注入参数就说明没有查过系统，
+    双击动作会直接报错，而不是拿写死的 500 ms / 4 px 凑合。
+    真机的查询入口是 :func:`minicode.action.windows.system_double_click_params`。
+    """
 
     #: 两次按下之间的最大间隔（毫秒）。
-    time_ms: int = 500
+    time_ms: int
     #: 两次按下之间允许的最大位移（像素）。
-    distance_px: int = 4
+    distance_px: int
 
 
 def _empty_timing() -> dict[str, Any]:
@@ -74,6 +80,7 @@ def _empty_timing() -> dict[str, Any]:
         "hold_ms": 0.0,
         "total_ms": 0.0,
         "double_click_gap_ms": None,
+        "double_click_requested_gap_ms": None,
         "scroll_settle_ms": 0.0,
         "scroll_delta": 0,
     }
@@ -93,7 +100,7 @@ class ActionExecutor:
     ):
         self.injector = injector
         self.timing = timing or TimingPolicy()
-        self.double_click_params = double_click_params or DoubleClickParams()
+        self.double_click_params = double_click_params
         self._sleep = sleeper
         self._clock = clock
 
@@ -151,18 +158,28 @@ class ActionExecutor:
 
     def _click(self, action: Action, button: str) -> ActionResult:
         x, y = self._point(action)
-        timing = self._click_sequence(x, y, button)
+        timing, _, _ = self._click_sequence(x, y, button)
         return self._finish(x, y, timing)
 
     def _double_click(self, action: Action) -> ActionResult:
         x, y = self._point(action)
         params = self.double_click_params
-        # 间隔必须**小于**系统双击时间；位移为 0（两次点在同一个位置）。
+        if params is None:
+            raise ActionError(
+                ErrorCode.EXECUTE_FAILED,
+                "双击需要系统的双击参数（时间与位移），必须运行时查询后注入；"
+                "本单不写死这两个值。",
+            )
+        # 两次按下的间隔必须**小于**系统双击时间；位移为 0（两次点在同一个位置）。
         gap_s = min(0.080, params.time_ms / 2000.0)
-        self._click_sequence(x, y, "left")
+        _first, first_pressed_at, _ = self._click_sequence(x, y, "left")
         self._sleep(gap_s)
-        timing = self._click_sequence(x, y, "left")
-        timing["double_click_gap_ms"] = gap_s * 1000.0
+        second, second_pressed_at, _ = self._click_sequence(x, y, "left")
+        timing = second
+        # 记**实测**的两次按下间隔（Windows 判双击看的是按下与按下之间），
+        # 而不是我们请求的那段 sleep——第二次点击序列自带一段停顿。
+        timing["double_click_gap_ms"] = (second_pressed_at - first_pressed_at) * 1000.0
+        timing["double_click_requested_gap_ms"] = gap_s * 1000.0
         return self._finish(x, y, timing)
 
     def _move(self, action: Action) -> ActionResult:
@@ -246,10 +263,13 @@ class ActionExecutor:
     # 内部
     # ------------------------------------------------------------------
 
-    def _click_sequence(self, x: int, y: int, button: str) -> dict[str, Any]:
+    def _click_sequence(self, x: int, y: int, button: str) -> tuple[dict[str, Any], float, float]:
         """移动 → 停顿 → 按下 → 停顿 → 抬起。
 
         移动与按下是**两次独立注入**，不合并。
+
+        返回 ``(时序, 按下时刻, 抬起时刻)``；后两个是时钟读数（秒），
+        供双击算真实的两次按下间隔。
         """
         timing = _empty_timing()
         started = self._clock()
@@ -263,7 +283,7 @@ class ActionExecutor:
         timing["pre_move_ms"] = (pressed_at - started) * 1000.0
         timing["hold_ms"] = (released_at - pressed_at) * 1000.0
         timing["total_ms"] = (self._clock() - started) * 1000.0
-        return timing
+        return timing, pressed_at, released_at
 
     def _point(self, action: Action) -> tuple[int, int]:
         params: Mapping[str, Any] = action.params
@@ -304,11 +324,13 @@ class ActionExecutor:
                 error_message=f"光标回读 {readback} 与落点 {landing} 偏差 {delta} px",
                 landing_point=landing,
                 cursor_readback=readback,
+                cursor_delta_px=delta,
                 timing=timing,
             )
         return ActionResult(
             ok=True,
             landing_point=landing,
             cursor_readback=readback,
+            cursor_delta_px=delta,
             timing=timing,
         )

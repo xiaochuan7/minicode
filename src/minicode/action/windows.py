@@ -44,8 +44,6 @@ _user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 _user32.ShowWindow.restype = wintypes.BOOL
 _user32.IsWindow.argtypes = [wintypes.HWND]
 _user32.IsWindow.restype = wintypes.BOOL
-_user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-_user32.GetWindowRect.restype = wintypes.BOOL
 _user32.WindowFromPoint.argtypes = [wintypes.POINT]
 _user32.WindowFromPoint.restype = wintypes.HWND
 _user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
@@ -54,17 +52,6 @@ _user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
 _user32.FindWindowW.restype = wintypes.HWND
 _user32.GetDoubleClickTime.argtypes = []
 _user32.GetDoubleClickTime.restype = wintypes.UINT
-
-
-class _RECT(ctypes.Structure):
-    """占位结构：实际用 ``wintypes.RECT``（与 ``GetWindowRect`` 的 argtype 一致）。"""
-
-    _fields_ = [
-        ("left", wintypes.LONG),
-        ("top", wintypes.LONG),
-        ("right", wintypes.LONG),
-        ("bottom", wintypes.LONG),
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +261,13 @@ class WindowsInputInjector:
     """``SendInput`` 注入（复用冻结原型的结构体与 API 绑定）。
 
     * 归一化公式（``(维度 − 1)`` 分母、虚拟桌面原点、``MOUSEEVENTF_VIRTUALDESK``）
-      的**唯一来源**是 :class:`~minicode.action.geometry.VirtualDesktop`。
+      在**本项目的代码里只有一份实现**：
+      :meth:`~minicode.action.geometry.VirtualDesktop.to_absolute_input`。
+      冻结原型 ``exec/input.py`` 里另有一份同名公式（它的私有 ``_normalize``），
+      但**动作层不调用它**——不用它的 ``move_to`` / ``click``，
+      只借它的 ``INPUT`` 结构体、``MOUSEEVENTF_*`` 常量与 ``user32`` 绑定。
+      因此运行期不存在两份被同时使用的换算逻辑（架构备忘 §2.5 ②）。
+      这一点由单测 ``test_the_action_layer_does_not_call_the_frozen_normaliser`` 钉住。
     * 失败判定**只依据返回值**：``SendInput`` 返回 0 时不查 ``GetLastError``
       （UIPI 阻断时它不指示原因）。
     """
@@ -403,7 +396,13 @@ class WindowsInputInjector:
 
 
 class WindowsWindowController:
-    """置前与遮挡判定。"""
+    """置前与遮挡判定。
+
+    句柄口径统一成**顶层窗口**（``GetAncestor(hwnd, GA_ROOT)``）：
+    控件树给出的候选句柄可能是子窗口（按钮自己的 HWND），
+    而命中测试给出的是顶层窗口——不归一化就会把子窗口候选恒判成「被遮挡」，
+    随后对子窗口 ``SetForegroundWindow`` 必然失败。
+    """
 
     def foreground_window(self) -> int | None:
         hwnd = _user32.GetForegroundWindow()
@@ -413,26 +412,26 @@ class WindowsWindowController:
         """目标窗口在 ``point`` 处是否被别的窗口压住。
 
         判据是**命中测试**：``WindowFromPoint`` 给出该点最上层的窗口，
-        它的根窗口（``GA_ROOT``）不是目标窗口就说明目标被压住了。
+        它的根窗口（``GA_ROOT``）不是目标窗口的根窗口就说明目标被压住了。
         不用矩形相交——那会把「最大化窗口的矩形盖住任务栏」误判成遮挡，
         而任务栏永远在最上层。
         """
         hit = _user32.WindowFromPoint(wintypes.POINT(int(point[0]), int(point[1])))
         if not hit:
             return False
-        root = _user32.GetAncestor(hit, GA_ROOT) or hit
-        return int(root) != int(hwnd)
+        return self._root(hit) != self._root(hwnd)
 
     def bring_to_front(self, hwnd: int) -> bool:
-        hwnd = int(hwnd)
-        if not _user32.IsWindow(hwnd):
+        """把目标窗口置前（对顶层窗口操作；子窗口会被归一化到它的根窗口）。"""
+        root = self._root(int(hwnd))
+        if not root or not _user32.IsWindow(root):
             return False
-        _user32.ShowWindow(hwnd, SW_RESTORE)
-        return bool(_user32.SetForegroundWindow(hwnd))
+        _user32.ShowWindow(root, SW_RESTORE)
+        return bool(_user32.SetForegroundWindow(root))
 
     @staticmethod
-    def _window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
-        rect = wintypes.RECT()
-        if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            return None
-        return (rect.left, rect.top, rect.right, rect.bottom)
+    def _root(hwnd: int) -> int:
+        """取顶层窗口（根窗口）；取不到就原样返回。"""
+        if not hwnd:
+            return 0
+        return int(_user32.GetAncestor(hwnd, GA_ROOT) or hwnd)

@@ -16,11 +16,24 @@
 坐标流::
 
     控件框（物理表面空间）
-        → 截图像素空间（动作协议统一在截图像素空间）
+        → 截图像素空间（中间量，用来走缩放系数的唯一真值来源）
         → 最终落点（物理表面空间，唯一真值空间）
 
 中间那一跳只走 :class:`~minicode.action.surface.SurfaceSpec`，
 即缩放系数的**唯一真值来源**。
+
+关于「协议在哪个坐标空间」
+------------------------
+本单的动作参数坐标用**物理表面空间**，并在参数里显式标注 ``space="physical-surface"``：
+
+* 工单 M0 明确要求「落到**物理表面空间**的一个点」，动作记录里的坐标也必须是物理表面空间；
+* 架构备忘 §3「统一在截图像素空间」讲的是**模型参与的动作**（模型只会说截图像素），
+  本单没有模型参与，坐标直接来自控件树的物理像素控件框；
+* 「最终落点只在 crop 尺度上产生」是**视觉通道**（L2）的规则（M6），
+  UIA 通道的控件框本来就是物理像素，不经 crop。
+
+坐标空间必须**显式声明**（架构备忘 §2.6 C-04：禁止用阈值猜坐标系），
+所以动作参数带 ``space`` 字段，记录里也带 ``space`` 字段。
 """
 
 from __future__ import annotations
@@ -46,7 +59,7 @@ from .ports import (
     WindowController,
 )
 from .protocol import POINT_KINDS, Action, ActionKind, ActionResult
-from .records import ActionTrace, TraceSink
+from .records import FAILURE_FIELDS, POINT_SPACE, ActionTrace, TraceSink
 from .surface import SurfaceSpec
 
 __all__ = ["SeamRequest", "SeamResult", "ActionExecutionSeam"]
@@ -133,6 +146,8 @@ class ActionExecutionSeam:
         self.injector = injector
         self.window_controller = window_controller
         self.virtual_desktop = virtual_desktop or VirtualDesktop()
+        self._sleeper = sleeper
+        self._clock = clock
         self.executor = ActionExecutor(
             injector,
             sleeper=sleeper,
@@ -172,16 +187,16 @@ class ActionExecutionSeam:
         surface = self._surface_for(frame)
 
         # -- 定位 ---------------------------------------------------------
-        locate_started = self.executor._clock()
+        locate_started = self._clock()
         try:
             snapshot = (
                 request.tree_snapshot
                 if request.tree_snapshot is not None
                 else self.tree.snapshot()
             )
-            selected, rejected = self._select(snapshot.candidates, request.target_description)
+            selected, _ = self._select(snapshot.candidates, request.target_description)
         except _SelectionFailure as exc:
-            locate_ms = (self.executor._clock() - locate_started) * 1000.0
+            locate_ms = (self._clock() - locate_started) * 1000.0
             return self._fail(
                 request,
                 exc.code,
@@ -191,7 +206,7 @@ class ActionExecutionSeam:
                 skipped=skipped,
                 frame=frame,
             )
-        locate_ms = (self.executor._clock() - locate_started) * 1000.0
+        locate_ms = (self._clock() - locate_started) * 1000.0
 
         # -- 落点（截图像素空间 → 物理表面空间）-----------------------------
         capture_rect = surface.rect_to_capture(selected.rect)
@@ -234,11 +249,11 @@ class ActionExecutionSeam:
 
         # -- 执行 + 校验 ---------------------------------------------------
         action = self._build_action(request, final_point)
-        execute_started = self.executor._clock()
+        execute_started = self._clock()
         result = self.executor.execute(action)
-        execute_verify_ms = (self.executor._clock() - execute_started) * 1000.0
+        execute_verify_ms = (self._clock() - execute_started) * 1000.0
 
-        failures = {name: None for name in ("locate", "decision", "execute")}
+        failures = {name: None for name in FAILURE_FIELDS}
         if not result.ok and result.error_code is not None:
             failures["execute"] = result.error_code.value
 
@@ -323,7 +338,7 @@ class ActionExecutionSeam:
         verb = _INTENT_VERBS.get(request.action_kind, request.action_kind.value)
         intent = f"{verb}「{request.target_description}」"
         params: dict[str, Any] = dict(request.params)
-        params.update({"x": final_point[0], "y": final_point[1], "space": "physical-surface"})
+        params.update({"x": final_point[0], "y": final_point[1], "space": POINT_SPACE})
         return Action(kind=request.action_kind, params=params, intent=intent)
 
     def _fail(
@@ -339,12 +354,16 @@ class ActionExecutionSeam:
         frame: CapturedFrame | None = None,
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。"""
-        failures = {name: None for name in ("locate", "decision", "execute")}
-        if code in (ErrorCode.TARGET_NOT_FOUND, ErrorCode.AMBIGUOUS_TARGET, ErrorCode.CLIPPED_BY_DESKTOP):
+        failures = {name: None for name in FAILURE_FIELDS}
+        if code in (
+            ErrorCode.TARGET_NOT_FOUND,
+            ErrorCode.AMBIGUOUS_TARGET,
+            ErrorCode.CLIPPED_BY_DESKTOP,
+        ):
+            # 定位层：没找到 / 找不唯一 / 落点不可用。
             failures["locate"] = code.value
-        elif code is ErrorCode.CAPTURE_EMPTY:
-            failures["execute"] = code.value
         else:
+            # 其余都是执行层（抓帧失败也归这里：截图属于「执行+校验」段，架构备忘 §2.5 ③）。
             failures["execute"] = code.value
         result = ActionResult(ok=False, error_code=code, error_message=message)
         trace = ActionTrace(

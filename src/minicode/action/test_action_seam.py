@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from minicode.action.errors import ErrorCode
+from minicode.action.executor import DoubleClickParams
 from minicode.action.fakes import (
     FakeCaptureSource,
     FakeControlTree,
@@ -44,6 +45,7 @@ def _build_seam(
     tree=None,
     desktop=_DESKTOP,
     trace_sink=None,
+    double_click_params=None,
 ):
     clock = VirtualClock()
     journal = []
@@ -58,6 +60,7 @@ def _build_seam(
         sleeper=clock.sleep,
         clock=clock.time,
         trace_sink=trace_sink,
+        double_click_params=double_click_params,
     )
     return seam, injector, controller, clock
 
@@ -318,6 +321,39 @@ class PortShapeTest(unittest.TestCase):
                 self.assertNotIn(banned, text, msg=f"{path.name} 引入了第三方依赖 {banned}")
 
 
+class MultiScreenTest(unittest.TestCase):
+    """验收项 11：多屏语义（用可注入的虚拟桌面度量构造）。"""
+
+    def test_landing_point_is_correct_on_a_negative_origin_virtual_desktop(self):
+        desktop = VirtualDesktop(origin_x=-1920, origin_y=0, width=4480, height=1600)
+        candidate = ControlCandidate(
+            name="开始", control_type="Button", rect=(-1900, 1528, -1800, 1600), window_handle=1
+        )
+        frame = CapturedFrame(
+            width=4480, height=1600, left=-1920, top=0, payload=b"\x01" * 16, backend="fake"
+        )
+        seam, injector, _, _ = _build_seam(candidates=(candidate,), desktop=desktop)
+        result = seam.run(SeamRequest(target_description="开始", frame=frame))
+        self.assertTrue(result.ok)
+        self.assertEqual(result.final_point, (-1850, 1564))
+        move = [e for e in injector.events if e[0] == "move"][0]
+        self.assertEqual(move[1:], (-1850, 1564))
+
+    def test_a_point_outside_the_negative_origin_desktop_is_still_rejected(self):
+        desktop = VirtualDesktop(origin_x=-1920, origin_y=0, width=4480, height=1600)
+        candidate = ControlCandidate(
+            name="开始", control_type="Button", rect=(3000, 1528, 3100, 1600), window_handle=1
+        )
+        frame = CapturedFrame(
+            width=4480, height=1600, left=-1920, top=0, payload=b"\x01" * 16, backend="fake"
+        )
+        seam, injector, _, _ = _build_seam(candidates=(candidate,), desktop=desktop)
+        result = seam.run(SeamRequest(target_description="开始", frame=frame))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.result.error_code, ErrorCode.CLIPPED_BY_DESKTOP)
+        self.assertEqual(injector.events, [])
+
+
 class ActionRecordTest(unittest.TestCase):
     """验收项 18 / 19：只落哈希 + 恰好一条动作记录。"""
 
@@ -402,7 +438,10 @@ class ActionRecordTest(unittest.TestCase):
     def test_double_click_and_two_independent_clicks_produce_different_records(self):
         with tempfile.TemporaryDirectory() as tmp:
             sink = ListTraceSink()
-            seam, _, _, clock = _build_seam(trace_sink=sink)
+            seam, _, _, clock = _build_seam(
+                trace_sink=sink,
+                double_click_params=DoubleClickParams(time_ms=500, distance_px=4),
+            )
             seam.run(
                 SeamRequest(target_description="开始", action_kind=ActionKind.DOUBLE_CLICK)
             )
@@ -414,3 +453,22 @@ class ActionRecordTest(unittest.TestCase):
                 log.append(build_record(trace))
             actions = [record["action"] for record in log.records()]
             self.assertEqual(actions, ["double_click", "click", "click"])
+            self.assertTrue(log.records()[0]["result"]["ok"])
+
+    def test_the_record_carries_the_cursor_readback_and_its_delta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, record = self._run_once(tmp)
+            payload = record.to_dict()
+            self.assertEqual(payload["result"]["cursor_readback"], [1049, 1564])
+            self.assertEqual(payload["result"]["cursor_delta_px"], 0)
+
+    def test_a_rejection_records_the_candidate_set(self):
+        candidates = (_candidate(rect=(10, 20, 60, 70)), _candidate(rect=(100, 200, 150, 250)))
+        sink = ListTraceSink()
+        seam, _, _, _ = _build_seam(candidates=candidates, trace_sink=sink)
+        seam.run(SeamRequest(target_description="开始"))
+        record = build_record(sink.traces[-1])
+        payload = record.to_dict()
+        self.assertEqual(len(payload["rejected_candidates"]), 2)
+        self.assertEqual(payload["rejected_candidates"][0]["name"], "开始")
+        self.assertIsNone(payload["point"])

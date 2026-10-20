@@ -67,17 +67,9 @@ class VirtualDesktop:
 
         分母必须是 ``(维度 − 1)``，否则最后一个像素永远点不到。
         必须带 ``MOUSEEVENTF_VIRTUALDESK``，否则只映射到主显示器。
+
+        这是本项目代码里**唯一**一份这个公式（架构备忘 §2.5 ②：换算链路单一来源）。
         """
         nx = round((float(px) - self.origin_x) * 65535 / max(self.width - 1, 1))
         ny = round((float(py) - self.origin_y) * 65535 / max(self.height - 1, 1))
         return max(0, min(65535, int(nx))), max(0, min(65535, int(ny)))
-
-    def from_absolute_input(self, nx: int, ny: int) -> tuple[int, int]:
-        """SendInput 的 0..65535 绝对坐标 → 物理表面像素（:meth:`to_absolute_input` 的逆）。
-
-        0..65535 的量化精度有限（虚拟桌面越宽每像素摊到的刻度越少），
-        因此往返允许 1 物理像素的误差。
-        """
-        px = self.origin_x + round(int(nx) * (self.width - 1) / 65535)
-        py = self.origin_y + round(int(ny) * (self.height - 1) / 65535)
-        return int(px), int(py)

@@ -92,7 +92,7 @@ class FakeInputInjector:
     """假输入注入：记录注入序列，供断言。
 
     * ``events`` 是按发生顺序记录的注入事件元组。
-    * ``fail_injection`` 让注入抛出 :class:`InjectionBlocked`（模拟 UIPI 拦���）。
+    * ``fail_injection`` 让注入抛出 :class:`InjectionBlocked`（模拟 UIPI 拦截）。
     * ``fail_paste`` 让粘贴通道失败（逼上层退回 Unicode 通道）。
     """
 
