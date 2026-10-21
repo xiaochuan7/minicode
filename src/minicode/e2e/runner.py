@@ -7,15 +7,22 @@
 
 1. **每步都要有结构断言** —— 不许只用「画面变了」当通过判据
    （口径写在 :class:`~minicode.e2e.tasks.Task` 的校验里）。
-2. **跳过不算通过** —— 环境不可达（未登录 / 应用未装 / 网络不通）记
-   ``skip``，并写明原因；**跳过永远不进通过率**。
+2. **跳过（环境不可达）不算通过** —— 环境不可达（未登录 / 应用未装 / 网络不通）记
+   ``skip``，并写明原因。⚠️ **它进分母**（口径对齐 OSWorld / WAA），
+   但**单列**、**不混进自动通过率**。
 3. **人工代确认单独统计** —— 标注「人工代确认」的任务**不自动执行**，
-   记 ``pending_human``，**不混进自动通过率**；人代跑完的结果由
-   **人工记录**带进来（``manual``），仍然**不混进自动通过率**。
+   记 ``pending_human``；人代跑完的结果由**人工记录**带进来（``manual``）。
+   它**不进分母**（口径规定不自动执行 → agent 从未尝试）。
 4. **多步任务有停止条件与交接**（工单 M14 的阻塞边 M12）—— 步数到上限或
    熔断命中就停下来，并把**交接产物**交出去。
 
-判定取值只有四个：``pass`` / ``fail`` / ``skip`` / ``pending_human``。
+判定取值有五个：``pass`` / ``fail`` / ``skip``（环境不可达）/ ``pending_human``
+（人工代跑）/ ``handoff``（**合规停手**：撞停止条件 → 交人）。
+
+⚠️ **「合规停手」不许算成自动通过**（公开工作没有「交人=通过」的先例：
+UFO² ``ASK_QUESTION=False``；AndroidWorld 声明 FAIL 后可行任务 = 0 分）——
+它进分母、记 0 分、单列。
+
 「判不了」（断言给不出结论）**不算通过** —— 它落在 ``fail`` 里，
 并在原因里写明是「判不了」而不是「不成立」。
 """
@@ -34,6 +41,7 @@ __all__ = [
     "VERDICT_FAIL",
     "VERDICT_SKIP",
     "VERDICT_PENDING_HUMAN",
+    "VERDICT_HANDOFF",
     "StepOutcome",
     "ClauseOutcome",
     "TaskOutcome",
@@ -46,10 +54,16 @@ __all__ = [
 VERDICT_PASS = "pass"
 #: 失败（含「判不了」）。
 VERDICT_FAIL = "fail"
-#: 跳过（环境不可达，**不算通过**）。
+#: 跳过（环境不可达；**进分母、单列**，但不算通过）。
 VERDICT_SKIP = "skip"
-#: 待人工确认（「人工代确认」的任务；**不自动执行**）。
+#: 待人工确认（「人工代确认」的任务；**不自动执行**、不进分母）。
 VERDICT_PENDING_HUMAN = "pending_human"
+#: **合规停手**（撞停止条件 → 零动作下发、交人）。
+#:
+#: ⚠️ 它**进分母、记 0 分**，**不许算成自动通过**（公开工作没有
+#: 「交人=通过」的先例：UFO² ``ASK_QUESTION=False``；
+#: AndroidWorld 声明 FAIL 后可行任务 = 0 分）。
+VERDICT_HANDOFF = "handoff"
 
 
 @dataclass(frozen=True)
@@ -176,6 +190,8 @@ class TaskOutcome:
     manual: Mapping[str, Any] = field(default_factory=dict)
     #: **交接产物**（M12）：多步任务被停止条件打断时交出去的那一份。
     handoff: Mapping[str, Any] | None = None
+    #: 撞到的**停止原因**（合规停手那一类；空串 = 没撞停止条件）。
+    stop_reason: str = ""
     #: 这张票的口径说明（工单级；报告里带出去）。
     note: str = ""
 
@@ -189,6 +205,7 @@ class TaskOutcome:
             "skip_reason": self.skip_reason,
             "manual": dict(self.manual),
             "handoff": dict(self.handoff) if self.handoff is not None else None,
+            "stop_reason": self.stop_reason,
             "steps": [step.to_dict() for step in self.steps],
             "clauses": [clause.to_dict() for clause in self.clauses],
             "note": self.note,
@@ -288,11 +305,19 @@ class TaskRunner:
         )
         verdict, reason = _verdict(steps, clauses)
         if stopped:
-            reason = (
-                f"停止条件命中（{stopped}）：{reason}"
-                if reason
-                else f"停止条件命中（{stopped}）"
-            )
+            if verdict == VERDICT_PASS:
+                # **合规停手**：撞到停止条件 → 交人 → **不算自动通过**。
+                # 这一轮 agent **没有完成任务**（公开口径：交人 = 0 分，
+                # 不是通过）→ 进分母、单列。
+                verdict = VERDICT_HANDOFF
+                reason = (
+                    f"停止条件命中（{stopped}）：这一轮**没有完成任务**，"
+                    "按口径交人（不算自动通过）"
+                )
+            elif reason:
+                reason = f"停止条件命中（{stopped}）：{reason}"
+            else:
+                reason = f"停止条件命中（{stopped}）"
         return TaskOutcome(
             task_id=task.id,
             title=task.title,
@@ -301,6 +326,7 @@ class TaskRunner:
             steps=tuple(steps),
             clauses=clauses,
             handoff=self.executor.handoff() if stopped else None,
+            stop_reason=stopped,
             note=task.note,
         )
 

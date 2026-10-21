@@ -23,8 +23,10 @@ from minicode.e2e.checks import (
     window_title_matches_picked,
 )
 from minicode.e2e.modal import WindowRecord, detect_modal
+from minicode.e2e.report import build_report
 from minicode.e2e.runner import (
     VERDICT_FAIL,
+    VERDICT_HANDOFF,
     VERDICT_PASS,
     VERDICT_PENDING_HUMAN,
     VERDICT_SKIP,
@@ -50,10 +52,11 @@ def _step(**kwargs) -> Step:
 class _FakeExecutor:
     """**假执行器**：只记「有没有被调用过」与「跑出来的步结果」。"""
 
-    def __init__(self, *, preflight: str = "", steps=None, context=None):
+    def __init__(self, *, preflight: str = "", steps=None, context=None, stop: str = ""):
         self._preflight = preflight
         self._steps = list(steps or [])
         self._context = dict(context or {})
+        self._stop = stop
         self.executed: list[str] = []
         self.closed = False
 
@@ -70,10 +73,12 @@ class _FakeExecutor:
         return dict(self._context)
 
     def stop_reason(self) -> str:
-        return ""
+        return self._stop
 
     def handoff(self):
-        return None
+        if not self._stop:
+            return None
+        return {"reason": self._stop, "window_title": "（假执行器）"}
 
 
 class Wave2ShapeTests(unittest.TestCase):
@@ -371,6 +376,45 @@ class Wave2CheckTests(unittest.TestCase):
         ok, detail = channel_and_failure_readable(evidence)
         self.assertFalse(ok)
         self.assertIn("A", detail)
+
+
+class Wave2ScoringTests(unittest.TestCase):
+    """**记分口径**（对齐公开基准）：模态弹窗那一票**不许计成自动通过**。"""
+
+    #: WX-3 的条款（模态弹窗在场 → 零动作下发 + 交人）**都成立**时的读数。
+    _MODAL_CONTEXT = {
+        "modal_detected": True,
+        "actions_dispatched": 0,
+        "stop_reason": "modal_dialog",
+        "handoff": {
+            "window_title": "微信",
+            "last_action": "",
+            "sent_points": [],
+            "executed_actions": [],
+        },
+    }
+
+    def test_the_modal_dialog_ticket_is_a_handoff_not_an_auto_pass(self):
+        """WX-3 撞上模态弹窗 → **合规停手**：进分母、记 0 分（条款全成立也是）。"""
+        executor = _FakeExecutor(stop="modal_dialog", context=dict(self._MODAL_CONTEXT))
+        outcome = TaskRunner(executor).run(task_by_id("WX-3"))
+        self.assertEqual(outcome.verdict, VERDICT_HANDOFF)
+        self.assertEqual(outcome.stop_reason, "modal_dialog")
+        #: 条款本身是成立的（证据在报告里），但**判定不是通过**。
+        self.assertTrue(all(clause.ok for clause in outcome.clauses))
+
+    def test_the_handoff_is_counted_apart_from_the_manual_run(self):
+        """「人工代跑」（WX-2）与「合规停手」（WX-3）是**两个计数**。"""
+        manual = TaskRunner(_FakeExecutor()).run(task_by_id("WX-2"))
+        executor = _FakeExecutor(stop="modal_dialog", context=dict(self._MODAL_CONTEXT))
+        handoff = TaskRunner(executor).run(task_by_id("WX-3"))
+        report = build_report([manual, handoff])
+        self.assertEqual(report["human_confirm"]["count"], 1)
+        self.assertEqual(report["handoff"]["count"], 1)
+        self.assertEqual(report["auto"]["passed"], 0)
+        #: 合规停手进分母（0 分）；人工代跑不进分母。
+        self.assertEqual(report["auto"]["denominator"], 1)
+        self.assertEqual(report["auto"]["pass_rate"], 0.0)
 
 
 class ModalDetectionTests(unittest.TestCase):

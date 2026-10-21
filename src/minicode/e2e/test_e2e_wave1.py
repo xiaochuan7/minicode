@@ -29,6 +29,7 @@ from .checks import (
 from .report import build_report, render_markdown
 from .runner import (
     VERDICT_FAIL,
+    VERDICT_HANDOFF,
     VERDICT_PASS,
     VERDICT_PENDING_HUMAN,
     VERDICT_SKIP,
@@ -240,6 +241,21 @@ def test_stop_condition_stops_the_task_and_hands_off():
     assert "停止条件命中（asked_human）" in outcome.reason
     assert outcome.handoff is not None
     assert outcome.handoff["reason"] == "asked_human"
+    #: 撞了停止条件 → 这一轮**没有完成任务** → 合规停手（**不是通过**）。
+    assert outcome.verdict == VERDICT_HANDOFF
+    assert outcome.stop_reason == "asked_human"
+
+
+def test_a_stop_condition_never_becomes_an_auto_pass():
+    """**模态弹窗 → 交人**：不许计成自动通过（公开工作没有「交人=通过」的先例）。"""
+    executor = FakeExecutor(stop="modal_dialog")
+    outcome = TaskRunner(executor).run(_task())
+    assert outcome.verdict == VERDICT_HANDOFF
+    report = build_report([outcome])
+    assert report["auto"]["passed"] == 0
+    assert report["auto"]["handoff"] == 1
+    assert report["auto"]["denominator"] == 1
+    assert report["auto"]["pass_rate"] == 0.0
 
 
 def test_static_skip_reason_skips_without_executing():
@@ -355,7 +371,8 @@ def test_scale_is_recorded_empty_when_nothing_can_be_read(tmp_path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def test_report_excludes_skipped_and_pending_from_pass_rate():
+def test_report_counts_the_unreachable_environment_inside_the_denominator():
+    """**环境不可达进分母、单列**（OSWorld / WAA 口径）；人工代跑不进分母。"""
     passed = TaskOutcome(task_id="T-1", title="过", verdict=VERDICT_PASS)
     failed = TaskOutcome(task_id="T-2", title="败", verdict=VERDICT_FAIL, reason="差")
     skipped = TaskOutcome(
@@ -372,15 +389,17 @@ def test_report_excludes_skipped_and_pending_from_pass_rate():
     auto = report["auto"]
     assert auto["passed"] == 1
     assert auto["failed"] == 1
-    assert auto["skipped"] == 1
-    assert auto["denominator"] == 2
-    assert auto["pass_rate"] == 0.5
+    assert auto["infeasible"] == 1
+    #: 分母 = 通过 + 失败 + **环境不可达**（人工代跑不进分母）。
+    assert auto["denominator"] == 3
+    assert auto["pass_rate"] == pytest.approx(1 / 3)
     assert report["human_confirm"]["count"] == 1
     assert report["human_confirm"]["ids"] == ["T-4"]
-    assert report["skipped"][0]["reason"] == "环境不可达：未登录"
+    assert report["infeasible"][0]["reason"] == "环境不可达：未登录"
 
 
-def test_report_never_counts_skip_as_pass():
+def test_report_never_counts_the_unreachable_environment_as_pass():
+    """环境不可达**不算通过**，但它**进分母** → 通过率是 0%，不是「没有分母」。"""
     skipped = TaskOutcome(
         task_id="T-3",
         title="跳",
@@ -390,8 +409,66 @@ def test_report_never_counts_skip_as_pass():
     )
     report = build_report([skipped])
     assert report["auto"]["passed"] == 0
-    assert report["auto"]["pass_rate"] is None
+    assert report["auto"]["denominator"] == 1
+    assert report["auto"]["pass_rate"] == 0.0
     assert all(task["verdict"] != VERDICT_PASS for task in report["tasks"])
+
+
+def test_report_never_counts_a_handoff_as_an_auto_pass():
+    """**模态弹窗 → 合规停手**：进分母、记 0 分，**不许算成自动通过**。"""
+    handoff = TaskOutcome(
+        task_id="WX-3",
+        title="模态弹窗",
+        verdict=VERDICT_HANDOFF,
+        reason="停止条件命中（modal_dialog）：这一轮没有完成任务，按口径交人",
+        stop_reason="modal_dialog",
+        handoff={"reason": "modal_dialog"},
+    )
+    report = build_report([handoff])
+    auto = report["auto"]
+    assert auto["passed"] == 0
+    assert auto["handoff"] == 1
+    assert auto["denominator"] == 1
+    assert auto["pass_rate"] == 0.0
+    assert report["handoff"]["ids"] == ["WX-3"]
+    assert report["handoff"]["results"][0]["stop_reason"] == "modal_dialog"
+
+
+def test_report_separates_the_manual_run_from_the_handoff():
+    """「人工代跑」与「合规停手」是**两个计数**，互不混。"""
+    manual = TaskOutcome(
+        task_id="WX-2",
+        title="人工代跑",
+        verdict=VERDICT_PENDING_HUMAN,
+        human_confirm=True,
+        manual={"verdict": "pass", "note": "人代跑了"},
+    )
+    handoff = TaskOutcome(
+        task_id="WX-3",
+        title="合规停手",
+        verdict=VERDICT_HANDOFF,
+        reason="停止条件命中（modal_dialog）",
+        stop_reason="modal_dialog",
+    )
+    report = build_report([manual, handoff])
+    assert report["human_confirm"]["count"] == 1
+    assert report["human_confirm"]["completed"] == 1
+    assert report["human_confirm"]["pending"] == 0
+    assert report["handoff"]["count"] == 1
+    #: 人工代跑**不进分母**；合规停手进分母。
+    assert report["auto"]["denominator"] == 1
+
+
+def test_report_states_the_scoring_caliber_in_the_header():
+    """**报告抬头要写明分母口径与各桶的含义**（对外可比）。"""
+    report = build_report([])
+    caliber = report["caliber"]
+    assert "环境不可达" in caliber["denominator"]
+    assert "合规停手" in caliber["denominator"]
+    assert set(caliber["buckets"]) == {"passed", "failed", "infeasible", "handoff", "manual"}
+    markdown = render_markdown(report)
+    assert "记分口径" in markdown
+    assert "分母" in markdown
 
 
 def test_report_records_channel_timings_and_landing_error():

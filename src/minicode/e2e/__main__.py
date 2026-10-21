@@ -265,11 +265,13 @@ def main(argv=None) -> int:
         rate = auto["pass_rate"]
         print(
             f"=== 汇总 ===\n通过 {auto['passed']}｜失败 {auto['failed']}｜"
-            f"跳过 {auto['skipped']}｜人工代确认 {report['human_confirm']['count']}｜"
+            f"环境不可达 {auto['infeasible']}｜合规停手 {auto['handoff']}｜"
+            f"人工代跑 {report['human_confirm']['count']}｜"
             f"自动通过率 "
             f"{('%.0f%%' % (rate * 100)) if rate is not None else '—'}"
             f"（{auto['passed']}/{auto['denominator']}）"
         )
+        print(f"分母口径：{auto['denominator_note']}")
         print(f"报告：{out_dir / 'e2e-report.md'}")
         return 0
     finally:
