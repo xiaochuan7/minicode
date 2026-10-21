@@ -1,6 +1,6 @@
-"""**假桌面接线**（工单 M18）。
+"""**假桌面接线**（工单 M18 / M19）。
 
-对外形态的两个前端（命令行 / HTTP）在 CI 与单测里都跑在**假桌面**上：
+对外形态的三个前端（命令行 / HTTP / MCP）在 CI 与单测里都跑在**假桌面**上：
 假截图源 / 假控件树 / 假注入器 —— **不碰真桌面、不注入任何输入、不花钱**。
 
 ⚠️ **假桌面只是把缝以下的依赖换掉**：动作语义、坐标口径、错误码
@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 from minicode.action.fakes import (
     FakeCaptureSource,
@@ -22,8 +23,21 @@ from minicode.action.geometry import VirtualDesktop, rect_center
 from minicode.action.ports import ControlCandidate
 from minicode.action.records import ListTraceSink
 from minicode.action.seam import ActionExecutionSeam
+from minicode.redact.config import ModelContextConfig
+from minicode.redact.redactor import TreeRedactor
+from minicode.verification.fakes import FakeStateObserver
 
-__all__ = ["FAKE_LANDING", "FAKE_TARGET", "fake_wiring"]
+from .service import ActionService
+
+__all__ = [
+    "FAKE_LANDING",
+    "FAKE_TARGET",
+    "fake_candidate",
+    "fake_observer",
+    "fake_redactor",
+    "fake_service",
+    "fake_wiring",
+]
 
 #: 假桌面上那个按钮的名字。
 FAKE_TARGET = "开始"
@@ -46,6 +60,39 @@ _FAKE_LANDING = rect_center(_FAKE_RECT)
 FAKE_LANDING = (math.floor(_FAKE_LANDING[0]), math.floor(_FAKE_LANDING[1]))
 
 
+def fake_candidate() -> ControlCandidate:
+    """假桌面上那个按钮的**控件候选**（观察与定位用的是同一个）。"""
+    return ControlCandidate(
+        name=FAKE_TARGET,
+        control_type="Button",
+        rect=_FAKE_RECT,
+        window_handle=65784,
+        window_title="任务栏",
+    )
+
+
+def fake_observer() -> FakeStateObserver:
+    """假桌面的**定点观察**端口（按名字给控件）。
+
+    ⚠️ 形状与真机那一路**同一个**
+    （:class:`minicode.verification.layer.StateObserver`）——
+    换实现不改端口形状。
+    """
+    return FakeStateObserver({FAKE_TARGET: (fake_candidate(),)})
+
+
+def fake_redactor() -> TreeRedactor:
+    """假桌面的脱敏器（**两个开关都开着**）。
+
+    ⚠️ 假桌面的控件树是**合成的**（没有真实敏感内容），
+    但**脱敏这一关照样要过** —— 单测要能断言「出去的是已脱敏的文本」。
+    真机那一路读**仓库 ``.env``** 的两个开关（缺省都关，fail-closed）。
+    """
+    return TreeRedactor(
+        ModelContextConfig(send_tree_to_model=True, redaction_enabled=True)
+    )
+
+
 def fake_wiring(
     *,
     injector: FakeInputInjector | None = None,
@@ -55,13 +102,7 @@ def fake_wiring(
     注入器一并返回，是为了**断言「没有动作下发」**（版本对不上时）。
     """
     clock = VirtualClock()
-    candidate = ControlCandidate(
-        name=FAKE_TARGET,
-        control_type="Button",
-        rect=_FAKE_RECT,
-        window_handle=65784,
-        window_title="任务栏",
-    )
+    candidate = fake_candidate()
     real_injector = injector if injector is not None else FakeInputInjector()
     controller = FakeWindowController(foreground=65784)
 
@@ -78,3 +119,18 @@ def fake_wiring(
         )
 
     return factory, real_injector
+
+
+def fake_service(
+    log_directory: str | Path,
+    *,
+    injector: FakeInputInjector | None = None,
+) -> ActionService:
+    """假桌面上的动作服务（**接线只有一份** —— 与单测跑的是同一份）。"""
+    wiring, _injector = fake_wiring(injector=injector)
+    return ActionService(
+        seam_factory=wiring,
+        log_directory=log_directory,
+        observer=fake_observer(),
+        redactor=fake_redactor(),
+    )

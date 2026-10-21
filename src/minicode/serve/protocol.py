@@ -58,7 +58,13 @@ __all__ = [
     "PROTOCOL_VERSION",
     "ActionRequest",
     "ActionResponse",
+    "ObservationRequest",
+    "ObservationResponse",
+    "ProgramRequest",
+    "ProgramResponse",
     "RequestError",
+    "ResponseBase",
+    "checked_protocol_version",
 ]
 
 #: **动作执行缝接的动作种类**（取值来自 :mod:`minicode.action.protocol` ——
@@ -81,6 +87,37 @@ class RequestError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def checked_protocol_version(payload: Any) -> str:
+    """核对请求带的**协议版本号**（**唯一一处**版本核对）。
+
+    请求里必须带 ``protocol`` 字段，取值是动作协议的版本号
+    （:data:`minicode.action.protocol.PROTOCOL_VERSION`，即 ``cua.action/1``）。
+    **版本对不上 → 明确报错，不按旧语义猜着执行**
+    （:data:`ErrorCode.PROTOCOL_VERSION_MISMATCH`），**零动作下发**。
+
+    ⚠️ **版本核对只有这一份**：动作请求、动作程序请求、观察请求都走它 ——
+    三处各写一遍时，迟早有一处漏掉「不匹配就报错」这条。
+    """
+    if not isinstance(payload, Mapping):
+        raise RequestError(
+            ErrorCode.INVALID_REQUEST,
+            f"请求不是一张键值表（收到 {type(payload).__name__}）",
+        )
+    version = payload.get("protocol")
+    if not isinstance(version, str) or not version:
+        raise RequestError(
+            ErrorCode.INVALID_REQUEST,
+            f"请求缺 protocol 字段（必须是 {PROTOCOL_VERSION}）",
+        )
+    if version != PROTOCOL_VERSION:
+        # **不按旧语义猜着执行**（AC4）：版本对不上 → 明确报错。
+        raise RequestError(
+            ErrorCode.PROTOCOL_VERSION_MISMATCH,
+            f"协议版本不匹配：请求 {version}，本实现只支持 {PROTOCOL_VERSION}",
+        )
+    return version
 
 
 @dataclass(frozen=True)
@@ -106,23 +143,7 @@ class ActionRequest:
 
         形状不对 → :class:`RequestError`（错误码取协议里的值）。
         """
-        if not isinstance(payload, Mapping):
-            raise RequestError(
-                ErrorCode.INVALID_REQUEST,
-                f"请求不是一张键值表（收到 {type(payload).__name__}）",
-            )
-        version = payload.get("protocol")
-        if not isinstance(version, str) or not version:
-            raise RequestError(
-                ErrorCode.INVALID_REQUEST,
-                f"请求缺 protocol 字段（必须是 {PROTOCOL_VERSION}）",
-            )
-        if version != PROTOCOL_VERSION:
-            # **不按旧语义猜着执行**（AC4）：版本对不上 → 明确报错。
-            raise RequestError(
-                ErrorCode.PROTOCOL_VERSION_MISMATCH,
-                f"协议版本不匹配：请求 {version}，本实现只支持 {PROTOCOL_VERSION}",
-            )
+        version = checked_protocol_version(payload)
         action = payload.get("action", ActionKind.CLICK.value)
         if not isinstance(action, str) or not action:
             raise RequestError(
@@ -169,17 +190,36 @@ class ActionRequest:
 
 
 @dataclass(frozen=True)
-class ActionResponse:
-    """一次动作的响应（外部形状）。"""
+class ResponseBase:
+    """对外形态三种响应的**公共部分**。
+
+    协议版本、成败、错误码、错误信息 —— **三个响应都一样**，
+    写三遍迟早有一处漏改（所以只写这一份）。
+    """
 
     #: 本实现支持的协议版本号。
     protocol_version: str
-    #: 动作是否成功。
+    #: 这次调用是否成功。
     ok: bool
-    #: 失败时的协议错误码（成功时为 ``None``）。
+    #: 失败时的**协议错误码**（成功时为 ``None``）。
     error_code: str | None = None
     #: 失败原因（人读）。
     error_message: str | None = None
+
+    def common_fields(self) -> dict[str, Any]:
+        """公共部分的机器可读形状。"""
+        return {
+            "protocol_version": self.protocol_version,
+            "ok": self.ok,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+        }
+
+
+@dataclass(frozen=True)
+class ActionResponse(ResponseBase):
+    """一次动作的响应（外部形状）。"""
+
     #: 实际下发的动作（``kind`` / ``params`` / ``intent``）。
     action: Mapping[str, Any] | None = None
     #: 最终落点（物理表面空间）。
@@ -190,13 +230,142 @@ class ActionResponse:
     def to_dict(self) -> dict[str, Any]:
         """机器可读的形状（HTTP 响应体 / 命令行 ``--json`` 输出）。"""
         return {
-            "protocol_version": self.protocol_version,
-            "ok": self.ok,
-            "error_code": self.error_code,
-            "error_message": self.error_message,
+            **self.common_fields(),
             "action": dict(self.action) if self.action is not None else None,
             "landing_point": (
                 list(self.landing_point) if self.landing_point is not None else None
             ),
             "record": dict(self.record) if self.record is not None else None,
+        }
+
+
+@dataclass(frozen=True)
+class ProgramRequest:
+    """一次**动作程序**请求（外部形状）。
+
+    动作程序是决策层唯一的产出形态（ADR-0005）：它在**受控环境**里跑
+    （:mod:`minicode.action.program`），只能调用动作协议暴露的动作。
+
+    ⚠️ **程序源码由调用方给**（宿主的模型写那段程序）——
+    本层**不生成**程序，也不在这里调模型。
+    """
+
+    #: 动作协议版本号（必填）。
+    protocol_version: str
+    #: 动作程序源码（受控环境里跑的 Python 片段）。
+    program: str
+
+    @classmethod
+    def from_mapping(cls, payload: Any) -> ProgramRequest:
+        """把一张外部载荷变成程序请求。
+
+        形状不对 → :class:`RequestError`（错误码取协议里的值）。
+        """
+        version = checked_protocol_version(payload)
+        source = payload.get("program")
+        if not isinstance(source, str) or not source.strip():
+            raise RequestError(
+                ErrorCode.INVALID_REQUEST,
+                "请求缺 program 字段（动作程序源码）",
+            )
+        return cls(protocol_version=version, program=source)
+
+
+@dataclass(frozen=True)
+class ProgramResponse(ResponseBase):
+    """一次动作程序执行的响应（外部形状）。
+
+    ⚠️ **协议里没有「完成」**（工单 M10）：``ok`` 只表示「程序跑完了且没抛异常」，
+    **不代表任务完成** —— 终止只由 harness 侧的停止条件承载。
+    """
+
+    #: 程序的标准输出。
+    stdout: str = ""
+    #: 程序的标准错误。
+    stderr: str = ""
+    #: 程序每一次接口调用的记录（种类 / 目标 / 成败 / 落点 / 错误码）。
+    calls: tuple[Mapping[str, Any], ...] = ()
+    #: 动作记录（**落盘形状**，动作日志的一行一条）。
+    records: tuple[Mapping[str, Any], ...] = ()
+    #: 程序**请求交还给人**了吗（``ask_user``）。
+    #:
+    #: ⚠️ **这不是「完成」**：它是**停止信号**——宿主据此知道
+    #: 「程序不是跑完了，是把任务交还给人了」（工单 M12 的交接语义）。
+    asked_human: bool = False
+    #: 程序被**停下**了吗（危险动作没获批 → 零动作下发、交人）。
+    halted: bool = False
+    #: 停下 / 交还给人的原因（人读）。
+    halt_reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """机器可读的形状。"""
+        return {
+            **self.common_fields(),
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "calls": [dict(call) for call in self.calls],
+            "records": [dict(record) for record in self.records],
+            "asked_human": self.asked_human,
+            "halted": self.halted,
+            "halt_reason": self.halt_reason,
+        }
+
+
+@dataclass(frozen=True)
+class ObservationRequest:
+    """一次**观察**请求（外部形状）。
+
+    ⚠️ **观察是定点的**：必须带名字条件（架构决策备忘 §2.6 C-09：
+    禁止全树 dump —— 全桌面遍历约 1000 个元素要 ≥8 秒）。
+    """
+
+    #: 动作协议版本号（必填）。
+    protocol_version: str
+    #: 控件名条件（自然语言，如「开始」）。
+    name: str
+
+    @classmethod
+    def from_mapping(cls, payload: Any) -> ObservationRequest:
+        """把一张外部载荷变成观察请求。"""
+        version = checked_protocol_version(payload)
+        name = payload.get("name", "")
+        if not isinstance(name, str):
+            raise RequestError(
+                ErrorCode.INVALID_REQUEST,
+                "请求的 name 字段不是字符串",
+            )
+        if not name.strip():
+            raise RequestError(
+                ErrorCode.INVALID_REQUEST,
+                "请求缺 name 字段：观察是**定点**的，必须带属性条件"
+                "（架构决策备忘 §2.6 C-09：禁止全树 dump）",
+            )
+        return cls(protocol_version=version, name=name)
+
+
+@dataclass(frozen=True)
+class ObservationResponse(ResponseBase):
+    """一次观察的响应（外部形状）。
+
+    两样东西：**截图摘要**（只给尺寸与哈希 —— 与「截图只落哈希」同一条红线）
+    与**已脱敏的控件树**（模型侧文本，脱敏器是它的唯一出口）。
+    """
+
+    #: 截图摘要（``width`` / ``height`` / ``sha256``）。
+    screenshot: Mapping[str, Any] | None = None
+    #: **已脱敏**的控件树（模型侧文本）。
+    controls: str | None = None
+    #: 脱敏计数。
+    redaction: Mapping[str, Any] | None = None
+    #: 观察到的控件数。
+    controls_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """机器可读的形状。"""
+        return {
+            **self.common_fields(),
+            "screenshot": dict(self.screenshot) if self.screenshot is not None else None,
+            "controls": self.controls,
+            "redaction": dict(self.redaction) if self.redaction is not None else None,
+            "controls_count": self.controls_count,
         }

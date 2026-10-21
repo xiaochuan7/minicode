@@ -113,10 +113,9 @@ def build_service(*, log_directory: str | Path, fake: bool) -> ActionService:
 
 def _fake_service(log_directory: str | Path) -> ActionService:
     """假桌面的服务（**接线只有一份** —— 与单测跑的是同一份）。"""
-    from .fakes import fake_wiring
+    from .fakes import fake_service
 
-    wiring, _injector = fake_wiring()
-    return ActionService(seam_factory=wiring, log_directory=log_directory)
+    return fake_service(log_directory)
 
 
 def _real_service(log_directory: str | Path) -> ActionService:
