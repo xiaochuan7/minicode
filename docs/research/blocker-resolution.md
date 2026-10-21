@@ -30,7 +30,8 @@
 3. **候选源缺图标** —— 图标召回 0/13 是**候选源选错**，不是模型认不出图标：
    真机 UIA 同一批控件 22/22、落点误差中位 0.0 px / 最大 0.5 px。
 
-**最小可行路径**：去掉前置门控 + crop 512→1024 + 偏离阈值 128→50 px + 粗定位出框 + max_tokens 加倍 +
+**最小可行路径**：去掉前置门控 + crop 尺寸**按实测定**（不是照抄论文的 1024，
+见 §卡点一 改动 2）+ 偏离阈值 128→50 px + 粗定位出框 + max_tokens 加倍 +
 UIA 候选源接入（UFO² 的 IoU 0.1 合并规则）。前三条**不改一行坐标换算代码**。
 
 ---
@@ -167,21 +168,26 @@ UIA 候选源接入（UFO² 的 IoU 0.1 合并规则）。前三条**不改一�
 | # | 改动 | 参数 / 措辞（可照抄） | 出处与强度 |
 |---|---|---|---|
 | 1 | **去掉前置门控** | `GateMode.ALWAYS` 成默认；门控只做**记录器**（decision 落盘，不再决定是否精定位） | 【实测数字】38.1%→57.1%、2.381→2.000 次/目标；【一手】官方 ReGround 无条件两段式（Table 4：18.9→40.2） |
-| 2 | **crop 尺寸 512→1024** | `crop_size = 1024×1024`（物理像素，1:1 裁不缩放） | 【一手】Table 5 逐格：OS-Atlas-7B 512=**25.1**（全表最差）/ 768=34.2 / **1024=40.2** / 1280=40.1；UGround-7B 27.0/28.8/28.2/26.3；原文："OS-Atlas-7B achieves its best score with 1024×1024 crops, while UGround performs optimally with 768×768 crops" |
-| 3 | **扫描集合方向反过来** | `docs/research/core-function-plan.md` §C-1 现计划 `{512,256,192,128}` → 改 `{768,1024,1280}` | 【一手】同上 Table 5；【一手】ZoomClick Table 8 通用 VLM 行随 min_crop 单调上升（65.2→72.3） |
+| 2 | **crop 尺寸**：**不照抄论文的 1024，按本机实测定** | 扫描**全集** `{128,192,256,512,768,1024,1280}`（**A 半调 / B 半评**，七个尺寸**共用同一次粗定位回答**）→ **默认 192 px**（写在 `ground/channel.py::DEFAULT_CROP_WIDTH_PX`；冻结原型 `coord/crop_refine.py` 的 512 **一个字没动**） | **【实测数字】**（330 条分层抽样、seed 20251020）：A 半 128 **35.2%** / **192 43.0%** / 256 43.0% / 512 42.4% / 768 42.4% / 1024 41.8% / 1280 40.0% —— **「调大」不成立**（1024/1280 都比 512 差）、**「调小」也不成立**（128 最差），**最优在中间**；192~768 彼此**差 ≤1 条样本（= 噪声）**，按 A 半中位误差破平也是 **192 最低**，且它的精定位图像 token 只有 **49**（512 是 361）。**与论文 Table 5 冲突 → 实测赢**；逐格数据见 `docs/research/core-function-plan.md` §C-1 的扫描表 |
+| 3 | **扫描集合**：**不预设方向，全集扫** | `docs/research/core-function-plan.md` §C-1 的 `{512,256,192,128}` → **全集** `{128,192,256,512,768,1024,1280}`（**方向反过来这一条本身也不成立**：论文说「越大越好」，本机实测是**中间最好**） | 【一手】同上 Table 5（本机与之冲突）；【一手】ZoomClick Table 8 通用 VLM 行随 min_crop 单调上升（65.2→72.3）；**【实测数字】**本机 330 条的完整曲线（`runs/g1-crop-scan/crop-scan.json`） |
 | 4 | **偏离阈值 128→50 px** | `DEFAULT_DEVIATION_TOLERANCE_PX = 50.0`；参考点从 `coarse` 改成 **`plan.rect.center`**（crop 走 shift 语义时两者不同） | 【一手】ZoomClick Table 11：最优 **50.7 px**、分类准确 91.8%、正确对中位 **<10 px** / 错误对中位 **>50 px**；原文："motivating our adoption of 50 px as a unified decision boundary" |
 | 5 | **回落目标改成整屏重搜** | 精定位失败 → **回到整屏重新定位**，而不是回到已知错的粗点 | 【一手】GUI-Lens §2.4："Rejected proposals restore B0 and restart cropping from the full-screen observation" |
 | 6 | **提示词允许「图里没有」** | `refine_prompt` 增加一条可回答项：「这张图里没有名为 X 的元素」→ 触发回落 | 【一手】官方 `ground_allow_negative` 同一思路："If such element does not exist, output only the text 'Target not existent'."（`models/gpt4x.py`） |
 | 7 | **严禁注入上下文** | 禁止在 refine 提示词里出现「上次点在哪 / 请修正上次答案」类内容 | 【一手】ZoomClick Table 9：无上下文 **54.1** > 全上下文注入 **19.0** |
 | 8 | **越界策略保持 shift** | 越界**平移**不缩放（现有 `plan_crop` 已是 shift，**不要改成 shrink**） | 【一手】ZoomClick Table 10：shift **72.1** > clip 69.6 > shrink **63.6** |
 
-**单位换算必须算清**（否则阈值抄错）：我们在 512 crop 上是 1:1 不上采样（实测 512 crop 的
+**单位换算必须算清**（否则阈值抄错）：我们在 crop 上是 1:1 不上采样（实测 512 crop 的
 `image_tokens=361 = 19×19`，若被上采到 1280 宽应为 2116），故公开判据
-`c = ‖ε₁‖₂ / r`（r = crop 宽/2）在我们的尺度上 **c = 1.953 × ε₁(物理 px)**。
-现阈值 128 px ⇔ c = 250 —— 恰好落在公开分桶里**最差的一档**（c≥250 → 75.6%）。
-改成 50 px ⇔ c ≈ 97.6，落进 80–150 桶（76.4%）。
+`c = ‖ε₁‖₂ / r`（r = crop 宽/2）折算到我们的刻度是
+**c = ε₁(物理 px) × 1000 / crop 宽** —— ⚠️ **系数随 crop 宽变**：
+512 crop 时 **1.953**，**生产默认 192 crop 时 5.208**。
+按这个换算式：旧阈值 128 px 在 512 crop 上 ⇔ c = 250（恰好落在公开分桶里
+**最差的一档**，c≥250 → 75.6%）；50 px 在 512 crop 上 ⇔ c ≈ 97.6（80–150 桶，76.4%），
+**但在 192 crop（当前默认）上 ⇔ c ≈ 260.4 → 落进 ≥250 那一档**。
 【一手】arXiv:2604.15376 §3.2 + Table 2 分桶（c<30 → 87.1% / 30-80 → 85.1% / 80-150 → 76.4% /
 150-250 → 79.8% / ≥250 → 75.6%）；【实测数字】`runs/a2-eval-42/model-requests.jsonl`。
+⚠️ **阈值本身不动**（`DEFAULT_DEVIATION_TOLERANCE_PX = 50`，人已拍板）——
+**「同一阈值在默认 crop 192 下落在哪一档」这一条留给人复核**（见 §九）。
 
 ### 验收线怎么定
 
@@ -193,7 +199,7 @@ UIA 候选源接入（UFO² 的 IoU 0.1 合并规则）。前三条**不改一�
 | 样本量 | **≥300 条分层抽样**（或全量 1581），固定 seed | 42 条 Wilson 区间 ±15 pp，分不开 38.1 与 57.1，更分不开与公开基线的差距。【一手】官方榜口径 |
 | 主指标 | `click_accuracy ≥ 57.1%`（门控关 + crop 512 的**同批实测基线**） | 改动 1~4 之后必须**至少打平**这条基线；打平即证明 crop 不是净负 |
 | 调用数 | `≤ 2.05 次/目标` | 门控关那一臂实测 **2.000**；改动不能靠多问模型换分（现验收线 ≤1.5 是另一条线的事） |
-| crop 消融 | `{512, 768, 1024, 1280}` 四格，**A 半调 / B 半评** | 【实测】M23 已证明「同批调参 + 同批评估 = 作废」 |
+| crop 消融 | **全集** `{128, 192, 256, 512, 768, 1024, 1280}`（七个尺寸**共用同一次粗定位回答**），**A 半调 / B 半评** | 【实测】M23 已证明「同批调参 + 同批评估 = 作废」；**不预设方向**（论文说越大越好，本机实测是**中间最好**）——逐格数据见 `core-function-plan.md` §C-1 |
 | 落点长尾 | `landing_error_px.p90 ≤ 250 px` | 现值 1191.5；公开分桶里 c≥250 档 75.6% 对应的量级 |
 | 精定位产出率 | `refine 产出落点 / refine 触发 ≥ 90%` | 现值 5/10 = 50%（门控关那臂是 32/40 = 80%） |
 | 门控可判定条件 | `undecidable` 中 `target_area_ratio` 计数从 42 降到 0 | 出框后第一次可判；现值 42/42 |
@@ -425,19 +431,26 @@ OCR 15/22、median **18.4 px** / p90 60.0 / **max 219.0**，**崩掉的 7 条全
 
 按投入产出排（≤8 条）。「看哪个数变」= 改完该看哪个产物字段。
 
+> 📌 **执行状态（2026-10-22 复核）**：本清单**已在本轮落地**（改动 1~8 全部实现，
+> `git diff ba0e3b4...HEAD`），**§九 的四条已全部拍板**（红线③推翻 / 粗定位出框 /
+> OmniParser 口径 / infeasible 计数口径）。**唯一与本文原方案不同的一条是改动 2**
+> （crop 尺寸：本文原写「512→1024」，实测与拍板的结果是 **192 px**，理由见 §卡点一 改动 2）。
+> 下面各行已按**实际执行结果**改写。
+
 | # | 改哪个文件 | 做什么 | 看哪个数变 |
 |---|---|---|---|
-| **1** | `src/minicode/ground/channel.py`（门控分支 L424~460）+ `src/minicode/ground/gate.py` | **门控降级为记录器**：`refine_enabled` 恒真，decision 只落盘；删掉「第二次独立粗定位」这次调用（`second_opinion` 端口不再注入） | `caliber.json`：`click_accuracy` **38.1% → 57.1%**；`model_calls_per_target` **2.381 → 2.000**；`gate.hit_rate` 变成纯记录 |
-| **2** | `src/minicode/coord/crop_refine.py:58-59` + `src/minicode/ground/bench.py` | **crop 512 → 1024**（1:1 不缩放）；扫描集合 `{512,256,192,128}` → **`{768,1024,1280}`**（并同步改 `docs/research/core-function-plan.md` §C-1 的方向） | `caliber.json`：`click_accuracy` 再往上走；`refine_error_px.p90`（现 516.5）下降；`refine` 产出率 ≥90% |
-| **3** | `src/minicode/ground/gate.py:154` + `src/minicode/ground/channel.py:544` | **偏离阈值 128 → 50 px**（来源串换成 ZoomClick Table 11 出处）；参考点从 `coarse` 改成 **`plan.rect.center`**；落盘 `zoom_consistency_px` 与 `zoom_consistency_c1000` | `caliber.json`：`fallback_rate`（现 0.5 / 0.2）下降；`landing_error_px.p90` ≤ 250 |
+| **1** | `src/minicode/ground/channel.py`（门控分支 L424~460）+ `src/minicode/ground/gate.py` | **门控降级为记录器**：`refine_enabled` 恒真，decision 只落盘；删掉「第二次独立粗定位」这次调用（`second_opinion` 端口不再注入） | `caliber.json`：`click_accuracy` **38.1% → 57.1%**；`model_calls_per_target` **2.381 → 2.000**；`gate.hit_rate` 变成纯记录（它现在量的是「做了精定位的比例」，**不是**「门控命中了多少」——后者看 `gate.gate_decision_rate`） |
+| **2** | `src/minicode/ground/channel.py`（`DEFAULT_CROP_WIDTH_PX/HEIGHT_PX`，**冻结的 `coord/crop_refine.py` 一个字没动**）+ `src/minicode/ground/numbered_bench.py`（`--crop-scan`） | **crop 尺寸按实测定**：扫描**全集** `{128,192,256,512,768,1024,1280}`（**A 半调 / B 半评**，七个尺寸**共用同一次粗定位回答**）→ **默认 192 px**（**不是**本文原写的 1024：论文 Table 5 与本机实测冲突，实测赢）；同步改 `docs/research/core-function-plan.md` §C-1 的方向 | `caliber.json`：`click_accuracy` 再往上走；`refine_error_px.p90`（现 516.5）下降；`refine` 产出率 ≥90%；逐格曲线见 `runs/g1-crop-scan/crop-scan.json` |
+| **3** | `src/minicode/ground/gate.py:154` + `src/minicode/ground/channel.py:544` | **偏离阈值 128 → 50 px**（来源串换成 ZoomClick Table 11 出处）；参考点从 `coarse` 改成 **`plan.rect.center`**；落盘 `zoom_consistency_px` 与 `zoom_consistency_c1000` | `caliber.json`：`fallback_rate`（现 0.5 / 0.2）下降；`landing_error_px.p90` ≤ 250。⚠️ **来源串里的单位换算随 crop 宽变**（512 → 1.953；**默认 192 → 5.208**）——阈值不动，但「落在公开分桶的哪一档」变了，留给 §九 |
 | **4** | `src/minicode/ground/prompt.py:88-102`（`coarse_prompt`）+ `src/minicode/model/client.py` | **粗定位改出框**：`{"bbox":[x1,y1,x2,y2],"point":[x,y]}`，落点取框中心（照抄官方 `models/gpt4x.py` 措辞与解析口径）；`max_tokens` **2000 → 4096** | `caliber.json`：`coarse_error_px.count` **36 → 42**；`gate.undecidable.target_area_ratio` **42 → 0**；「HTTP 200 无文本输出」计数归零 |
 | **5** | `src/minicode/ground/candidates.py` + `src/minicode/ground/channel.py:635` + `src/minicode/ground/numbered_bench.py:318,398` | **UIA 候选源 + UFO² IoU 0.1 合并**（UIA 主表全留、OCR 附加表 IoU>0.1 丢弃、物理像素空间比较、方向不反）；去掉 `if control.name` 过滤；ControlType 加 `Custom(50025)` / `Image(50006)` 等 | 真机 `runs/b1-live-zh`：图标类控件召回 **0 → 22/22**、落点误差中位 0.0 px；静态：候选覆盖率列 ≥ 目标 |
 | **6** | `src/minicode/e2e/real.py:414-445` | **缩放值改读注册表** `HKCU:\Control Panel\Desktop\LogPixels`（96/120/144→100/125/150%），树读失败时用状态读数兜底 | `runs/d6-wave1/e2e-report.json`：W-1.E 从「没有读到值」变成成立 → wave1 **0/3 → 1/3** |
 | **7** | `src/minicode/e2e/report.py` + `src/minicode/e2e/runner.py` + `src/minicode/e2e/real.py` | **口径对齐公开基准**：infeasible 进分母 + 只有 agent 声明 FAIL 才算成功；「人工代跑完成」与「合规停手」拆成两个计数；模态弹窗不许计成自动通过 | `e2e-report.json`：`auto.denominator` 与 `human_confirm` 口径写进报告抬头，**对外可比** |
-| **8** | `src/minicode/ground/bench.py` | **评测集 42 → ≥300 条分层抽样**（固定 seed）；加第三臂「**只用粗定位**」（1.00 次/目标，我们从未测过）；加候选覆盖率三列 | `caliber.json`：三条臂同批可对比；Wilson 区间从 ±15 pp 收到可判定 |
+| **8** | `src/minicode/ground/bench.py` | **评测集 42 → ≥300 条分层抽样**（固定 seed）；加第三臂「**只用粗定位**」（1.00 次/目标，我们从未测过）；加候选覆盖率三列 | `caliber.json`：三条臂同批可对比；Wilson 区间从 ±15 pp 收到可判定。第三臂的落点误差口径用 `python -m minicode.ground.caliber --arm coarse_only` 读 |
 
 > 改动 1、4 触及既有红线（`core-function-plan.md` §C-4 红线③「crop 精定位必须门控」、
-> `docs/adr/0006-crop-local-coordinate-contract.md` 的坐标契约）→ **需拍板**，见 §九。
+> `docs/adr/0006-crop-local-coordinate-contract.md` 的坐标契约）→ **已拍板**（2026-10-21 / 2026-10-22），
+> 见 §九。
 
 ---
 
@@ -509,7 +522,7 @@ OCR 15/22、median **18.4 px** / p90 60.0 / **max 219.0**，**崩掉的 7 条全
 | 结论 | 依据 |
 |---|---|
 | 门控**反向**的机制解释（触发条件 = 精定位前提条件的反面） | 由分组复算 + 「不一致 ⇒ 粗点已偏 ⇒ 目标不在窗内」的推理得出；已被 5/10 的回落率佐证 |
-| crop 1024 会进一步提升命中率 | 由 Table 5 的单调性 + 本机含目标率（84.6%→92.3%）推断；**未实测** |
+| ~~crop 1024 会进一步提升命中率~~ | ❌ **已被实测推翻**（330 条、七个尺寸全集、A 半调 / B 半评）：**1024 只有 41.8%（A 半），比 512 的 42.4% 还差**；本机是**中间最好**（192~768），不是越大越好。逐格数据见 `core-function-plan.md` §C-1 |
 | max_tokens 4096 可回收 2 条丢失样本 → +3~8 pp | 由 2/42 的样本数与门控关臂 57.1% 推断；**未实测** |
 | 混合候选源能把静态 icon 召回从 0/13 拉到接近真机 22/22 | 由真机 UIA 22/22 的实测外推；**未实测**（静态图无 UIA 树） |
 | wave1 现实可达 1/3~2/3 | 由四类根因逐条可修性 + 公开基线推断；**未实测** |
@@ -517,20 +530,29 @@ OCR 15/22、median **18.4 px** / p90 60.0 / **max 219.0**，**崩掉的 7 条全
 
 ---
 
-## 需要人拍板的点（≤4 条）
+## 需要人拍板的点（≤4 条）—— **2026-10-22 复核：四条都已拍板，结论记在下面**
 
-1. **推翻 `core-function-plan.md` §C-4 红线③**（"crop 精定位必须门控"，并引用 `docs/spec.md` §11 第四条
-   "兜底要罕见"）。实测同批两臂：**门控关 57.1% / 2.000 次**，**门控开 38.1% / 2.381 次**——
-   门控在准确率与成本两个轴上同时更差。是否把 `GateMode.ALWAYS` 设为生产默认、
-   把门控降级为记录器？**（不改这一条，改动 1~3 全部不成立。）**
-2. **粗定位出框是否算「改坐标契约」**？落点取框中心会引入一个新的坐标契约（框 → 点），
-   与 `docs/adr/0006-crop-local-coordinate-contract.md` 的既有约定相邻但不重合。
-   红线①②③（唯一真值 / 不迭代裁剪 / 必须门控）里红线③已被第 1 条覆盖，红线①②不受影响。
-   需拍板：**允许 `coarse_prompt` 同时出框出点、落点取框中心**吗？
-3. **`docs/spec.md` §12 禁 OmniParser —— 禁的是「产品路线」还是「任何额外模型」？**
-   直接决定：候选源能不能接像素级检测器、能不能抄 UFO² 的 `clip-ViT-B-32` 图标预筛
-   （`CONTROL_FILTER_TOP_K_ICON: 15`，88 M、CPU 可跑）。**注意**：即使禁检测器，
-   §五 的「UIA 主表 + OCR 附加表 + IoU 0.1」规则**照样可抄**（规则是算法，不是那个模型）。
-4. **「跳过（环境不可达）」的计数口径**：我们现在是**不进分母**；OSWorld/WAA 是**进分母 + 单列 infeasible**。
-   改了之后 wave1/wave2 的 pass_rate 会下降（本机这 6 票里已有 3 票属于这一类），
-   但**对外可比**。是否改？（改口径不影响模型能力，只影响对外表述的诚实度。）
+1. ~~**推翻 `core-function-plan.md` §C-4 红线③**~~ → ✅ **已拍板（2026-10-21）**：
+   **门控降级为记录器**，`crop 精定位默认无条件执行`；`docs/spec.md` §11 第四条、
+   `CONTEXT.md` 的「按需触发」、ADR-0006 的「门控未命中」那条例外**同步改写**。
+   依据：同批两臂 **门控关 57.1% / 2.000 次** vs **门控开 38.1% / 2.381 次**。
+2. ~~**粗定位出框是否算「改坐标契约」**？~~ → ✅ **已拍板（2026-10-22）**：
+   **允许** `coarse_prompt` 同时出框出点、落点取框中心（ADR-0006 的补充条目，
+   「框 → 点的换算只在 `ground/channel.py` 一处做」这条不变）。
+3. ~~**`docs/spec.md` §12 禁 OmniParser —— 禁的是「产品路线」还是「任何额外模型」**？~~
+   → ✅ **已拍板（2026-10-22）**：**禁的是「当实时 grounding 主链」**，不禁
+   「候选源里的低频像素级预筛」；但**本轮不引入任何像素级检测器** ——
+   只做「UIA 主表 + OCR 附加表 + IoU 0.1」的合并（算法规则，不是那个模型）。
+   「接不接 `clip-ViT-B-32` 预筛」仍是**未拍板的待办**。
+4. ~~**「跳过（环境不可达）」的计数口径**~~ → ✅ **已拍板（2026-10-22）**：
+   **进分母 + 单列 infeasible**；「合规停手（交人）」也**进分母、记 0 分**；
+   「人工代跑」**不进分母**、单列。已落在 `src/minicode/e2e/report.py` 的
+   报告抬头（`CALIBER`）与 `src/minicode/e2e/runner.py` 的第五个判定取值
+   `handoff`。
+
+> ⚠️ **本轮复核新增、仍待人拍板的一条**（不影响已定的阈值）：
+> **偏离阈值 50 px 在默认 crop 192 px 下，落在公开 zoom 一致性分桶的哪一档？**
+> 按本文自己的换算式（`c = ε₁ × 1000 / crop 宽`）：512 crop 时 50 px ⇔ c ≈ 97.6
+> （80–150 桶），**192 crop 时 ⇔ c ≈ 260.4（≥250 那一档）**。阈值**不动**
+> （人已拍板），但「同一物理阈值在更小的 crop 上是不是还等价」这件事
+> **需要人判一次**（要么接受，要么把参考点/阈值的口径一起重定）。
