@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -289,6 +290,37 @@ class _FakeUiaPort:
         return SimpleNamespace(elements=list(self._elements))
 
 
+class _FakeWinreg:
+    """假的 ``winreg``：只认给定的那些 ``(子键, 值名) → 值``。"""
+
+    HKEY_CURRENT_USER = "HKCU"
+
+    def __init__(self, values):
+        self._values = dict(values)
+
+    def OpenKey(self, root, subkey):
+        if (root, subkey) not in self._values:
+            raise OSError(f"没有这个键：{subkey}")
+        return _FakeKey(self._values[(root, subkey)])
+
+    def QueryValueEx(self, key, name):
+        return key.QueryValueEx(name)
+
+
+class _FakeKey:
+    def __init__(self, value):
+        self._value = value
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def QueryValueEx(self, name):
+        return (self._value, 4)
+
+
 def _scale_executor(tmp_path, elements=()):
     """一台只用来读缩放值的执行器（**不碰真桌面**）。"""
     executor = WindowsDesktopExecutor(out_dir=tmp_path)
@@ -309,6 +341,29 @@ def test_the_registry_reading_is_a_percentage_or_nothing():
     reading = read_scale_from_registry()
     assert reading is None or reading[0].endswith("%")
     assert reading is None or "注册表" in reading[1]
+
+
+def test_the_registry_reading_maps_the_documented_dpi_values(monkeypatch):
+    """**注册表读数走的那条路**：DPI → 缩放百分比（96/120/144 → 100/125/150%）。"""
+    for dpi, expected in ((96, "100%"), (120, "125%"), (144, "150%")):
+        fake = _FakeWinreg({("HKCU", r"Control Panel\Desktop"): dpi})
+        monkeypatch.setitem(sys.modules, "winreg", fake)
+        reading = read_scale_from_registry()
+        assert reading is not None
+        assert reading[0] == expected
+        assert "LogPixels" in reading[1]
+
+
+def test_the_registry_reading_falls_back_to_the_applied_dpi(monkeypatch):
+    """``LogPixels`` 不在时读 ``WindowMetrics\\AppliedDPI``（本机就是这一处落数）。"""
+    fake = _FakeWinreg(
+        {("HKCU", r"Control Panel\Desktop\WindowMetrics"): 144}
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    reading = read_scale_from_registry()
+    assert reading is not None
+    assert reading[0] == "150%"
+    assert "AppliedDPI" in reading[1]
 
 
 def test_scale_is_read_from_the_tree_when_the_tree_has_it(tmp_path):
