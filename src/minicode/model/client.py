@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.error
@@ -35,7 +36,12 @@ from .errors import (
     ModelTransportError,
     NoTextOutputError,
 )
-from .request_log import RequestLogSink, build_request_log
+from .request_log import (
+    RequestLogSink,
+    build_request_log,
+    estimate_image_tokens,
+    png_image_size,
+)
 
 __all__ = [
     "ANTHROPIC_VERSION",
@@ -43,6 +49,7 @@ __all__ = [
     "ModelClient",
     "build_headers",
     "build_request_body",
+    "image_tokens_of",
     "parse_response",
     "require_effort",
     "text_of",
@@ -209,6 +216,29 @@ def usage_of(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def image_tokens_of(*images_base64: str | None) -> int | None:
+    """这次请求里图像占的输入 token 数（**按 28 px patch 规则估**）。
+
+    没有图 → ``None``（不是 0：没有图与「图占了 0 个 token」是两件事）。
+    图解不出尺寸 → ``None``（**不猜**）。
+    """
+    total = 0
+    seen = False
+    for data in images_base64:
+        if not data:
+            continue
+        try:
+            raw = base64.b64decode(data)
+        except (ValueError, TypeError):
+            return None
+        size = png_image_size(raw)
+        if size is None:
+            return None
+        total += estimate_image_tokens(*size)
+        seen = True
+    return total if seen else None
+
+
 def parse_response(
     *,
     status: int,
@@ -330,6 +360,7 @@ class ModelClient:
         )
 
         started = self._clock()
+        image_tokens = image_tokens_of(image_base64, *images_base64)
         try:
             status, raw = self._post(endpoint, headers, body)
         except ModelTransportError as exc:
@@ -338,6 +369,7 @@ class ModelClient:
                 endpoint=endpoint,
                 http_status=None,
                 latency_ms=(self._clock() - started) * 1000.0,
+                image_tokens=image_tokens,
                 error=str(exc),
             )
             raise
@@ -364,6 +396,7 @@ class ModelClient:
                 thinking_tokens=usage.get("thinking_tokens"),
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                image_tokens=image_tokens,
                 error=exc.message,
             )
             raise
@@ -378,6 +411,7 @@ class ModelClient:
             thinking_tokens=reply.thinking_tokens,
             cache_read_input_tokens=reply.cache_read_input_tokens,
             cache_creation_input_tokens=reply.cache_creation_input_tokens,
+            image_tokens=image_tokens,
             error=None,
         )
         return reply
@@ -419,6 +453,7 @@ class ModelClient:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         thinking_tokens: int | None = None,
+        image_tokens: int | None = None,
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
         error: str | None = None,
@@ -433,6 +468,7 @@ class ModelClient:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 thinking_tokens=thinking_tokens,
+                image_tokens=image_tokens,
                 cache_read_input_tokens=cache_read_input_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
                 error=error,

@@ -24,8 +24,19 @@ __all__ = [
     "JsonlRequestLog",
     "build_request_log",
     "count_unset_effort",
+    "estimate_image_tokens",
+    "png_image_size",
     "total_input_tokens",
 ]
+
+#: 图像 token 的 patch 边长（**像素**）。
+#:
+#: 来源：Anthropic 的图像分块规则（官方 quickstarts 里的 computer-use demo 走的就是
+#: 这套切块）—— ``ceil(W/28) × ceil(H/28)``。
+#: ⚠️ **【二手】这条规则是否适用于本机用的 MiniMax 端点尚未验证**：
+#: 它是**反查服务端实际尺寸**时用的**模型**，不是真值来源 ——
+#: 反查不出就如实记 ``unknown``，**不许拿它当已知的分母**。
+IMAGE_PATCH_PX = 28
 
 
 @dataclass(frozen=True)
@@ -40,6 +51,12 @@ class RequestLog:
     input_tokens: int | None = None
     output_tokens: int | None = None
     thinking_tokens: int | None = None
+    #: **图像占的输入 token 数**（与 ``input_tokens`` 分开记）。
+    #:
+    #: 它按 28 px patch 规则对**实际发出的那张图**算出（见 :func:`estimate_image_tokens`）——
+    #: **这是估计值，不是服务端报出来的数**。服务端若把图缩小过，实际占用会**小于**它，
+    #: 差值正是「服务端缩图」的证据（反查用）。
+    image_tokens: int | None = None
     #: 提示词缓存：命中（读）与写入（建）分别多少输入 token。
     #: 上下文总大小 = 三个输入 token 相加（工单 M10 的成本曲线按这个口径看）。
     cache_read_input_tokens: int | None = None
@@ -106,6 +123,34 @@ class JsonlRequestLog:
             handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
 
 
+def estimate_image_tokens(width: int, height: int, *, patch_px: int = IMAGE_PATCH_PX) -> int:
+    """按 28 px patch 规则估一张图的 token 数（``ceil(W/28) × ceil(H/28)``）。
+
+    ⚠️ 这是**估计**，不是真值：规则本身来自 Anthropic 的实现，
+    **是否适用于本机用的 MiniMax 端点未验证**。它的用途是**反查**
+    （「服务端实际看到的那张图有多大」），反查不出就如实记 ``unknown``。
+    """
+    if width <= 0 or height <= 0:
+        return 0
+    return -(-int(width) // patch_px) * -(-int(height) // patch_px)
+
+
+def png_image_size(png_bytes: bytes) -> tuple[int, int] | None:
+    """从 PNG 字节里读出尺寸（读不出就 ``None`` —— 不猜）。
+
+    PNG 的 IHDR 一定在文件头：签名 8 字节 + 长度 4 + ``"IHDR"`` 4 + 宽 4 + 高 4。
+    """
+    if len(png_bytes) < 24 or not png_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    if png_bytes[12:16] != b"IHDR":
+        return None
+    width = int.from_bytes(png_bytes[16:20], "big")
+    height = int.from_bytes(png_bytes[20:24], "big")
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
 def build_request_log(
     *,
     effort: Effort | str,
@@ -116,6 +161,7 @@ def build_request_log(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     thinking_tokens: int | None = None,
+    image_tokens: int | None = None,
     cache_read_input_tokens: int | None = None,
     cache_creation_input_tokens: int | None = None,
     error: str | None = None,
@@ -130,6 +176,7 @@ def build_request_log(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         thinking_tokens=thinking_tokens,
+        image_tokens=image_tokens,
         cache_read_input_tokens=cache_read_input_tokens,
         cache_creation_input_tokens=cache_creation_input_tokens,
         error=error,
