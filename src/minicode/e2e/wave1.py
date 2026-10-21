@@ -28,7 +28,7 @@ from .checks import (
     failure_type_coverage,
     landing_within,
     zoom_fresh_capture,
-    zoom_fullscreen_answer,
+    zoom_landing_inside_region,
 )
 from .tasks import Clause, Step, Task
 
@@ -169,7 +169,12 @@ W3 = Task(
     ),
     clauses=(
         Clause("W-3.A", "放大是回源重抓（不是把旧图放大）", zoom_fresh_capture),
-        Clause("W-3.B", "放大后模型回答的仍是整屏坐标", zoom_fullscreen_answer),
+        Clause(
+            "W-3.B",
+            "放大后模型报的是**图内坐标**、系统加这块区域的物理原点映射回整屏"
+            "（落点必须落在这块区域内）",
+            zoom_landing_inside_region,
+        ),
         Clause(
             "W-3.C",
             f"落点映射回整屏后与控件中心偏差 ≤{LANDING_TOLERANCE_PX:.0f} px",

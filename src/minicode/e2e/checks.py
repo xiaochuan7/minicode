@@ -29,7 +29,7 @@ __all__ = [
     "capability_is",
     "context_value",
     "zoom_fresh_capture",
-    "zoom_fullscreen_answer",
+    "zoom_landing_inside_region",
     "gate_unlocked_before_unavailable",
     "capability_usable_or_cut_visual",
     "window_title_matches_picked",
@@ -171,8 +171,17 @@ def zoom_fresh_capture(evidence: TaskEvidence) -> tuple[bool, str]:
     return True, f"放大按区域回源重抓：{frame.get('size')} 像素，来源 {frame.get('source')}"
 
 
-def zoom_fullscreen_answer(evidence: TaskEvidence) -> tuple[bool, str]:
-    """**放大后模型回答的仍是整屏坐标**（系统不加裁剪原点偏移）。"""
+def zoom_landing_inside_region(evidence: TaskEvidence) -> tuple[bool, str]:
+    """**放大后的落点落在这块放大区域里**（图内坐标 + 物理原点的契约）。
+
+    ⚠️ **坐标契约是「图内坐标 + 物理原点」**（2026-10-21 拍板，M14 实测：
+    模型在放大图里报的是**那张图的像素**，照整屏口径解会**系统性越界**
+    → 动作被拒）：模型报图内坐标、**系统**加这块区域的物理原点映射回整屏。
+    **不是** Anthropic 那套「模型报整屏坐标」。
+
+    这条判的是**加没加原点**：落点必须落在这块区域里
+    （区域在右下角时，不加原点的落点会落在区域外 → 判不成立）。
+    """
     landing = evidence.context.get("zoom_landing")
     region = evidence.context.get("zoom_region") or ()
     if landing is None:
@@ -185,9 +194,13 @@ def zoom_fullscreen_answer(evidence: TaskEvidence) -> tuple[bool, str]:
         return (
             False,
             f"放大后的落点 {landing} 不在放大区域 {tuple(region)} 内 —— "
-            "那不是整屏坐标（像是 crop 内坐标被当成了整屏）",
+            "那不是「图内坐标 + 物理原点」换算出来的落点"
+            "（像是没加这块区域的物理原点）",
         )
-    return True, f"放大后的落点 {landing} 落在放大区域 {tuple(region)} 内（整屏坐标）"
+    return True, (
+        f"放大后的落点 {landing} 落在放大区域 {tuple(region)} 内"
+        "（图内坐标 + 物理原点）"
+    )
 
 
 # ---------------------------------------------------------------------------
