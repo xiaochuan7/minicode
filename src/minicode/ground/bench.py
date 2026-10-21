@@ -232,7 +232,7 @@ def collect_targets(
     control_types: Sequence[str] = DEFAULT_CONTROL_TYPES,
     max_side_px: int = MAX_TARGET_SIDE_PX,
     zoom_factor: float = 1.0,
-) -> list[BenchTarget]:
+) -> tuple[list[BenchTarget], list[str]]:
     """从 UIA 树里挑出一批**可当测量目标**的控件（真值 = 控件框中心）。
 
     条件：有名、有合法控件框、边长不超过上限、**名字只对应一个控件框**
@@ -240,13 +240,24 @@ def collect_targets(
 
     同一个元素在树里出现两次（父窗口与子窗口各报一次）**不算同名撞车** ——
     按控件框去重后再判名字。
+
+    返回 ``(目标, 读失败的控件类型)``。
+
+    ⚠️ **读失败 ≠ 界面上没有**（同一个纪律，见
+    :func:`minicode.e2e.real.read_window_controls`）：
+    * **局部失败**（某一类控件读不出来）→ 那一类**不进测量集**，
+      但**要把失败的类型报出来** —— 不报的话，**分母会静默变小**
+      （量到的分布其实是「少了一类控件」的分布，报告里看不出来）；
+    * **全部失败** → **抛**（树读不出来，不是「这个窗口一个控件都没有」）。
     """
     rects_by_name: dict[str, set[tuple[int, int, int, int]]] = {}
     found: dict[tuple[int, int, int, int], BenchTarget] = {}
+    failures: list[str] = []
     for control_type in control_types:
         try:
             result = port.find(UiaFindRequest(anchor=anchor, control_type=control_type))
         except Exception:
+            failures.append(control_type)
             continue
         for element in result.elements:
             name = (element.name or "").strip()
@@ -273,11 +284,19 @@ def collect_targets(
                     ),
                 ),
             )
-    return [
+    if failures and len(failures) == len(control_types):
+        # **每一类都读不出来** → 这棵树读不出来（不是「界面上没有控件」）。
+        raise RuntimeError(
+            "UIA 树读不出来（每一类控件的查询都失败）："
+            + "、".join(failures)
+            + " —— 读不出来 ≠ 界面上没有控件，不许当成「没有目标」"
+        )
+    targets = [
         target
         for target in found.values()
         if len(rects_by_name.get(target.name, set())) == 1
     ]
+    return (targets, failures)
 
 
 def measure(

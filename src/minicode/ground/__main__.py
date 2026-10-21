@@ -158,8 +158,17 @@ def _run(args) -> int:
     hwnd = _find_window(args.window)
     anchor = describe_window(hwnd)
     port = WindowsUiaQueryPort()
-    targets = collect_targets(port, anchor, zoom_factor=dpi.scale_factor())
+    targets, failed_types = collect_targets(
+        port, anchor, zoom_factor=dpi.scale_factor()
+    )
     print(f"=== 目标（{len(targets)} 个，来自 {anchor.app} 的 UIA 树）===")
+    if failed_types:
+        # ⚠️ **分母变小了，不能不报**：读失败的那几类控件**没进测量集** ——
+        # 量到的分布是「少了这几类」的分布（报告里也记着这一条）。
+        print(
+            f"⚠️ 有 {len(failed_types)} 类控件**没读到**（{'、'.join(failed_types)}）"
+            "—— 它们**没进测量集**（分母因此变小），分布结论按实际样本数报告。"
+        )
     for target in targets[:24]:
         print(
             f"  {target.name[:30]:<30} {target.size_px[0]:>4}x{target.size_px[1]:<4} 物理 px"
@@ -204,6 +213,10 @@ def _run(args) -> int:
             f"标度来源：本次标定判定（{outcome.detected_scale.value}）",
             f"准入判定：{'可用' if admission.available else '不可用'}（生产路径只认它）",
             f"模型输入尺寸声明：{model_input[0]}×{model_input[1]}（整屏图）",
+            # ⚠️ **分母口径**：读失败的那几类控件**没进测量集** → 分布是
+            # 「少了这几类」的分布（不报出来就等于把分母静默变小）。
+            f"UIA 读失败的控件类型：{'、'.join(failed_types) if failed_types else '无'}"
+            f"（测量集共 {len(targets)} 个目标）",
         ),
     )
     print("=== 逐目标误差（物理像素）===")
