@@ -44,6 +44,7 @@ __all__ = [
     "GroundingParseError",
     "coarse_prompt",
     "normalize_target",
+    "normalize_target_prompt",
     "numbered_candidates_prompt",
     "parse_chosen_numbers",
     "parse_point",
@@ -196,6 +197,9 @@ def numbered_candidates_prompt(
         f"任务：从清单里选出与目标描述对应的那一项，"
         f"只回答它的行号（1~{len(candidates)} 之间的一个整数）。"
     )
+    lines.append(
+        "如果清单里没有任何一项与目标描述对应，答 0（表示清单里没有）。"
+    )
     lines.append('只回答一个 JSON 对象，不要任何解释：{"chosen": <行号>}')
     for item in candidates:
         left, top, right, bottom = item.box
@@ -203,6 +207,29 @@ def numbered_candidates_prompt(
             f"{item.number}. 「{item.text}」 位于 ({left}, {top}) - ({right}, {bottom})"
         )
     return "\n".join(lines)
+
+
+def matched_on_screen(description: str, screen_names: Sequence[str]) -> bool:
+    """描述**对得上**界面上的某个名字吗？
+
+    * **同名** —— 描述就是界面上的名字；
+    * 描述里**含有**界面上的名字（原名就一致）。
+
+    这是 :func:`normalize_target` 的「匹配上了没有」那一条口径
+    （**规则只有一份**，两处都用它）。
+    """
+    target = normalize_ocr_text(description)
+    if len(target) < 2:
+        return False
+    for name in screen_names:
+        normalized = normalize_ocr_text(name)
+        if not normalized:
+            continue
+        if normalized == target:
+            return True
+        if len(normalized) >= 2 and normalized in target:
+            return True
+    return False
 
 
 def normalize_target(
@@ -247,8 +274,7 @@ def normalize_target(
     # ② 描述里已经含有界面上的名字（原名就一致）
     for _name, normalized in names:
         if len(normalized) >= 2 and normalized in target:
-            return (description, False)
-    # ③ 近名（错字级）：唯一的最优匹配 → 换成界面上的原名
+            return (description, False)    # ③ 近名（错字级）：唯一的最优匹配 → 换成界面上的原名
     scored: list[tuple[int, str]] = []
     for name, normalized in names:
         limit = 1 if len(normalized) <= 4 else 2
@@ -262,6 +288,28 @@ def normalize_target(
         # 分不清 → 不改（**不猜**）
         return (description, False)
     return (scored[0][1], True)
+
+
+def normalize_target_prompt(description: str, names: Sequence[str]) -> str:
+    """**目标描述规范化**的模型侧提示词（工单 B-4 的另一半）。
+
+    B-4 原文：「名字来源 = OCR 词表 + **脱敏后**的 UIA 控件名；
+    **模型侧给 2~3 个更具体的表述让它选**」。
+
+    ⚠️ **不许发明同义词表** —— 这一步问的是模型「哪个更像」，
+    不是我们硬编码「显示→屏幕」那种映射。
+    ⚠️ 名字必须是**已脱敏**的（脱敏是调用方的活儿，见 :mod:`minicode.redact`）。
+    """
+    lines = [
+        "下面是界面上真实存在的几个名字（已脱敏）。",
+        f"用户说的目标描述是：{description}",
+        "用户说的更可能指下面哪一个？只回答它的行号"
+        f"（1~{len(names)} 之间的一个整数）。",
+        '只回答一个 JSON 对象，不要任何解释：{"chosen": <行号>}',
+    ]
+    for index, name in enumerate(names, start=1):
+        lines.append(f"{index}. {name}")
+    return "\n".join(lines)
 
 
 def zoom_prompt(

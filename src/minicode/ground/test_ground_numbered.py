@@ -254,11 +254,51 @@ class NumberedBranchTests(unittest.TestCase):
             def candidates(self, frame, description):
                 return [GroundingCandidate(number=1, text="甲", box=(10, 10, 30, 20))]
 
-        model = _StubModel(_reply(json.dumps({"chosen": 9})))
+        model = _StubModel(
+            _reply(json.dumps({"chosen": 9})),
+            _reply(json.dumps({"x": 10.0, "y": 10.0})),
+            _reply(json.dumps({"x": 20.0, "y": 20.0})),
+        )
         grounder = self._grounder(model, _Source())
         result = grounder.locate(_request("甲", _frame()))
-        self.assertFalse(result.ok)
-        self.assertIsNone(result.landing_point)
+        self.assertTrue(result.ok, msg=result.error_message)
+        # **挑不出编号 → 回落点式路径**（有可回落的结果，不报死）。
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_cause, "candidate_selection_failed")
+        # 回落之后走的是点式路径（粗定位 + 精定位）。
+        self.assertEqual(len(model.calls), 3)
+        self.assertEqual(result.model_calls, 3)
+
+    def test_answering_zero_means_no_candidate_matches(self):
+        """模型答 **0** = 「清单里没有对应的」→ 同样回落点式路径。"""
+
+        class _Source:
+            def candidates(self, frame, description):
+                return [GroundingCandidate(number=1, text="甲", box=(10, 10, 30, 20))]
+
+        model = _StubModel(
+            _reply(json.dumps({"chosen": 0})),
+            _reply(json.dumps({"x": 10.0, "y": 10.0})),
+            _reply(json.dumps({"x": 20.0, "y": 20.0})),
+        )
+        grounder = self._grounder(model, _Source())
+        result = grounder.locate(_request("甲", _frame()))
+        self.assertTrue(result.ok, msg=result.error_message)
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_cause, "candidate_selection_failed")
+        self.assertEqual(len(model.calls), 3)
+
+    def test_the_numbered_call_gets_its_own_budget(self):
+        """**编号分支单独给一份预算**（默认 4000）—— 思考链与输出共用预算。"""
+
+        class _Source:
+            def candidates(self, frame, description):
+                return [GroundingCandidate(number=1, text="甲", box=(10, 10, 30, 20))]
+
+        model = _StubModel(_reply(json.dumps({"chosen": 1})))
+        grounder = self._grounder(model, _Source())
+        grounder.locate(_request("甲", _frame()))
+        self.assertEqual(model.calls[0]["max_tokens"], 4000)
 
     def test_without_candidates_the_point_path_is_used_and_recorded(self):
         """**无候选** → 走点式分支，并**显式记录「无候选」**（不猜、不假装）。"""
@@ -386,6 +426,73 @@ class PromptTests(unittest.TestCase):
         normalized, changed = normalize_target("ab", ["ac", "ad"])
         self.assertFalse(changed)
         self.assertEqual(normalized, "ab")
+
+
+class TargetNormalizationTests(unittest.TestCase):
+    """**B-4 的目标描述规范化**：先对齐名字，再定位。"""
+
+    def _grounder(self, model: _StubModel, **kwargs) -> TwoStageGrounder:
+        return TwoStageGrounder(
+            model,
+            scale=ModelScale.RELATIVE_0_1000,
+            model_input_size=(_FRAME_WIDTH, _FRAME_HEIGHT),
+            full_screen_size=(_FRAME_WIDTH, _FRAME_HEIGHT),
+            effort=Effort.LOW,
+            gate_mode=GateMode.ALWAYS,
+            **kwargs,
+        )
+
+    def test_without_names_nothing_is_normalized(self):
+        """**默认不开**规范化 → 不多花那次模型调用。"""
+        model = _StubModel(
+            _reply(json.dumps({"x": 10.0, "y": 10.0})),
+            _reply(json.dumps({"x": 20.0, "y": 20.0})),
+        )
+        grounder = self._grounder(model)
+        grounder.locate(_request("显示", _frame()))
+        self.assertEqual(len(model.calls), 2)  # 只有粗定位 + 精定位
+
+    def test_the_model_picks_the_name_when_the_local_match_fails(self):
+        """本地近名匹配不上 → **模型侧**给几个名字让它选。"""
+        model = _StubModel(
+            _reply(json.dumps({"chosen": 2})),
+            _reply(json.dumps({"x": 10.0, "y": 10.0})),
+            _reply(json.dumps({"x": 20.0, "y": 20.0})),
+        )
+        grounder = self._grounder(
+            model, target_names=lambda frame: ["蓝牙", "屏幕", "夜间模式"]
+        )
+        grounder.locate(_request("显示", _frame()))
+        # 第一次调用是**名字选择**（纯文字，不发图）。
+        self.assertIn("显示", model.calls[0]["prompt"])
+        self.assertIn("屏幕", model.calls[0]["prompt"])
+        self.assertIsNone(model.calls[0]["image_base64"])
+        # 规范化后的描述进了后面的提示词。
+        self.assertIn("屏幕", model.calls[1]["prompt"])
+
+    def test_the_local_match_is_used_without_a_model_call(self):
+        """本地近名匹配上了 → **不花**那次模型调用。"""
+        model = _StubModel(
+            _reply(json.dumps({"x": 10.0, "y": 10.0})),
+            _reply(json.dumps({"x": 20.0, "y": 20.0})),
+        )
+        grounder = self._grounder(model, target_names=lambda frame: ["Sav", "Cancel"])
+        grounder.locate(_request("Sav", _frame()))
+        self.assertEqual(len(model.calls), 2)  # 没有多出那次名字选择
+
+    def test_a_failed_name_choice_keeps_the_original_description(self):
+        """模型没给出有效编号 → **如实不改**（保留原描述）。"""
+        model = _StubModel(
+            _reply("我看不出来"),
+            _reply(json.dumps({"x": 10.0, "y": 10.0})),
+            _reply(json.dumps({"x": 20.0, "y": 20.0})),
+        )
+        grounder = self._grounder(
+            model, target_names=lambda frame: ["蓝牙", "屏幕", "夜间模式"]
+        )
+        result = grounder.locate(_request("显示", _frame()))
+        self.assertTrue(result.ok, msg=result.error_message)
+        self.assertIn("显示", model.calls[1]["prompt"])
 
 
 def _request(description: str, frame: CapturedFrame):

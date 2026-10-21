@@ -107,6 +107,13 @@ class FallbackCause(StrEnum):
     CALL_FAILED = "call_failed"
     #: 精定位结果明显偏离粗定位（选到了相邻的同类控件）。
     DEVIATION = "deviation"
+    #: **编号分支挑不出编号**（工单 B-1）→ 回落点式路径。
+    #:
+    #: ⚠️ 这一条与上面四条**不是同一件事**：上面四条是「crop 精定位失败 →
+    #: 回到粗定位点」，这一条是「**编号选择**失败 → 整条路换成点式路径」。
+    #: 枚举里放它是因为**回落原因只有这一处落盘的地方**（追踪记录的
+    #: ``fallback_cause``）。
+    CANDIDATE_SELECTION_FAILED = "candidate_selection_failed"
 
 
 class GateMode(StrEnum):

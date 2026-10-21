@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import replace
 
 from minicode.action.errors import ErrorCode
 from minicode.action.image import encode_frame_base64
@@ -72,6 +73,9 @@ from .prompt import (
     CandidateLine,
     GroundingParseError,
     coarse_prompt,
+    matched_on_screen,
+    normalize_target,
+    normalize_target_prompt,
     numbered_candidates_prompt,
     parse_chosen_numbers,
     parse_point,
@@ -82,9 +86,23 @@ from .prompt import (
 __all__ = [
     "TwoStageGrounder",
     "SecondOpinion",
+    "TargetNames",
     "ask_model_point",
     "default_crop_size",
 ]
+
+#: **编号分支**那一次调用的输出预算（默认）。
+#:
+#: ⚠️ **不能太小** —— 服务端的思考链与输出**共用**这份预算，预算太小会出现
+#: 「HTTP 200 但没有文本输出」（模型客户端的坑③）。编号只要一个数，但思考链
+#: 照样要吃预算 → 给它一份单独的预算。
+DEFAULT_NUMBERED_MAX_TOKENS = 4000
+
+#: **目标描述规范化**时给模型的名字条数上限（B-4：给 2~3 个更具体的表述）。
+MAX_TARGET_NAMES = 5
+
+#: **目标描述规范化**的名字清单端口（一帧 → 一串**已脱敏**的名字）。
+TargetNames = Callable[[CapturedFrame], "list[str]"]
 
 #: **第二次独立粗定位**的端口形状（工单 M8 用它把 C-16 的「一致性」条件变成可判定）。
 #:
@@ -190,6 +208,17 @@ class TwoStageGrounder:
         **编号选择**分支（模型只答编号，落点取候选框的物理中心）；
         匹配不上 → 走点式路径并**显式记「无候选」**。
         **不给（默认）→ 行为与原来完全一致**（连回显都不多一条）。
+    numbered_max_tokens
+        **编号分支这一次调用的输出预算**（默认 4000）。
+        编号只要一个数，但**服务端的思考链与输出共用这份预算** —— 预算太小
+        会出现「HTTP 200 但没有文本输出」（模型客户端的坑③）。
+        ⚠️ 只给**编号分支**用，不改模型客户端的全局默认。
+    target_names
+        **界面上真实存在的名字清单**（可空，工单 B-4）：一帧 → 一串**已脱敏**的
+        名字（OCR 词表 + 脱敏后的 UIA 控件名）。给了它：
+        目标描述**先规范化再定位**（本地近名匹配；匹配不上时**模型侧**给
+        2~3 个更具体的表述让它选）。
+        **不给（默认）→ 不做规范化**（不花那次模型调用）。
     """
 
     def __init__(
@@ -204,12 +233,14 @@ class TwoStageGrounder:
         crop_model_input_size: tuple[int, int] | None = None,
         effort: Effort | str = Effort.LOW,
         max_tokens: int = 2000,
+        numbered_max_tokens: int = DEFAULT_NUMBERED_MAX_TOKENS,
         out_of_bounds_tolerance_px: float = DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX,
         target_radius_px: float = 0.0,
         gate_params: GateParams | None = None,
         gate_mode: GateMode | str = GateMode.ON_DEMAND,
         second_opinion: SecondOpinion | None = None,
         candidate_source: CandidateSource | None = None,
+        target_names: TargetNames | None = None,
     ):
         self.model = model
         self.scale = scale
@@ -218,6 +249,8 @@ class TwoStageGrounder:
         self.crop_model_input_size = crop_model_input_size
         self.effort = effort
         self.max_tokens = max_tokens
+        #: **编号分支**那一次调用的输出预算（见构造参数的说明）。
+        self.numbered_max_tokens = int(numbered_max_tokens)
         self.out_of_bounds_tolerance_px = float(out_of_bounds_tolerance_px)
         #: 目标半径（物理像素）。本单的两级 grounding 的粗定位**只给点不给框**，
         #: 因此缺省 0 —— 裁剪计划保证的是**粗定位点**完整落在窗口内；
@@ -229,6 +262,8 @@ class TwoStageGrounder:
         self.second_opinion = second_opinion
         #: **候选源**（工单 B-1）。``None`` = 这条分支不存在（默认）。
         self.candidate_source = candidate_source
+        #: **界面上真实存在的名字清单**（工单 B-4）。``None`` = 不做规范化。
+        self.target_names = target_names
         self.adapter = CoordinateAdapter(
             scale, out_of_bounds_tolerance_px=self.out_of_bounds_tolerance_px
         )
@@ -241,7 +276,15 @@ class TwoStageGrounder:
     # ------------------------------------------------------------------
 
     def locate(self, request: VisualLocateRequest) -> VisualLocateResult:
-        """跑一次两级定位，返回最终落点 + 观测数据。"""
+        """跑一次定位，返回最终落点 + 观测数据。
+
+        **两条路**（工单 B-1）：
+
+        * **有候选** → 编号选择（模型只答编号，落点 = 该候选框的物理中心）；
+          **挑不出编号 → 回落**到点式路径（工单 M7 的既有纪律是「失败回落」，
+          而这里**有**可回落的结果 —— 不报死）；
+        * **无候选** → 点式路径（粗定位 → 门控 → crop 精定位）。
+        """
         frame = request.frame
         if (frame.width, frame.height) != self.full_screen_size:
             return VisualLocateResult(
@@ -263,10 +306,33 @@ class TwoStageGrounder:
             origin=(frame.left, frame.top),
         )
 
+        # -- 目标描述规范化（工单 B-4）：先对齐名字，再定位 -----------------
+        description, extra_calls = self._normalize_description(request, frame)
+        model_calls += extra_calls
+
         # -- 候选（工单 B-1）：有候选走「编号选择」，没有走点式路径 -----------
-        candidates, candidate_issue = self._candidates(frame, request.target_description)
+        candidates, candidate_issue = self._candidates(frame, description)
         if candidates:
-            return self._numbered(request, frame, candidates, echoes, model_calls)
+            numbered = self._numbered(
+                request, description, frame, candidates, echoes, model_calls
+            )
+            if numbered.ok:
+                return numbered
+            # **挑不出编号**（没给编号 / 答 0「清单里没有」/ 编号不在清单里）
+            # → **回落点式路径**（有可回落的结果）。
+            echoes = list(numbered.echoes)
+            model_calls = numbered.model_calls
+            result = self._locate_by_point(
+                request, description, frame, geometry, echoes, model_calls
+            )
+            if result.ok and not result.fallback:
+                result = replace(
+                    result,
+                    fallback=True,
+                    fallback_cause=FallbackCause.CANDIDATE_SELECTION_FAILED.value,
+                    fallback_reason=numbered.error_message,
+                )
+            return result
         if self.candidate_source is not None:
             # **接了候选源但没匹配上** → 显式记「无候选」（不猜、不假装）。
             # ⚠️ 这一条的 ``image_source`` 装的是**原因**（`GroundingEcho` 没有
@@ -282,6 +348,23 @@ class TwoStageGrounder:
                 )
             )
 
+        return self._locate_by_point(
+            request, description, frame, geometry, echoes, model_calls
+        )
+
+    def _locate_by_point(
+        self,
+        request: VisualLocateRequest,
+        description: str,
+        frame: CapturedFrame,
+        geometry,
+        echoes: list[GroundingEcho],
+        model_calls: int,
+    ) -> VisualLocateResult:
+        """**点式路径**（原来的两级 + 门控）：粗定位 → 门控 → crop 精定位。
+
+        编号分支挑不出编号时**回落到这里**（工单 M7 的纪律：失败回落）。
+        """
         # -- 整屏那一级送给模型的那张图（A-2：自己缩到 model_input_size）----
         screen_frame = self._screen_frame(frame)
 
@@ -291,7 +374,7 @@ class TwoStageGrounder:
         coarse_out_of_bounds = False
         try:
             raw = self._ask(
-                coarse_prompt(request.target_description, self.model_input_size),
+                coarse_prompt(description, self.model_input_size),
                 screen_frame,
             )
         except Exception as exc:
@@ -374,9 +457,7 @@ class TwoStageGrounder:
         # -- 精定位（L1）：crop 内 -------------------------------------------
         crop_input = self.crop_model_input_size or (plan.width, plan.height)
         try:
-            raw_refine = self._ask(
-                refine_prompt(request.target_description, crop_input), crop
-            )
+            raw_refine = self._ask(refine_prompt(description, crop_input), crop)
         except GroundingParseError as exc:
             return self._result(
                 landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
@@ -571,6 +652,7 @@ class TwoStageGrounder:
     def _numbered(
         self,
         request: VisualLocateRequest,
+        description: str,
         frame: CapturedFrame,
         candidates: list[GroundingCandidate],
         echoes: list[GroundingEcho],
@@ -582,7 +664,8 @@ class TwoStageGrounder:
         模型只负责在清单里指认一项，指认对了，落点就落在那个候选框的**物理中心**
         （**零换算**：候选框本来就是物理像素）。
 
-        * 模型没给出编号 / 编号不在清单里 → **报定位失败**（不猜、不挪到别处）；
+        * 模型**没给出编号** / **答 0**（「清单里没有对应的」）/ 编号不在清单里
+          → **报这次选择失败**（上层**回落**到点式路径）；
         * 这一级**不开门控、也不做 crop 精定位**（它是整屏那一级的替代方案，
           不是它前面的一环）→ ``refine_enabled=False``、``crop_plan=None``。
         """
@@ -590,11 +673,17 @@ class TwoStageGrounder:
         lines = self._candidate_lines(candidates, frame, screen_frame)
         try:
             numbers = self._ask_chosen_number(
-                request.target_description, lines, screen_frame
+                description, lines, screen_frame
             )
         except Exception as exc:
             return self._failure(f"编号选择失败：{exc}", echoes, model_calls)
         model_calls += 1
+        if numbers == (0,):
+            # 模型说「**清单里没有**与目标描述对应的一项」（ground 层的解释，
+            # UIA 通道那份读法一个字没动）。
+            return self._failure(
+                "模型说清单里没有与目标描述对应的一项", echoes, model_calls
+            )
         chosen = (
             [candidate for candidate in candidates if candidate.number == numbers[0]]
             if len(numbers) == 1
@@ -655,10 +744,69 @@ class TwoStageGrounder:
         reply = self.model.complete(
             prompt,
             effort=self.effort,
-            max_tokens=self.max_tokens,
+            max_tokens=self.numbered_max_tokens,
             image_base64=image_base64,
         )
         return parse_chosen_numbers(reply.text)
+
+    def _normalize_description(
+        self, request: VisualLocateRequest, frame: CapturedFrame
+    ) -> tuple[str, int]:
+        """**目标描述规范化**（工单 B-4）：先对齐名字，再定位。
+
+        返回 ``(规范化后的描述, 多花的模型调用数)``。
+
+        * 没给名字清单（``target_names`` 为空）→ **原样返回**（不花钱）；
+        * :func:`minicode.ground.prompt.normalize_target` 匹配上了 → 用它
+          （**不花钱**：那是纯本地的近名匹配）；
+        * 没匹配上 → **模型侧**给 2~3 个更具体的表述让它选
+          （B-4 原文：「模型侧给 2~3 个更具体的表述让它选」）；
+          模型失败 / 没给出有效编号 → **如实不改**（保留原描述）。
+        """
+        if self.target_names is None:
+            return (request.target_description, 0)
+        try:
+            names = [name for name in self.target_names(frame) if name]
+        except Exception:
+            return (request.target_description, 0)
+        names = names[:MAX_TARGET_NAMES]
+        if not names:
+            return (request.target_description, 0)
+        normalized, changed = normalize_target(request.target_description, names)
+        if changed:
+            return (normalized, 0)
+        if matched_on_screen(request.target_description, names):
+            # **本来就对得上**（描述就是界面上的名字）→ 不用问模型。
+            return (request.target_description, 0)
+        chosen = self._ask_chosen_name(request.target_description, names)
+        if chosen is None:
+            return (request.target_description, 1)
+        return (chosen, 1)
+
+    def _ask_chosen_name(
+        self, description: str, names: list[str]
+    ) -> str | None:
+        """问模型「用户说的那个是界面上哪一个名字」（**只答编号**）。
+
+        * **纯文字**（不发图）：要问的是「哪個名字更可能」，画面帮不上忙；
+        * 读不出 / 编号不在清单里 → ``None``（**如实不改**，不猜）。
+        """
+        prompt = normalize_target_prompt(description, names)
+        try:
+            reply = self.model.complete(
+                prompt,
+                effort=self.effort,
+                max_tokens=self.numbered_max_tokens,
+            )
+        except Exception:
+            return None
+        numbers = parse_chosen_numbers(reply.text)
+        if len(numbers) != 1:
+            return None
+        index = numbers[0] - 1
+        if not 0 <= index < len(names):
+            return None
+        return names[index]
 
     def _whole_screen(
         self,
