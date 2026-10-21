@@ -15,23 +15,56 @@ from __future__ import annotations
 
 import base64
 import unittest
+from dataclasses import dataclass, field
+from typing import Any
 
 from minicode.action.protocol import Action, ActionKind, ActionResult
 from minicode.action.seam import SeamResult
 from minicode.model.client import ModelReply
 from minicode.model.effort import Effort
 from minicode.model.request_log import png_image_size
+from minicode.reflection.stop import (
+    STOP_CLAIMED_UNVERIFIED,
+    StopPolicy,
+)
 from minicode.verification.fakes import make_frame
 
 from .api import ProtocolApi
 from .harness import DecisionHarness
 
 
-class _FakeSeam:
-    """假的动作执行缝：按脚本回结果（**不下发任何动作**）。"""
+@dataclass
+class _FakeTrace:
+    """一条**假追踪记录**（形状够 :func:`signal_from_trace` 读就行）。"""
 
-    def __init__(self, *, frames=()):
+    action: Action
+    target_description: str = "开始"
+    verification_result: dict[str, Any] | None = None
+    result: ActionResult = field(
+        default_factory=lambda: ActionResult(ok=True, landing_point=(10, 20))
+    )
+    intent: str = "点击"
+    selected: Any = None
+
+
+def _verification(changed: bool) -> dict[str, Any]:
+    """校验读数的落盘形状（与真的 ``ChangeResult.to_dict()`` 同形）。"""
+    outcome = "changed" if changed else "no_change"
+    return {"outcome": outcome, "change": {"outcome": outcome}}
+
+
+class _FakeSeam:
+    """假的动作执行缝：按脚本回结果（**不下发任何动作**）。
+
+    ``trace_sink`` 给了就把每一步**当成追踪记录**喂给它（停止条件靠这个
+    知道「这一轮有没有校验记录」）。
+    """
+
+    def __init__(self, *, frames=(), trace_sink=None, changed: bool | None = None):
         self._frames = list(frames)
+        self._trace_sink = trace_sink
+        #: 这一步的校验结论（``None`` = 这一步没有校验记录）。
+        self.changed = changed
         #: 抓了几次画面（截图端口被叫了几次）。
         self.captures = 0
 
@@ -48,6 +81,17 @@ class _FakeSeam:
                 final_point=None,
                 intent="截一张图",
                 result=ActionResult(ok=True, captured=frame),
+            )
+        if self._trace_sink is not None:
+            self._trace_sink.emit(
+                _FakeTrace(
+                    action=Action(request.action_kind, {}, "点击"),
+                    verification_result=(
+                        _verification(self.changed)
+                        if self.changed is not None
+                        else None
+                    ),
+                )
             )
         return SeamResult(
             action=Action(request.action_kind, {}, "点击"),
@@ -168,6 +212,84 @@ class ImageTokenAccountingTest(unittest.TestCase):
         harness = DecisionHarness(caller=caller, api=api, max_rounds=1)
         report = harness.run("目标")
         self.assertEqual(report.image_token_growth, ((1, None),))
+
+
+class SkipVerificationTest(unittest.TestCase):
+    """「跳过验证」（工单 D-4）：自称完成 **且** 没有/不成立的校验 → 判死。
+
+    ⚠️ **自称完成本身从不停止**（协议里没有「完成」这个动作）——
+    判死走的是**组合**。
+    """
+
+    def _harness(self, programs, *, changed: bool | None, max_rounds: int = 3):
+        policy = StopPolicy(max_rounds=max_rounds)
+        seam = _FakeSeam(trace_sink=policy, changed=changed)
+        api = ProtocolApi(seam=seam)
+        caller = _FakeCaller(programs)
+        harness = DecisionHarness(
+            caller=caller,
+            api=api,
+            max_rounds=max_rounds,
+            stop_policy=policy,
+        )
+        return harness, policy
+
+    def test_a_claim_without_any_verification_is_stopped(self):
+        """自称完成、而这一轮**没做过动作**（没有校验记录）→ 判死。"""
+        harness, _policy = self._harness(
+            ["print('STATUS: DONE')\n", "print('STATUS: DONE')\n"],
+            changed=None,
+        )
+        report = harness.run("目标")
+        self.assertEqual(report.stop_reason, STOP_CLAIMED_UNVERIFIED)
+        self.assertEqual(report.rounds, 1)
+
+    def test_a_claim_with_an_unchanged_screen_is_stopped(self):
+        """自称完成、而校验读数说**界面没变** → 判死。"""
+        harness, _policy = self._harness(
+            ["click('开始')\nprint('STATUS: DONE')\n"],
+            changed=False,
+        )
+        report = harness.run("目标")
+        self.assertEqual(report.stop_reason, STOP_CLAIMED_UNVERIFIED)
+
+    def test_a_claim_backed_by_a_change_is_not_stopped(self):
+        """自称完成、而校验读数说**界面变了** → 不判死（证据成立）。"""
+        harness, _policy = self._harness(
+            ["click('开始')\nprint('STATUS: DONE')\n", "print('继续')\n"],
+            changed=True,
+            max_rounds=2,
+        )
+        report = harness.run("目标")
+        self.assertNotEqual(report.stop_reason, STOP_CLAIMED_UNVERIFIED)
+
+    def test_a_round_without_a_claim_is_not_stopped(self):
+        """没自称完成 → 照旧不判死（既有行为一个字没改）。"""
+        harness, _policy = self._harness(["click('开始')\n"], changed=False)
+        report = harness.run("目标")
+        self.assertNotEqual(report.stop_reason, STOP_CLAIMED_UNVERIFIED)
+
+    def test_the_skip_verification_note_goes_into_the_context(self):
+        """「跳过验证」的记录进上下文（模型与人都读得到）。"""
+        policy = StopPolicy()
+        policy.observe_claim(claimed=True)
+        policy.observe_round()
+        notes = policy.take_skip_verification_notes()
+        self.assertEqual(len(notes), 1)
+        self.assertIn("跳过验证", notes[0])
+        self.assertEqual(policy.stop_reason, STOP_CLAIMED_UNVERIFIED)
+
+    def test_the_claim_alone_is_never_the_reason(self):
+        """停止原因**不是**「自称完成」本身 —— 它是「自称完成 + 没有证据」的组合。
+
+        证据成立（校验读数说界面变了）→ 不判死；没有证据 → 判死，
+        但停止原因是 ``claimed_unverified``，**不是**「完成」这类原因。
+        """
+        policy = StopPolicy()
+        policy.observe_claim(claimed=True)
+        policy.observe_round()
+        self.assertNotEqual(policy.stop_reason, "completion")
+        self.assertEqual(policy.stop_reason, STOP_CLAIMED_UNVERIFIED)
 
 
 class ModelFrameSizeTest(unittest.TestCase):

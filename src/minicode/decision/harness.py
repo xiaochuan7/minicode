@@ -384,9 +384,20 @@ class DecisionHarness:
             #   模型下一轮据此换招；
             # * **轮次硬上限 / 期望成立 / 提权** → 停下来（后面交人或收工）。
             if self.stop_policy is not None:
+                #: **自称完成**报给停止条件（工单 D-4「跳过验证」）。
+                #:
+                #: ⚠️ 自称完成**本身从不停止**（协议里没有「完成」这个动作，
+                #: 它只计数）—— 判死走的是「自称完成 **且** 这一轮没有/不成立的
+                #: 校验」这个**组合**。
+                self.stop_policy.observe_claim(
+                    claimed=steps[-1].completion_claims > 0
+                )
                 self.stop_policy.observe_round()
                 for change in self.stop_policy.take_strategy_changes():
                     context.add_note(change.describe())
+                for note in self.stop_policy.take_skip_verification_notes():
+                    #: 「跳过验证」的记录进上下文（模型与人都读得到）。
+                    context.add_note(note)
                 reason = self.stop_policy.stop_reason
                 if reason:
                     stop_reason = reason

@@ -51,6 +51,7 @@ __all__ = [
     "STOP_STRATEGY_EXHAUSTED",
     "STOP_DANGEROUS_ACTION",
     "STOP_MODAL_DIALOG",
+    "STOP_CLAIMED_UNVERIFIED",
     "STOP_REASONS",
     "STOP_REASON_TEXT",
     "STRATEGY_CROP_SIZE",
@@ -107,6 +108,14 @@ STOP_STRATEGY_EXHAUSTED = "strategy_exhausted"
 STOP_DANGEROUS_ACTION = "dangerous_action"
 #: 停止原因：**检测到模态弹窗**（零动作下发、交人；工单 M15 的 WX-3）。
 STOP_MODAL_DIALOG = "modal_dialog"
+#: 停止原因：**自称完成，但没有校验记录 / 界面没变**（工单 D-4「跳过验证」）。
+#:
+#: ⚠️ **判据是组合，不是「自称完成」本身** —— 协议里没有「完成」这个动作，
+#: 「模型说做完了」照旧**只计数、从不据此停止**。
+#: 判死的是「**自称完成** **且** 这一轮**没有校验记录**（没做过动作 /
+#: 没读到校验读数）**或**校验读数说**界面没变**」——
+#: 它的「完成」没有任何证据支撑，停下来交给人。
+STOP_CLAIMED_UNVERIFIED = "claimed_unverified"
 
 #: 全部停止原因（报告里能读到的取值集合）。
 STOP_REASONS = (
@@ -117,6 +126,7 @@ STOP_REASONS = (
     STOP_STRATEGY_EXHAUSTED,
     STOP_DANGEROUS_ACTION,
     STOP_MODAL_DIALOG,
+    STOP_CLAIMED_UNVERIFIED,
 )
 
 #: 停止原因的人读说法（交接产物与报告里用）。
@@ -128,7 +138,17 @@ STOP_REASON_TEXT = {
     STOP_STRATEGY_EXHAUSTED: "换策略的阶梯用尽（还是没进展），交给人",
     STOP_DANGEROUS_ACTION: "遇到危险动作（发消息 / 支付 / 删除这类），交给人确认",
     STOP_MODAL_DIALOG: "检测到模态弹窗，零动作下发并交给人",
+    STOP_CLAIMED_UNVERIFIED: "模型自称完成，但这一轮没有校验记录或界面没变（跳过验证），交给人",
 }
+
+#: 「跳过验证」的上下文记录（工单 D-4）。
+#:
+#: 两条都进上下文（模型与人都读得到）：
+#:
+#: * **没有校验记录** —— 这一轮没做过动作 / 没读到校验读数；
+#: * **界面没变** —— 校验读数说了 ``changed=False``。
+SKIP_VERIFICATION_NOTE = "本轮自称完成，但没有校验记录（跳过验证）"
+SKIP_VERIFICATION_NO_CHANGE_NOTE = "本轮自称完成，但校验读数说界面没变（跳过验证）"
 
 # ---------------------------------------------------------------------------
 # 换策略的阶梯
@@ -343,6 +363,15 @@ class StopPolicy:
         self.signals: list[StepSignal] = []
         #: 换策略的记录。
         self.strategy_changes: list[StrategyChange] = []
+        #: 这一轮**有没有校验记录**（工单 D-4「跳过验证」）：
+        #: 有一步的校验读数（``frame_changed`` 判得出来）就是有。
+        self._round_verified = False
+        #: 这一轮**最后一条**校验读数说界面变没变（``None`` = 没有校验记录）。
+        self._round_changed: bool | None = None
+        #: 这一轮**自称完成**吗（只记，不据此停止）。
+        self._round_claimed = False
+        #: 「跳过验证」的上下文记录（工单 D-4）。
+        self._skip_verification_notes: list[str] = []
         self._last_hash: str = ""
         self._repeat_count: int = 0
         self._unchanged_count: int = 0
@@ -364,6 +393,12 @@ class StopPolicy:
         """吃进一条追踪记录（:class:`~minicode.action.records.TraceSink`）。"""
         signal = signal_from_trace(trace)
         self.signals.append(signal)
+        # **这一轮的校验事实**（工单 D-4「跳过验证」）：
+        # ``frame_changed`` 判得出来 ⇔ 这一步**有校验读数**（``change`` 的结论）。
+        # ⚠️ 观察型动作（截图 / 等待）没有校验记录 —— 不算。
+        if signal.frame_changed is not None:
+            self._round_verified = True
+            self._round_changed = signal.frame_changed
         if signal.action_kind in OBSERVATION_KINDS:
             # 观察型动作不改界面 → 不参与卡死判定。
             return
@@ -403,6 +438,17 @@ class StopPolicy:
 
     # -- 轮次边界 ---------------------------------------------------------
 
+    def observe_claim(self, *, claimed: bool) -> None:
+        """一轮结束：**自称完成**这件事报给停止条件（工单 D-4）。
+
+        ⚠️ **自称完成本身从不停止** —— 协议里没有「完成」这个动作，
+        它照旧**只计数**（见
+        :func:`minicode.decision.harness._completion_claims`）。
+        判死走的是「**自称完成 + 没有/不成立的校验**」这个**组合**
+        （见 :meth:`observe_round`）。
+        """
+        self._round_claimed = bool(claimed)
+
     def observe_round(self) -> None:
         """一轮结束（**轮级**检测器在这里判）。"""
         self._rounds += 1
@@ -417,8 +463,26 @@ class StopPolicy:
             and not self._stop_reason
         ):
             self._break_circuit(f"连续 {self._stalled_rounds} 轮没有任何进展")
+        # -- 「跳过验证」（工单 D-4）---------------------------------------
+        # 某一轮**自称完成**，而这一轮**没有校验记录**（没做过动作 /
+        # 没读到校验读数）**或**校验读数说**界面没变** → 判死：
+        # 它的「完成」没有任何证据支撑，停下来交给人。
+        # ⚠️ 判据是**组合**：「自称完成」本身照旧只计数、从不据此停止。
+        if self._round_claimed and not self._stop_reason:
+            if not self._round_verified:
+                self._skip_verification_notes.append(SKIP_VERIFICATION_NOTE)
+                self._stop_reason = STOP_CLAIMED_UNVERIFIED
+            elif self._round_changed is False:
+                self._skip_verification_notes.append(
+                    SKIP_VERIFICATION_NO_CHANGE_NOTE
+                )
+                self._stop_reason = STOP_CLAIMED_UNVERIFIED
         if self._rounds >= self.max_rounds and not self._stop_reason:
             self._stop_reason = STOP_ROUND_CAP
+        # 下一轮从零开始（校验事实与自称完成都是**轮级**的量）。
+        self._round_verified = False
+        self._round_changed = None
+        self._round_claimed = False
 
     # -- 读出 -------------------------------------------------------------
 
@@ -441,6 +505,16 @@ class StopPolicy:
         fresh = tuple(self._fresh_strategy_changes)
         self._fresh_strategy_changes.clear()
         return fresh
+
+    def take_skip_verification_notes(self) -> tuple[str, ...]:
+        """取走「跳过验证」的上下文记录（工单 D-4）—— 调用方把它**加进上下文**。
+
+        这是**给人与模型看的记录**（「本轮自称完成，但没有校验记录（跳过验证）」），
+        与「判死」是两件事：记录说明**为什么**，判死说明**停不停**。
+        """
+        notes = tuple(self._skip_verification_notes)
+        self._skip_verification_notes.clear()
+        return notes
 
     @property
     def detectors(self) -> tuple[DetectorVerdict, ...]:

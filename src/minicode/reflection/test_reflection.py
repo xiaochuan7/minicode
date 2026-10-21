@@ -67,6 +67,7 @@ from minicode.reflection.stop import (
     DETECTOR_REPEATED_ACTION,
     DETECTOR_ROUND_CAP,
     STOP_ASKED_HUMAN,
+    STOP_CLAIMED_UNVERIFIED,
     STOP_DANGEROUS_ACTION,
     STOP_ELEVATED,
     STOP_EXPECTATION_MET,
@@ -310,7 +311,12 @@ class CircuitBreakTest(unittest.TestCase):
 
 
 class RoundCapTest(unittest.TestCase):
-    """AC2：达到上限就停下来交人；模型自称完成**不构成**停止理由。"""
+    """AC2：达到上限就停下来交人；模型自称完成**本身**不构成停止理由。
+
+    ⚠️ 工单 D-4 追加了一条**组合**判据：自称完成**且没有成立的校验**
+    （这一轮没有校验记录 / 校验读数说界面没变）→ 判死
+    （停止原因 ``claimed_unverified``）。「自称完成」**本身**仍然只计数。
+    """
 
     def _run(self, replies, *, rounds: int = 2):
         policy = StopPolicy(max_rounds=rounds)
@@ -337,7 +343,14 @@ class RoundCapTest(unittest.TestCase):
         self.assertEqual(report.stop_reason, STOP_ROUND_CAP)
         self.assertEqual(report.rounds, 2)
 
-    def test_the_model_claiming_completion_does_not_stop_the_task(self):
+    def test_a_claim_without_evidence_stops_the_task(self):
+        """自称完成**且没有成立的校验** → 判死（工单 D-4「跳过验证」）。
+
+        ⚠️ **「自称完成」这条计数口径一个字没改**（仍然只计数、
+        从不据此单独停止 —— 协议里没有「完成」这个动作）；
+        判死走的是**组合**：自称完成 **且** 这一轮**没有校验记录**
+        （没做过动作 / 没读到校验读数）**或**校验读数说**界面没变**。
+        """
         report = self._run(
             [
                 _reply("任务已完成\n```python\nclick('开始')\n```"),
@@ -346,8 +359,8 @@ class RoundCapTest(unittest.TestCase):
             rounds=2,
         )
         self.assertGreaterEqual(report.completion_claims_ignored, 1)
-        self.assertEqual(report.stop_reason, STOP_ROUND_CAP)
-        self.assertEqual(report.rounds, 2)
+        self.assertEqual(report.stop_reason, STOP_CLAIMED_UNVERIFIED)
+        self.assertEqual(report.rounds, 1)
 
     def test_the_handoff_says_the_round_cap_is_the_reason(self):
         report = self._run(
