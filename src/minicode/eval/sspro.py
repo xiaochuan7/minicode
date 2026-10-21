@@ -399,8 +399,7 @@ def run_arms(
             effort,
             max_tokens,
             client,
-            None,
-            gate_params,
+            gate_params=gate_params,
         )
         always = _run_one(
             sample,
@@ -412,8 +411,7 @@ def run_arms(
             effort,
             max_tokens,
             client,
-            None,
-            gate_params,
+            gate_params=gate_params,
         )
         coarse_only = _run_one(
             sample,
@@ -425,7 +423,7 @@ def run_arms(
             effort,
             max_tokens,
             client,
-            gate_params,
+            gate_params=gate_params,
             coarse_only=True,
         )
         return on_demand, always, coarse_only

@@ -347,15 +347,23 @@ def _calibrate(
 
     #: **声明的模型输入尺寸**（按**这张图**的尺寸算）。
     declared = model_input_size_for(width, height)
-    outcome = CalibrationProbe(
-        client,
-        spec=default_probe_spec(width, height),
-        model_input_size=declared,
-        call_path="image",
-        model_id=model_id,
-        effort=args.effort,
-        max_tokens=args.max_tokens,
-    ).run()
+    try:
+        outcome = CalibrationProbe(
+            client,
+            spec=default_probe_spec(width, height),
+            model_input_size=declared,
+            call_path="image",
+            model_id=model_id,
+            effort=args.effort,
+            max_tokens=args.max_tokens,
+        ).run()
+    except Exception as exc:
+        # ⚠️ **标定失败不许让整轮评测炸掉**（模型侧失败是常态：
+        # 「HTTP 200 但没有文本输出」= 思考链把预算吃光，实测 1.2% 的请求）。
+        # 这里**如实记失败**（不编一个标度），让这一批样本**跳过视觉臂**，
+        # 其余尺寸的标定照跑 —— **分母不许悄悄变小**（失败的尺寸会进报告）。
+        print(f"标定 {width}×{height}：**失败**（{type(exc).__name__}: {exc}）")
+        raise
     best = outcome.candidate(outcome.detected_scale)
     scale = outcome.detected_scale
     #: **准入判定**（A-1 的真闸门：等价族分歧 ≤ 4 px **且** K 轮命中率 ≥ 0.6）。
