@@ -86,8 +86,7 @@ from .ports import (
 from .protocol import (
     BUTTON_RIGHT,
     CLICK_DOUBLE,
-    OBSERVATION_KINDS,
-    POINT_KINDS,
+    SEAM_ACTION_KINDS,
     STANDALONE_KINDS,
     Action,
     ActionKind,
@@ -170,11 +169,7 @@ class SeamRequest:
     decision_ms: float = 0.0
 
     def __post_init__(self) -> None:
-        if (
-            self.action_kind not in POINT_KINDS
-            and self.action_kind not in STANDALONE_KINDS
-            and self.action_kind not in OBSERVATION_KINDS
-        ):
+        if self.action_kind not in SEAM_ACTION_KINDS:
             raise ValueError(
                 f"动作执行缝只处理需要一个落点的动作种类、截图/等待或观察型动作（放大），"
                 f"收到 {self.action_kind.value!r}；"

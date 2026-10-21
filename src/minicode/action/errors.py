@@ -218,6 +218,13 @@ FAILURE_TYPE_BY_CODE: Mapping[ErrorCode, FailureType] = {
     ErrorCode.INVALID_TARGET: FailureType.CHANNEL,
     ErrorCode.VISUAL_CHANNEL_UNAVAILABLE: FailureType.CHANNEL,
     ErrorCode.ACTION_NOT_IMPLEMENTED: FailureType.CHANNEL,
+    #: **请求本身不合法**（工单 M18）：请求层被拒 → 零动作下发。
+    #:
+    #: ⚠️ 它**不出现在定位阶段**（连定位都没开始）：归「通道级失败」是因为
+    #: 这一类错误一律**禁止切视觉**、一律**不许猜着执行**（fail-closed）。
+    ErrorCode.INVALID_REQUEST: FailureType.CHANNEL,
+    #: **协议版本号对不上**（工单 M18）：不按旧语义猜着执行 → 零动作下发。
+    ErrorCode.PROTOCOL_VERSION_MISMATCH: FailureType.CHANNEL,
     # -- 决策失败：决策层的产出被拒 → 禁止切视觉 -------------------------
     ErrorCode.DECIDE_FAILED: FailureType.DECISION,
     ErrorCode.PROGRAM_REJECTED: FailureType.DECISION,

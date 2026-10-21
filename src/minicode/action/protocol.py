@@ -128,6 +128,19 @@ OBSERVATION_KINDS = frozenset({ActionKind.ZOOM})
 #: **不需要定位目标**的动作种类（截图 / 等待）：它们没有最终落点。
 STANDALONE_KINDS = frozenset({ActionKind.SCREENSHOT, ActionKind.WAIT})
 
+#: **动作执行缝接的动作种类**（工单 M0 的缝只处理这几类）。
+#:
+#: ⚠️ **这是「缝的能力」的唯一定义**：缝自己认哪几种（`action/seam.py`）与
+#: 对外形态层报「这个种类这一层不接」（`minicode/serve`）**都引用它** ——
+#: 否则同一个集合会被写两遍，两边迟早对不上。
+SEAM_ACTION_KINDS = POINT_KINDS | STANDALONE_KINDS | OBSERVATION_KINDS
+
+#: **需要目标描述**的动作种类（其余的不要 —— 截图 / 等待 / 放大各按自己的来）。
+#:
+#: ⚠️ **放大不在这里**：放大的落点来自 ``params["region"]``，
+#: 目标描述只进意图串 —— 它**没有目标也能做**（`action/seam.py` 的放大路径）。
+NEEDS_TARGET_KINDS = POINT_KINDS
+
 
 def int_param(params: Mapping[str, Any], name: str, default: int) -> int:
     """取一个整数参数。给了但不是整数 → 抛 ``ValueError``（不猜）。"""

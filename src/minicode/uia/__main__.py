@@ -17,7 +17,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from minicode.approval.console import console_gate
 from minicode.lock import acquire, release
 
 __all__ = ["main"]
@@ -87,20 +86,6 @@ def _expectation(text: str | None):
         raise SystemExit(str(exc)) from exc
 
 
-def _find_window(class_name: str) -> int:
-    """按类名找窗口（用 ``FindWindowW``，不枚举——枚举会漏掉任务栏）。"""
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-    user32.FindWindowW.restype = wintypes.HWND
-    hwnd = user32.FindWindowW(class_name, None)
-    if not hwnd:
-        raise SystemExit(f"找不到类名为 {class_name!r} 的窗口")
-    return int(hwnd)
-
-
 def main(argv=None) -> int:
     args = _parse_args(argv)
     holds_lock = acquire(args.ticket)
@@ -113,57 +98,19 @@ def main(argv=None) -> int:
 
 def _run(args) -> int:
     from minicode.action.records import ActionLog, ListTraceSink, build_record
-    from minicode.action.seam import ActionExecutionSeam, SeamRequest
-    from minicode.action.windows import (
-        WindowsCaptureSource,
-        WindowsInputInjector,
-        WindowsSecureDesktopDetector,
-        WindowsWindowController,
-        current_virtual_desktop,
-    )
-    from minicode.exec import dpi  # noqa: F401  (导入即声明 PMv2)
-    from minicode.uia.capability import CapabilityTable
-    from minicode.uia.channel import UiaChannel
+    from minicode.action.seam import SeamRequest
     from minicode.uia.elements import rect_center
-    from minicode.uia.windows import (
-        WindowsCapabilityProbe,
-        WindowsElementInvoker,
-        WindowsTreeUnblocker,
-        WindowsUiaQueryPort,
-        describe_window,
-    )
 
-    hwnd = _find_window(args.window)
-    anchor = describe_window(hwnd)
-    port = WindowsUiaQueryPort()
-    table = CapabilityTable(
-        WindowsCapabilityProbe(), unblocker=WindowsTreeUnblocker()
-    )
+    from .desktop import build_desktop
+
     pointer, redactor = _disambiguation_ends(args)
-    channel = UiaChannel(
-        query=port,
-        capability=table,
+    desktop = build_desktop(
+        window_class=args.window,
         pointer=pointer,
         redactor=redactor,
     )
     sink = ListTraceSink()
-    desktop = current_virtual_desktop()
-    seam = ActionExecutionSeam(
-        capture_sources=[WindowsCaptureSource()],
-        tree=None,
-        injector=WindowsInputInjector(desktop),
-        window_controller=WindowsWindowController(),
-        virtual_desktop=desktop,
-        trace_sink=sink,
-        locator=channel,
-        invoker=WindowsElementInvoker(port),
-        anchor=anchor,
-        verifier=_verifier(args, port, anchor),
-        # **提权 / 安全桌面检测**（C-07）：在安全桌面上就**零动作下发**、交人。
-        secure_desktop=WindowsSecureDesktopDetector(),
-        # **审批闸门**（工单 M16）：危险动作要人点头，没批就**零动作下发**。
-        approval_gate=console_gate(),
-    )
+    seam = desktop.new_seam(sink, verifier=_verifier(args, desktop))
     result = seam.run(
         SeamRequest(
             target_description=args.target,
@@ -172,18 +119,24 @@ def _run(args) -> int:
         )
     )
     trace = sink.traces[-1] if sink.traces else None
-    entry = table.availability(anchor)
+    entry = desktop.capability.availability(desktop.anchor)
 
     print("========== UIA 通道 ==========")
-    print(f"窗口锚点：hwnd={hwnd} 应用={anchor.app} 版本={anchor.version}")
+    print(
+        f"窗口锚点：hwnd={desktop.anchor.hwnd} "
+        f"应用={desktop.anchor.app} 版本={desktop.anchor.version}"
+    )
     print(
         f"能力表  ：{entry.availability.value}（{entry.reason}）"
-        f"｜探测次数={table.probe_count}"
+        f"｜探测次数={desktop.capability.probe_count}"
     )
     print(f"动作结果：ok={result.ok} 落点={result.final_point}")
-    print(f"定点查询：最近一次 {port.last_query_ms:.1f} ms（要求 < 1000 ms）")
     print(
-        f"候选上限：{channel.max_candidates}（来源：{channel.candidate_limit_source}）"
+        f"定点查询：最近一次 {desktop.port.last_query_ms:.1f} ms（要求 < 1000 ms）"
+    )
+    print(
+        f"候选上限：{desktop.channel.max_candidates}"
+        f"（来源：{desktop.channel.candidate_limit_source}）"
     )
     if result.result.error_code:
         print(f"错误码  ：{result.result.error_code.value}")
@@ -244,7 +197,7 @@ def _run(args) -> int:
     return 0 if result.ok else 1
 
 
-def _verifier(args, port, anchor):
+def _verifier(args, desktop):
     """校验层（工单 M11）。没给 ``--verify`` → ``None``（不做校验）。"""
     if not args.verify:
         return None
@@ -256,7 +209,7 @@ def _verifier(args, port, anchor):
 
     return VerificationLayer(
         screenshot_port=CapturePort([WindowsCaptureSource()]),
-        observer=UiaStateObserver(port, anchor),
+        observer=UiaStateObserver(desktop.port, desktop.anchor),
     )
 
 
