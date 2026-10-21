@@ -269,6 +269,8 @@ class TwoStageGrounder:
             return self._numbered(request, frame, geometry, candidates, echoes, model_calls)
         if self.candidate_source is not None:
             # **接了候选源但没匹配上** → 显式记「无候选」（不猜、不假装）。
+            # ⚠️ 这一条的 ``image_source`` 装的是**原因**（`GroundingEcho` 没有
+            # 单独的「原因」字段 —— ``action/ports.py`` 不在本轮写作用域内）。
             echoes.append(
                 GroundingEcho(
                     stage=STAGE_NO_CANDIDATES,
@@ -594,11 +596,11 @@ class TwoStageGrounder:
         except Exception as exc:
             return self._failure(f"编号选择失败：{exc}", echoes, model_calls)
         model_calls += 1
-        chosen = [
-            candidate
-            for candidate in candidates
-            if len(numbers) == 1 and candidate.number == numbers[0]
-        ]
+        chosen = (
+            [candidate for candidate in candidates if candidate.number == numbers[0]]
+            if len(numbers) == 1
+            else []
+        )
         if not chosen:
             return self._failure(
                 f"模型给的编号不可用：{numbers}（清单里是 1~{len(candidates)}）",
