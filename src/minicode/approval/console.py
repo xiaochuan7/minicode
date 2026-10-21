@@ -97,17 +97,26 @@ def console_gate(
     * 审批人 = :class:`ConsoleApprover`（非交互一律不批）；
     * 「截含敏感窗口的屏」= 当前**前台窗口**的标题命中敏感词表
       —— ⚠️ **敏感窗口的词表归 M20**（`docs/tickets/README.md`：
-      「M20 管『哪些窗口根本不许拍 / 不许发』」），因此这里**默认不接策略**：
-      没接策略就没有「敏感窗口」这个概念（判定留给 M20 接进来时做）。
+      「M20 管『哪些窗口根本不许拍 / 不许发』」）。
+
+    ✅ **工单 M24：端口不再是空置的** —— 默认接 **M20 的黑名单**
+    （``minicode.privacy.policy:DEFAULT_BLACKLIST``），
+    **词表只有那一份**（不新立第二份）。M20 的黑名单作为**硬闸门**
+    在**审批之前**跑；这里这一层退成**二次确认**
+    （黑名单没盖到的那个窗口，这里兜底再问一次人）。
 
     ⚠️ ``read_foreground_window=False`` = 不读真窗口（假桌面上用：
     那条路上拍的是假画面，问真窗口没有意义）。
     ⚠️ 这一条**不产生**任何网络访问，也不读仓库 ``.env`` 之外的凭据。
     """
+    from minicode.privacy.policy import DEFAULT_BLACKLIST
+
     from .windows import WindowsWindowInspector
 
     return ApprovalGate(
         approver=ConsoleApprover(),
         window_inspector=WindowsWindowInspector() if read_foreground_window else None,
-        sensitive_policy=sensitive_policy,
+        sensitive_policy=(
+            sensitive_policy if sensitive_policy is not None else DEFAULT_BLACKLIST
+        ),
     )

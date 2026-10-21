@@ -9,8 +9,9 @@
 1. **判的是「这一帧里看得见的窗口」**，不只是前台那一个 ——
    抓的是**整屏**帧，前台背后的密码管理器窗口照样在那一帧里
    （只判前台 = 静默漏判，隐私面最不能要的那种漏）。
-2. **硬闸门，不是审批**：M16 的机制是「人点头才拍」，本单是**根本不许拍** ——
-   两者互斥，因此这里**不接** M16 的审批闸门（见 :mod:`minicode.privacy.policy`）。
+2. **硬闸门，不是审批**：本单是**根本不许拍**，M16 是**人工放行**（批了就拍）——
+   本层在**审批之前**跑，命中就**根本走不到**审批那一层
+   （工单 M24：**更严的一侧胜出**；见 :mod:`minicode.privacy.policy`）。
 3. **fail-closed**：**读不到**窗口列表 → 按敏感处理（我们不知道屏幕上有没有
    敏感窗口，那就不许悄悄拍下来）。
 4. **留下一笔**：被跳过时给出 :class:`PrivacyVerdict`，动作记录里据此记一笔
@@ -24,7 +25,7 @@ from typing import Any
 
 from minicode.approval.ports import WindowInspector
 
-from .policy import SensitiveWindowBlacklist, SensitiveWindowMatch
+from .policy import DEFAULT_BLACKLIST, SensitiveWindowBlacklist, SensitiveWindowMatch
 
 __all__ = [
     "PrivacyVerdict",
@@ -36,10 +37,10 @@ __all__ = [
 
 #: **敏感窗口被跳过**时写进结果里的话（落进动作记录的 ``notes``）。
 #:
-#: ⚠️ 它落进动作记录 —— 「记录里有一条『该窗口被跳过』的记录」由它承载
+#: ⚠️ 它落进动作记录 —— 「记录里有一条『**被敏感窗口策略拦下**』的记录」由它承载
 #: （与 M16 的 ``APPROVAL_HANDOFF_NOTE`` 同一形状）。
 SENSITIVE_WINDOW_SKIPPED_NOTE = (
-    "敏感窗口被跳过：黑名单窗口根本不许拍、不许发（工单 M20）"
+    "被敏感窗口策略拦下：黑名单窗口根本不许拍、不许发（工单 M20）"
 )
 
 
@@ -63,7 +64,12 @@ class PrivacyVerdict:
 
 
 class SensitiveWindowGuard:
-    """**敏感窗口的硬闸门**：问一次「现在能不能拍」。"""
+    """**敏感窗口的硬闸门**：问一次「现在能不能拍」。
+
+    ✅ **工单 M24**：它与 M16 的审批闸门**用同一份黑名单**
+    （``minicode.privacy.policy:DEFAULT_BLACKLIST``）——
+    **词表只有一份**；两层里**这一层在前**（更严的一侧胜出）。
+    """
 
     def __init__(
         self,
@@ -116,10 +122,13 @@ def windows_guard() -> SensitiveWindowGuard:
     （命令行 / HTTP / MCP 的真机接线 · 动作 CLI · UIA 活体测试台 ·
     端到端评测台 · 浏览器通道的命令行）——
     漏接一处就是一处隐私洞。
+
+    ✅ 工单 M24：用**单例**那份黑名单（:data:`DEFAULT_BLACKLIST`）——
+    与 M16 审批闸门拿到的是**同一个对象**。
     """
     from minicode.approval.windows import WindowsWindowInspector
 
     return SensitiveWindowGuard(
-        blacklist=SensitiveWindowBlacklist(),
+        blacklist=DEFAULT_BLACKLIST,
         window_inspector=WindowsWindowInspector(),
     )

@@ -78,6 +78,10 @@ class SensitiveWindowPolicy(Protocol):
     **不自带词表**：自带一份词表就是替 M20 做决定，两层会重叠
     （`docs/tickets/README.md`：「M20 管『哪些窗口根本不许拍 / 不许发』」）。
 
+    ✅ **工单 M24：这个端口现在由 M20 的黑名单实现提供**
+    （``minicode.privacy.policy:SensitiveWindowBlacklist.is_sensitive``）——
+    **词表只有那一份**（端口规定形状，实现给出判据）。
+
     没接这个端口 = **没有「敏感窗口」这个概念**（判定留给策略接进来时做）。
     """
 

@@ -9,6 +9,10 @@
 * :class:`PolicyDocumentTest` —— AC3 策略文档成文（每条都能在实现里找到对应行为）
 * :class:`RedactionConsistencyTest` —— AC4 与脱敏器一致（同一处规则，不写两套）
 
+工单 **M24**（黑名单接进危险动作审批闸门）另见：
+
+* :class:`M24TwoLayerTest` —— 黑名单先行、审批二次确认、两层错误码可分辨
+
 全部用**假窗口 / 假截图源 / 假注入器**：毫秒级跑完，不碰真桌面、不花钱。
 """
 
@@ -24,6 +28,7 @@ from minicode.action.ports import ControlCandidate, LocateRequest, LocateResult
 from minicode.action.protocol import Action, ActionKind
 from minicode.action.records import ListTraceSink, build_record
 from minicode.action.seam import ActionExecutionSeam, SeamRequest
+from minicode.approval.catalog import DangerCategory
 from minicode.approval.fakes import AutoApprover, DenyApprover
 from minicode.approval.gate import ApprovalGate
 from minicode.approval.ports import WindowInfo
@@ -32,7 +37,7 @@ from minicode.redact.redactor import BODY_CONTROL_TYPES
 
 from .document import render_policy_document, resolve_implementation
 from .guard import SENSITIVE_WINDOW_SKIPPED_NOTE, SensitiveWindowGuard
-from .policy import SensitiveWindowBlacklist, default_policy
+from .policy import DEFAULT_BLACKLIST, SensitiveWindowBlacklist, default_policy
 
 _DESKTOP = VirtualDesktop(0, 0, 2560, 1600)
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -491,6 +496,156 @@ class RedactionConsistencyTest(unittest.TestCase):
         self.assertNotIn("这是一段草稿正文", view.text)
         self.assertNotIn("sk-abcdefghijklmnop", view.text)
         self.assertIn("[REDACTED]", view.text)
+
+
+# ---------------------------------------------------------------------------
+# M24 · 两层闸门：黑名单先行、审批二次确认
+# ---------------------------------------------------------------------------
+
+
+class M24TwoLayerTest(unittest.TestCase):
+    """M24：黑名单（硬闸门）**先行**，审批（M16）退成**二次确认**。
+
+    两层**判的窗口范围不同**：
+
+    * **第一层（黑名单）**判的是「**这一帧里看得见的全部窗口**」——
+      命中就在**抓帧之前**拒绝（零抓帧、零像素）；
+    * **第二层（审批）**判的是「**当前前台窗口**」—— 命中就产生审批请求，
+      没批则零动作下发。
+
+    第一层没盖到的那个窗口（可见窗口的扫描没扫到），由第二层兜底再问一次人。
+    """
+
+    #: 一个**黑名单命中**的窗口（标题命中敏感词表）。
+    SENSITIVE = WindowInfo(
+        hwnd=1, title="招商银行 - 个人中心", class_name="Chrome_WidgetWin_1"
+    )
+    #: 一个**普通**窗口。
+    ORDINARY = WindowInfo(hwnd=2, title="记事本", class_name="Notepad")
+
+    def _wiring(self, *, visible, foreground):
+        """把两层接在一起（**同一个黑名单对象**）。"""
+        inspector = _FakeInspector(foreground, visible=visible)
+        guard = SensitiveWindowGuard(
+            blacklist=DEFAULT_BLACKLIST, window_inspector=inspector
+        )
+        approver = DenyApprover()
+        gate = ApprovalGate(
+            approver=approver,
+            window_inspector=inspector,
+            sensitive_policy=DEFAULT_BLACKLIST,
+        )
+        return guard, gate, approver
+
+    def test_the_blacklist_hit_is_rejected_before_the_capture(self):
+        """AC1：命中 → **抓帧之前**就拒绝，零抓帧、零像素。"""
+        guard, gate, _ = self._wiring(
+            visible=(self.SENSITIVE,), foreground=self.SENSITIVE
+        )
+        capture = FakeCaptureSource(64, 64)
+        seam = _seam(guard=guard, gate=gate, capture=capture)
+        result = seam.run(
+            SeamRequest(target_description="整屏", action_kind=ActionKind.SCREENSHOT)
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.result.error_code, ErrorCode.SENSITIVE_WINDOW_BLOCKED)
+        self.assertEqual(capture.calls, 0)
+
+    def test_the_blacklist_wins_over_the_approval_gate(self):
+        """AC3：先被黑名单拒，且**没有走到审批闸门**。"""
+        guard, gate, approver = self._wiring(
+            visible=(self.SENSITIVE,), foreground=self.SENSITIVE
+        )
+        seam = _seam(guard=guard, gate=gate)
+        result = seam.run(
+            SeamRequest(target_description="整屏", action_kind=ActionKind.SCREENSHOT)
+        )
+        self.assertEqual(result.result.error_code, ErrorCode.SENSITIVE_WINDOW_BLOCKED)
+        # **不是**审批未获批 —— 两类错误码可分辨（AC4）。
+        self.assertNotEqual(result.result.error_code, ErrorCode.APPROVAL_DENIED)
+        # 审批人一次都没被问（**没有走到审批闸门**）。
+        self.assertEqual(approver.requests, [])
+
+    def test_the_action_record_says_the_sensitive_window_policy_blocked_it(self):
+        """AC1：动作记录里如实记「被敏感窗口策略拦下」。"""
+        guard, gate, _ = self._wiring(
+            visible=(self.SENSITIVE,), foreground=self.SENSITIVE
+        )
+        sink = ListTraceSink()
+        seam = _seam(guard=guard, gate=gate, sink=sink)
+        seam.run(
+            SeamRequest(target_description="整屏", action_kind=ActionKind.SCREENSHOT)
+        )
+        self.assertEqual(len(sink.traces), 1)
+        record = build_record(sink.traces[0]).to_dict()
+        privacy = record["privacy"]
+        self.assertIsNotNone(privacy)
+        assert privacy is not None
+        self.assertTrue(privacy["blocked"])
+        self.assertEqual(privacy["window_title"], self.SENSITIVE.title)
+        self.assertTrue(
+            any("被敏感窗口策略拦下" in note for note in record["notes"]),
+            f"动作记录里没有「被敏感窗口策略拦下」这一笔：{record['notes']}",
+        )
+        # 零像素：画面一个字都不落。
+        self.assertIsNone(record["screenshot_sha256"])
+
+    def test_the_approval_layer_still_asks_when_the_blacklist_misses(self):
+        """AC2：黑名单**没**命中，但请求属于「截含敏感窗口的屏」→ 仍然产生审批请求。
+
+        这一帧里**看得见的窗口**都不敏感（黑名单没命中），
+        但**当前前台窗口**敏感 —— 两层判的窗口范围不同。
+        """
+        guard, gate, approver = self._wiring(
+            visible=(self.ORDINARY,), foreground=self.SENSITIVE
+        )
+        capture = FakeCaptureSource(64, 64)
+        injector = FakeInputInjector()
+        seam = _seam(guard=guard, gate=gate, capture=capture, injector=injector)
+        result = seam.run(
+            SeamRequest(target_description="整屏", action_kind=ActionKind.SCREENSHOT)
+        )
+        self.assertEqual(result.result.error_code, ErrorCode.APPROVAL_DENIED)
+        # 产生了审批请求：类别 = 截含敏感窗口的屏，**带意图 + 目标**。
+        self.assertEqual(len(approver.requests), 1)
+        request = approver.requests[0]
+        self.assertEqual(request.category, DangerCategory.SENSITIVE_SCREENSHOT)
+        self.assertTrue(request.intent)
+        self.assertEqual(request.target_description, "整屏")
+        # 没批 → **零动作下发**。
+        self.assertEqual(capture.calls, 0)
+        self.assertEqual(injector.events, [])
+
+    def test_both_layers_get_the_same_blacklist_object(self):
+        """接线：M16 的端口与 M20 的硬闸门拿到的是**同一个对象**（词表只有一份）。"""
+        from minicode.approval.console import console_gate
+
+        guard, gate, _ = self._wiring(
+            visible=(self.ORDINARY,), foreground=self.ORDINARY
+        )
+        self.assertIs(guard.blacklist, DEFAULT_BLACKLIST)
+        self.assertIs(gate.sensitive_policy, DEFAULT_BLACKLIST)
+        # 生产路径上那个闸门接的也是同一份黑名单。
+        self.assertIs(
+            console_gate(read_foreground_window=False).sensitive_policy,
+            DEFAULT_BLACKLIST,
+        )
+
+    def test_the_document_states_both_layers(self):
+        """AC6：策略文档里**同时**写明两层。"""
+        document = render_policy_document(default_policy())
+        self.assertIn("黑名单先行", document)
+        self.assertIn("二次确认", document)
+        self.assertIn("sensitive_window_blocked", document)
+        self.assertIn("approval_denied", document)
+
+    def test_the_two_layer_clauses_point_at_existing_implementations(self):
+        """AC6：文档里新加的两层条款，每一条都能在实现里找到对应行为。"""
+        clauses = default_policy().gate_layers
+        self.assertTrue(clauses)
+        for clause in clauses:
+            with self.subTest(clause=clause.key):
+                self.assertIsNotNone(resolve_implementation(clause.implementation))
 
 
 if __name__ == "__main__":  # pragma: no cover
