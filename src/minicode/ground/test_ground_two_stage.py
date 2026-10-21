@@ -30,6 +30,7 @@ from minicode.ground import (
     crop_frame,
     crop_plan_fields,
     crop_roundtrip_error,
+    default_crop_size,
     not_worse_than,
     summarize_errors,
     zoom_locate,
@@ -226,8 +227,8 @@ class CropPlanTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertTrue(plan["shifted"])
         self.assertFalse(plan["shrunk"])
-        self.assertEqual(plan["width"], 512)
-        self.assertEqual(plan["height"], 512)
+        self.assertEqual(plan["width"], default_crop_size()[0])
+        self.assertEqual(plan["height"], default_crop_size()[1])
         # 粗定位点在窗口内（不裁掉目标）。
         self.assertTrue(plan["target_fully_contained"])
         self.assertGreaterEqual(plan["origin_x"], 0)
@@ -240,12 +241,12 @@ class CropPlanTests(unittest.TestCase):
             VisualLocateRequest(
                 target_description="小按钮",
                 frame=frame,
-                surface=(0, 0, 300, 300),
+                surface=(0, 0, 100, 100),
             )
         )
         plan = result.crop_plan
         self.assertTrue(plan["shrunk"])
-        self.assertEqual((plan["width"], plan["height"]), (300, 300))
+        self.assertEqual((plan["width"], plan["height"]), (100, 100))
 
     def test_target_fully_contained_property_is_exposed(self):
         """目标框比窗口还大时，「目标是否完整包含」必须是假的（属性暴露且被钉死）。"""
@@ -283,7 +284,8 @@ class CropContractTests(unittest.TestCase):
             )
         )
         plan = result.crop_plan
-        expected = (plan["origin_x"] + 256.0, plan["origin_y"] + 256.0)
+        half = plan["width"] / 2.0
+        expected = (plan["origin_x"] + half, plan["origin_y"] + half)
         self.assertAlmostEqual(result.landing_point[0], expected[0], places=6)
         self.assertAlmostEqual(result.landing_point[1], expected[1], places=6)
 
@@ -435,7 +437,10 @@ class EchoTests(unittest.TestCase):
         self.assertEqual((stages["refine"].raw_x, stages["refine"].raw_y), (123.0, 45.0))
         # 实际发送尺寸 = **模型实际看到的那张图**（不是原图宽）。
         self.assertEqual((stages["coarse"].sent_width, stages["coarse"].sent_height), (2048, 1280))
-        self.assertEqual((stages["refine"].sent_width, stages["refine"].sent_height), (512, 512))
+        self.assertEqual(
+            (stages["refine"].sent_width, stages["refine"].sent_height),
+            default_crop_size(),
+        )
         # 图像来源可判定（裁剪取自原始物理分辨率图 / 整屏抓图）。
         self.assertIn("crop", stages["refine"].image_source)
         self.assertNotEqual(stages["refine"].image_source, stages["coarse"].image_source)
@@ -662,6 +667,56 @@ class CoarseOnlyArmTests(unittest.TestCase):
         )
         self.assertIn("consistency", result.gate_undecidable)
         self.assertFalse(result.gate_hit)
+
+
+class CropDefaultTests(unittest.TestCase):
+    """**裁剪尺寸的默认值住在 ground 层**（冻结目录那份不许动）。"""
+
+    def test_the_ground_layer_owns_the_default_crop_size(self):
+        from minicode.ground.channel import (
+            DEFAULT_CROP_HEIGHT_PX,
+            DEFAULT_CROP_WIDTH_PX,
+        )
+
+        self.assertEqual(
+            default_crop_size(), (DEFAULT_CROP_WIDTH_PX, DEFAULT_CROP_HEIGHT_PX)
+        )
+
+    def test_the_frozen_prototype_is_untouched(self):
+        """冻结原型 ``coord/crop_refine.py`` 里那份默认值**一个字没动**。
+
+        ⚠️ 生产用的尺寸由 **ground 层**给（扫描定出来的那个），
+        冻结目录**不许改**（三个原型已验证、冻结不改）。
+        """
+        from minicode.coord.crop_refine import (
+            DEFAULT_CROP_HEIGHT_PX as FROZEN_HEIGHT,
+        )
+        from minicode.coord.crop_refine import (
+            DEFAULT_CROP_WIDTH_PX as FROZEN_WIDTH,
+        )
+
+        self.assertEqual((FROZEN_WIDTH, FROZEN_HEIGHT), (512, 512))
+
+    def test_the_crop_size_is_a_runtime_parameter(self):
+        """构造参数能覆盖默认值（评测台从那儿传扫描用的尺寸）。"""
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
+        grounder = TwoStageGrounder(
+            model,
+            scale=ModelScale.RELATIVE_0_1000,
+            model_input_size=(2560, 1600),
+            full_screen_size=(2560, 1600),
+            effort=Effort.LOW,
+            crop_width=1024,
+            crop_height=1024,
+        )
+        result = grounder.locate(
+            VisualLocateRequest(
+                target_description="开始",
+                frame=_detail_frame(2560, 1600),
+                surface=(0, 0, 2560, 1600),
+            )
+        )
+        self.assertEqual(result.crop_plan["width"], 1024)
 
 
 class ZoomTests(unittest.TestCase):

@@ -29,7 +29,7 @@ from minicode.action.ports import (
     ZoomResult,
 )
 
-from .channel import TwoStageGrounder
+from .channel import TwoStageGrounder, default_crop_size
 from .crop import crop_frame
 from .gate import (
     FallbackCause,
@@ -87,6 +87,7 @@ __all__ = [
     "crop_frame",
     "crop_plan_fields",
     "crop_roundtrip_error",
+    "default_crop_size",
     "default_gate_params",
     "evaluate_gate",
     "full_screen_geometry",

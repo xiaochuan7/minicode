@@ -30,7 +30,7 @@ from minicode.ground.candidates import (
     iou,
     merge_candidate_sources,
 )
-from minicode.ground.channel import TwoStageGrounder
+from minicode.ground.channel import TwoStageGrounder, default_crop_size
 from minicode.ground.gate import GateMode
 from minicode.ground.prompt import (
     CandidateLine,
@@ -616,10 +616,15 @@ class WholeScreenDownscaleTests(unittest.TestCase):
         # 粗定位那张图 = 缩放后的整屏（512×256）。
         self.assertEqual(_png_size(model.calls[0]["image_base64"]), (512, 256))
         # 精定位那张图 = 从**原图**上 1:1 裁的 crop（**不缩放**）。
-        self.assertEqual(_png_size(model.calls[1]["image_base64"]), (512, 512))
+        self.assertEqual(
+            _png_size(model.calls[1]["image_base64"]), default_crop_size()
+        )
         stages = {echo.stage: echo for echo in result.echoes}
         self.assertEqual((stages["coarse"].sent_width, stages["coarse"].sent_height), (512, 256))
-        self.assertEqual((stages["refine"].sent_width, stages["refine"].sent_height), (512, 512))
+        self.assertEqual(
+            (stages["refine"].sent_width, stages["refine"].sent_height),
+            default_crop_size(),
+        )
 
 
 class PromptTests(unittest.TestCase):

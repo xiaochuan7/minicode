@@ -66,7 +66,7 @@ from minicode.coord.coordinates import (
     CoordinateOutOfBounds,
     ModelScale,
 )
-from minicode.coord.crop_refine import DEFAULT_CROP_HEIGHT_PX, DEFAULT_CROP_WIDTH_PX, CropRefiner
+from minicode.coord.crop_refine import CropRefiner
 from minicode.model.effort import Effort
 from minicode.model.image import downscale_frame
 from minicode.model.ports import ModelCaller
@@ -134,6 +134,33 @@ DEFAULT_NUMBERED_MAX_TOKENS = 4000
 #: 它是**公开判据自己的刻度**，写成 ``1_000`` 是为了不与「写死分母」那条
 #: 源码级检查（``test_ground_two_stage.py``）混淆。
 ZOOM_CONSISTENCY_PER_MILLE = 1_000
+
+#: **裁剪窗口的默认尺寸**（物理像素）—— **ground 层**的那份默认值。
+#:
+#: ⚠️ 冻结原型 ``coord/crop_refine.py`` 里也有一份（512）—— **那个目录不许改**，
+#: 生产用的尺寸由**本层**给（``TwoStageGrounder(crop_width=…, crop_height=…)``
+#: 是运行时参数，评测台从那儿覆盖）。
+#:
+#: **取值来源**【实测数字】：330 条 ScreenSpot-Pro 分层抽样（固定 seed 20251020）、
+#: 七个尺寸 {128,192,256,512,768,1024,1280} **同一批样本**、**七个尺寸共用同一次
+#: 粗定位回答**（差异里不混模型随机性）、**A 半调 / B 半评**（交错取样）：
+#:
+#: * **A 半命中率**：128 35.2% / **192 43.0%** / 256 43.0% / 512 42.4% /
+#:   768 42.4% / 1024 41.8% / 1280 40.0%；
+#: * 192~768 彼此**差 ≤1 条样本**（= 噪声）→ 按 A 半的中位误差破平：**192 最低**
+#:   （68.7 px vs 256/512 的 75.5 px）；
+#: * **成本**：192 那一次精定位的图像 token = **49**，512 = **361**（7.4 倍）；
+#: * B 半（**只用来评**）：192 47.3%，整批与 B 半的峰是 512（46.7% / 50.9%）。
+#:
+#: 产物：``runs/g1-crop-scan/crop-scan.json``（命令见
+#: :mod:`minicode.ground.numbered_bench` 的 ``--crop-scan``）。
+#:
+#: ⚠️ **这条曲线混着两个效应**：偏离判据的参考点改成 **crop 窗口中心**之后，
+#: 窗口越大、被 shift 掉的越多 → **回落率随尺寸单调上升**（27.6% → 82.7%）。
+#: 「≥1024 更差」这个读法**部分**是这个判据造成的，不是尺寸本身的账 ——
+#: 要把两者分开，下一轮要再跑一臂（参考点改回 coarse）。
+DEFAULT_CROP_WIDTH_PX = 192
+DEFAULT_CROP_HEIGHT_PX = 192
 
 #: **目标描述规范化**时给模型的名字条数上限（B-4：给 2~3 个更具体的表述）。
 MAX_TARGET_NAMES = 5
