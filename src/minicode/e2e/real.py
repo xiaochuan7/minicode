@@ -150,23 +150,6 @@ def find_window_by_title(title: str) -> int:
     return found[0] if found else 0
 
 
-def find_window_by_class(class_name: str) -> int:
-    """按**类名**找可见窗口（找不到返回 0）。"""
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    found: list[int] = []
-
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-    def _callback(hwnd, _lparam):
-        cls = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(wintypes.HWND(int(hwnd)), cls, 256)
-        if cls.value == class_name and user32.IsWindowVisible(hwnd):
-            found.append(int(hwnd))
-        return True
-
-    user32.EnumWindows(_callback, 0)
-    return found[0] if found else 0
-
-
 def window_title_of(hwnd: int) -> str:
     """窗口标题（读不到就是空串 —— 不假装）。"""
     if not hwnd:
@@ -619,7 +602,14 @@ class WindowsDesktopExecutor:
         from minicode.verification.layer import VerificationLayer
 
         if window == "taskbar":
-            hwnd = find_window_by_class("Shell_TrayWnd")
+            # ⚠️ **必须用那个带 ``FindWindowW`` 兜底的找法**：实测**任务栏窗口
+            # 有时不出现在 ``EnumWindows`` 的枚举结果里**（``FindWindowW``
+            # 一直能命中）—— 只靠枚举就会在真机上偶发「找不到任务栏窗口」
+            # （工单 M14 的 W-3.1 就是这么失败的）。
+            # 见 :func:`minicode.action.windows.find_taskbar_hwnd`。
+            from minicode.action.windows import find_taskbar_hwnd
+
+            hwnd = find_taskbar_hwnd() or 0
             if not hwnd:
                 raise RuntimeError("找不到任务栏窗口（Shell_TrayWnd）")
         else:
