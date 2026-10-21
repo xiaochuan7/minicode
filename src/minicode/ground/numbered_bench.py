@@ -757,7 +757,9 @@ def _run_crop_scan(args) -> int:
     # -- 标定：每个图像尺寸一次（分母只能来自标定）------------------------
     scale_by_size: dict[tuple[int, int], Any] = {}
     model_input_by_size: dict[tuple[int, int], tuple[int, int]] = {}
-    for width, height in sorted({sample.image_size for sample in chosen}):
+
+    def _calibrate(size: tuple[int, int]) -> tuple[tuple[int, int], Any, tuple[int, int]]:
+        width, height = size
         declared = model_input_size_for(width, height)
         outcome = CalibrationProbe(
             client,
@@ -768,9 +770,16 @@ def _run_crop_scan(args) -> int:
             effort=args.effort,
             max_tokens=args.max_tokens,
         ).run()
-        scale_by_size[(width, height)] = outcome.detected_scale
-        model_input_by_size[(width, height)] = declared
-        print(f"  标定 {width}×{height}：标度 {outcome.detected_scale.value}")
+        return (size, outcome.detected_scale, declared)
+
+    #: 标定**按尺寸并行**（每个尺寸独立；只缩短墙钟时间，不改变判定）。
+    with ThreadPoolExecutor(max_workers=max(1, min(args.workers, 4))) as pool:
+        for size, scale, declared in pool.map(
+            _calibrate, sorted({sample.image_size for sample in chosen})
+        ):
+            scale_by_size[size] = scale
+            model_input_by_size[size] = declared
+            print(f"  标定 {size[0]}×{size[1]}：标度 {scale.value}", flush=True)
 
     #: **应答记忆**：七个尺寸共用同一次粗定位回答（差异里不许混模型的随机性）。
     memoized = MemoizingModelCaller(client)
@@ -884,7 +893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=20251020, help="抽样种子（决定性）")
     parser.add_argument("--out", default="runs/b1-numbered", help="记录落盘目录")
     parser.add_argument("--effort", default=Effort.LOW.value, help="思考预算档位")
-    parser.add_argument("--max-tokens", type=int, default=2000)
+    parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--ocr-language", default="en-US", help="Windows OCR 的语言")
     parser.add_argument("--workers", type=int, default=4, help="按样本并行的线程数")
     parser.add_argument("--limit", type=int, default=0, help="最多跑多少条（调试用）")

@@ -464,12 +464,14 @@ class TwoStageGrounder:
         except Exception as exc:
             raw = None
             coarse_issue = f"粗定位失败：{exc}"
+        raw_center: tuple[float, float] | None = None
         if raw is not None:
+            raw_center = _model_center(raw)
             echoes.append(
                 GroundingEcho(
                     stage=STAGE_COARSE,
-                    raw_x=_model_center(raw)[0],
-                    raw_y=_model_center(raw)[1],
+                    raw_x=raw_center[0],
+                    raw_y=raw_center[1],
                     # **实际发送**的那张图的尺寸（A-2：我们自己缩到 model_input_size，
                     # 服务端不用再缩 → 模型看到的就是这张）。回显报这个尺寸，
                     # 模型才能对账自己给的坐标。
@@ -515,8 +517,10 @@ class TwoStageGrounder:
             echoes.append(
                 GroundingEcho(
                     stage=STAGE_COARSE_ONLY,
-                    raw_x=coarse[0],
-                    raw_y=coarse[1],
+                    # 与粗定位那条回显**同一个数**（模型自己发出的那个数）；
+                    # 物理落点在 ``landing_point`` / ``coarse_point`` 里。
+                    raw_x=raw_center[0] if raw_center is not None else coarse[0],
+                    raw_y=raw_center[1] if raw_center is not None else coarse[1],
                     sent_width=screen_frame.width,
                     sent_height=screen_frame.height,
                     image_source=_image_source(screen_frame),
