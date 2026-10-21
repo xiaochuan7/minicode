@@ -32,7 +32,7 @@ from typing import Any
 from minicode.action.ports import ControlCandidate
 from minicode.action.protocol import ActionKind
 from minicode.action.records import ActionTrace, ListTraceSink, MultiTraceSink
-from minicode.action.seam import ActionExecutionSeam, SeamRequest
+from minicode.action.seam import ActionExecutionSeam, SeamRequest, SeamResult
 from minicode.reflection.handoff import build_handoff
 from minicode.reflection.stop import STOP_EXPECTATION_MET, STOP_REASON_TEXT, StopPolicy
 
@@ -821,7 +821,16 @@ class ChromeExecutor:
         self._context_data["input_value"] = self._focused_value()
         # **剪贴板用过后要恢复**（工单 M14 C-2 的验收条款）。
         self._context_data["clipboard_restored"] = clipboard_before == clipboard_after
-        return result
+        #: **形状对齐**：下面那段按**缝的返回值**取字段（``result.result.error_code``）——
+        #: 这一条（文本输入）走的是浏览器自己的输入通道，返回的是**动作结果**，
+        #: 所以要包成缝的形状。⚠️ 漏了这一层 → ``'ActionResult' object has no
+        #: attribute 'result'``（本轮 wave1 的 C-2 就死在这）。
+        return SeamResult(
+            action=None,
+            final_point=None,
+            intent=step.description,
+            result=result,
+        )
 
     def _focused_value(self) -> str:
         snapshot = self._source.snapshot()
