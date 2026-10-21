@@ -32,6 +32,7 @@ from .calibrate import (
     CalibrationOutcome,
     CalibrationProbe,
     CandidateEvaluation,
+    estimate_model_input_from_log,
     estimate_model_input_from_tokens,
 )
 from .probe import (
@@ -79,6 +80,7 @@ __all__ = [
     "ProbeTarget",
     "build_probe_frame",
     "default_probe_spec",
+    "estimate_model_input_from_log",
     "estimate_model_input_from_tokens",
     "image_prompt",
     "parse_points",

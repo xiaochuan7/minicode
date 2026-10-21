@@ -66,6 +66,13 @@ class CalibrationRecord:
     equivalence_tolerance_px: float = SCALE_EQUIVALENCE_TOLERANCE_PX
     #: **落点等价判定**（``"equivalent"`` / ``"divergent"``）。
     scale_equivalence_verdict: str = EQUIVALENCE_EQUIVALENT
+    #: **两个「带分母的相对标度」之间的物理落点分歧**（物理像素）。
+    #:
+    #: 0~999 与 0~1000 在**探针真值位置**上的分歧（**探针几何常量**，
+    #: 与模型答成什么样无关）—— 2560 宽探针上 ≈ **2.87 px**，
+    #: 它就是「落点等价容差 4 px」的**基线**：
+    #: 从记录里**直接读得出**「这两个标度对落点没有影响」。
+    denominator_pair_divergence_px: float = 0.0
 
     @classmethod
     def from_outcome(
@@ -109,6 +116,7 @@ class CalibrationRecord:
             p90_error_px=outcome.p90_error_px,
             equivalence_tolerance_px=outcome.equivalence_tolerance_px,
             scale_equivalence_verdict=outcome.scale_equivalence_verdict,
+            denominator_pair_divergence_px=outcome.denominator_pair_divergence_px,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -139,6 +147,7 @@ class CalibrationRecord:
             "p90_error_px": self.p90_error_px,
             "equivalence_tolerance_px": self.equivalence_tolerance_px,
             "scale_equivalence_verdict": self.scale_equivalence_verdict,
+            "denominator_pair_divergence_px": self.denominator_pair_divergence_px,
         }
 
     @classmethod
@@ -183,6 +192,9 @@ class CalibrationRecord:
             ),
             scale_equivalence_verdict=str(
                 data.get("scale_equivalence_verdict", EQUIVALENCE_EQUIVALENT)
+            ),
+            denominator_pair_divergence_px=float(
+                data.get("denominator_pair_divergence_px", 0.0)
             ),
         )
 

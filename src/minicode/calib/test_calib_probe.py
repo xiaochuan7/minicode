@@ -54,6 +54,7 @@ from minicode.calib import (
     CalibrationProbe,
     CalibrationStore,
     default_probe_spec,
+    estimate_model_input_from_log,
     estimate_model_input_from_tokens,
     probe_hit_radius,
     visual_channel_available,
@@ -62,7 +63,7 @@ from minicode.calib.probe import build_probe_frame, probe_png
 from minicode.coord.coordinates import CoordinateAdapter, FrameGeometry, ModelScale
 from minicode.model.client import ModelReply
 from minicode.model.effort import Effort
-from minicode.model.request_log import png_image_size
+from minicode.model.request_log import RequestLog, png_image_size
 
 #: 本机物理表面尺寸（真实值；探针尺寸必须等于它，不是写死的 1280×720）。
 SURFACE_W, SURFACE_H = 2560, 1600
@@ -493,6 +494,36 @@ class TestHitRate(unittest.TestCase):
         self.assertAlmostEqual(outcome.p90_error_px, 10.0, places=6)
 
 
+class TestDenominatorPairDivergence(unittest.TestCase):
+    """落盘里能**直接读出**「0~999 与 0~1000 的分歧」（落点等价容差的基线）。"""
+
+    def test_the_baseline_is_the_documented_value(self):
+        """2560 宽探针上 ≈ 2.87 px（架构备忘记的基线）→ ≤ 4 px 容差。"""
+        outcome, _ = _run(ModelScale.RELATIVE_0_1000)
+        self.assertAlmostEqual(outcome.denominator_pair_divergence_px, 2.87, delta=0.05)
+        self.assertLessEqual(
+            outcome.denominator_pair_divergence_px, SCALE_EQUIVALENCE_TOLERANCE_PX
+        )
+
+    def test_it_is_a_probe_geometry_constant(self):
+        """与模型答成什么样无关（模型按像素答时它照样是 2.87 px）。"""
+        relative, _ = _run(ModelScale.RELATIVE_0_1000)
+        absolute, _ = _run(ModelScale.ABSOLUTE_CAPTURE)
+        self.assertAlmostEqual(
+            relative.denominator_pair_divergence_px,
+            absolute.denominator_pair_divergence_px,
+            places=6,
+        )
+
+    def test_it_is_readable_from_the_record(self):
+        from minicode.calib.record import CalibrationRecord
+
+        outcome, _ = _run(ModelScale.RELATIVE_0_1000)
+        data = CalibrationRecord.from_outcome(outcome).to_dict()
+        self.assertIn("denominator_pair_divergence_px", data)
+        self.assertAlmostEqual(data["denominator_pair_divergence_px"], 2.87, delta=0.05)
+
+
 class TestOutOfRangeAnswer(unittest.TestCase):
     """AC 6：越界记为无穷大误差、不中断。"""
 
@@ -592,6 +623,22 @@ class TestVisualAdmission(unittest.TestCase):
         self.assertFalse(admission.available)
         self.assertIn("命中率", admission.reason)
 
+    def test_calibration_ok_is_structurally_true_and_the_hit_rate_is_the_gate(self):
+        """A-1 归位后的**结构事实**（不是放松判据）：
+
+        落点等价族**就是**「分歧 ≤ 4 px 的族」→ ``calibration_ok`` 恒真；
+        **真正起闸门作用的是命中率**（方案原话：视觉通道由命中率决定）。
+        """
+        small, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(3.0, 0.0))
+        self.assertTrue(small.calibration_ok)
+        self.assertGreaterEqual(small.hit_rate, CALIBRATION_MIN_HIT_RATE)
+        self.assertTrue(CalibrationAdmission(small).admit().available)
+
+        big, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(60.0, 0.0))
+        self.assertTrue(big.calibration_ok)  # 仍然恒真 —— 它不是闸门
+        self.assertLess(big.hit_rate, CALIBRATION_MIN_HIT_RATE)
+        self.assertFalse(CalibrationAdmission(big).admit().available)
+
     def test_unavailable_reason_is_human_readable(self):
         outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(60.0, 0.0))
         admission = CalibrationAdmission(outcome).admit()
@@ -678,6 +725,7 @@ class TestRecord(unittest.TestCase):
             "p90_error_px",
             "equivalence_tolerance_px",
             "scale_equivalence_verdict",
+            "denominator_pair_divergence_px",
         ):
             self.assertIn(key, data)
         self.assertEqual(len(data["candidates"]), 5)
@@ -708,6 +756,7 @@ class TestRecord(unittest.TestCase):
             "p90_error_px",
             "equivalence_tolerance_px",
             "scale_equivalence_verdict",
+            "denominator_pair_divergence_px",
         ):
             data.pop(key)
         back = CalibrationRecord.from_dict(data)
@@ -881,6 +930,34 @@ class TestEstimateModelInputFromTokens(unittest.TestCase):
     def test_no_compatible_cell_gives_none(self):
         """没有任何格子的宽高比与声明相容 → None。"""
         self.assertIsNone(estimate_model_input_from_tokens(100, 90, 1.6))
+
+    def test_reverse_lookup_uses_the_total_input_tokens(self):
+        """服务端开了**提示词缓存**时，观测值必须取**总和**。
+
+        这条日志照抄本机实测：``input_tokens=403``、``cache_read=1280``
+        → 总和 1683；减去文字 349 → 图像 1334 = 46×29（28 px 规则）
+        → 反查得 (1288, 812)（与声明的 1280×800 每边差 ≤ 28 px）。
+
+        **只看 ``input_tokens``** 会把图像那部分漏掉 → 反查出一个
+        完全不同的（错的）尺寸。
+        """
+        record = RequestLog(
+            effort="low",
+            model="stub",
+            endpoint="stub://model",
+            http_status=200,
+            latency_ms=1.0,
+            input_tokens=403,
+            output_tokens=1,
+            cache_read_input_tokens=1280,
+        )
+        self.assertEqual(record.total_input_tokens, 1683)
+        size = estimate_model_input_from_log(record, 349, 1.6)
+        self.assertEqual(size, (1288, 812))
+        # 只看 input_tokens（漏掉缓存里那部分）→ 结果完全不同（错的）
+        self.assertNotEqual(
+            estimate_model_input_from_tokens(record.input_tokens, 349, 1.6), size
+        )
 
 
 class TestNoHardcodedDenominator(unittest.TestCase):

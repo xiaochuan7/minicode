@@ -24,6 +24,18 @@
    ``calibration_ok`` 的语义是「**落点等价族判定成功**」，
    **不再表示「模型误差 ≤ 1 px」**。
 
+⚠️ **为什么 ``calibration_ok`` / ``landing_equivalence`` 在新口径下恒为真**
+（A-1 归位后的**结构事实**，不是放松判据）：
+
+    落点等价族 = {判定标度} ∪ {分歧 ≤ 落点等价容差(4 px) 的候选}
+                 ↑ 按定义，族内最大分歧 ≤ 4 px
+
+所以「族内最大分歧 ≤ 4 px」**按定义恒成立** → ``calibration_ok`` 恒 True、
+``landing_equivalence`` 恒 ``"equivalent"``。**真正起闸门作用的是命中率**
+（方案原话：**视觉通道由命中率决定**）——
+准入判据见 :mod:`minicode.calib.admission`：
+「等价族最大分歧 ≤ 4 px **且** K 轮命中率 ≥ 0.6」。
+
 **越界记为无穷大误差、不中断**（AC 6）：把 0~1000 的数值当 0~1 读时，
 模型空间那层先判越界，该候选的最大误差记 ``inf``，标定继续跑完。
 """
@@ -46,7 +58,7 @@ from minicode.coord.coordinates import (
 from minicode.model.effort import Effort
 from minicode.model.image import downscale_frame
 from minicode.model.ports import ModelCaller
-from minicode.model.request_log import IMAGE_PATCH_PX
+from minicode.model.request_log import IMAGE_PATCH_PX, RequestLog, total_input_tokens
 
 from .probe import ProbeSpec, build_probe_frame, probe_digest
 from .prompt import image_prompt, parse_points, text_prompt
@@ -68,6 +80,7 @@ __all__ = [
     "EQUIVALENCE_EQUIVALENT",
     "EQUIVALENCE_DIVERGENT",
     "estimate_model_input_from_tokens",
+    "estimate_model_input_from_log",
 ]
 
 #: 标度判定：唯一命中。
@@ -127,6 +140,10 @@ class CalibrationOutcome:
     #:
     #: ⚠️ 它**不再表示「模型误差 ≤ 1 px」** —— 模型落点误差由
     #: :attr:`hit_rate` 判（准入闸门看的是这两个）。
+    #:
+    #: ⚠️⚠️ **它在新口径下恒为真**（**结构事实**，不是放松判据）：
+    #: 落点等价族**就是**「分歧 ≤ 4 px 的族」→ 族内最大分歧按定义 ≤ 4 px。
+    #: **真正起闸门作用的是命中率**（方案原话：视觉通道由命中率决定）。
     calibration_ok: bool = False
     #: 标定问了几轮（K）。
     rounds: int = 1
@@ -138,7 +155,20 @@ class CalibrationOutcome:
     #: 同上：**p90**（最近秩）。
     p90_error_px: float = 0.0
     #: **落点等价判定**（与 :attr:`landing_equivalence` 同一个结论的新名字）。
+    #:
+    #: ⚠️ 同 :attr:`calibration_ok`：**它在新口径下恒为 ``"equivalent"``**
+    #: （族是按 4 px 定义的）→ 真正的闸门是 :attr:`hit_rate`。
     scale_equivalence_verdict: str = EQUIVALENCE_EQUIVALENT
+    #: **两个「带分母的相对标度」之间的物理落点分歧**（物理像素）。
+    #:
+    #: 0~999 与 0~1000 这两个候选，在**探针真值位置**上按各自口径解释时
+    #: 落点差多少 —— **探针几何常量**，与模型答成什么样无关
+    #: （模型按像素答时，它仍然是从记录里**直接读得出**的那个基线值：
+    #: 2560 宽探针上 ≈ **2.87 px**）。
+    #:
+    #: 它就是「落点等价容差 4 px」的**基线**：
+    #: 2.87 px ≤ 4 px → 这两个标度**对落点没有影响**（换标度只挪 2.87 px）。
+    denominator_pair_divergence_px: float = 0.0
     #: 探针图哈希（**只落哈希，不落原图**）。
     probe_digest: str = ""
     #: 探针尺寸（物理像素）。
@@ -177,6 +207,31 @@ def _max_divergence(
     return worst
 
 
+def _denominator_pair_divergence(spec: ProbeSpec, frame: FrameGeometry) -> float:
+    """两个「带分母的相对标度」在**探针真值位置**上的物理落点分歧。
+
+    **探针几何常量**（与模型答成什么样无关）：
+    把目标的真值位置按 0~1000 口径编码成模型空间数值，
+    再用 0~999 口径解释**同一个数值** → 落点挪了多远（取四个目标里的最大）。
+
+    2560 宽探针上 = **2.87 px**（架构备忘记的基线）——
+    它就是「落点等价容差 4 px」的**基线**：
+    2.87 px ≤ 4 px → 这两个标度**对落点没有影响**。
+    """
+    reference = CoordinateAdapter(ModelScale.RELATIVE_0_1000)
+    alternative = CoordinateAdapter(ModelScale.RELATIVE_0_999)
+    worst = 0.0
+    for target in spec.targets:
+        raw_x, raw_y = reference.from_screen(target.x, target.y, frame)
+        try:
+            px, py = alternative.to_screen(raw_x, raw_y, frame)
+        except CoordinateError:
+            # 换一种口径解释就落到表面外 → 分歧无穷大（如实记）。
+            return math.inf
+        worst = max(worst, math.hypot(px - target.x, py - target.y))
+    return worst
+
+
 def _percentile(values: Sequence[float], fraction: float) -> float:
     """最近秩百分位（``rank = ceil(fraction × n)``，钳到 n）。
 
@@ -201,6 +256,14 @@ def estimate_model_input_from_tokens(
     ----
     observed_input_tokens
         服务端报的这次请求的**总**输入 token 数（文字 + 图像）。未知 → ``None``。
+
+        ⚠️ **必须给「总和」**：服务端开了**提示词缓存**时，图像那部分的
+        token 会落在 ``cache_read`` / ``cache_creation`` 里，只看
+        ``input_tokens`` 会小到几十（图像 token 进了缓存）→ 相减会算出
+        **负的图像 token**。口径的唯一实现是
+        :func:`minicode.model.request_log.total_input_tokens`
+        （= ``input + cache_read + cache_creation``）；
+        :func:`estimate_model_input_from_log` 直接吃请求日志，**用不会错**。
     text_tokens
         **文字部分**的 token 数（调用方量出来给）。未知 → ``None``。
     aspect_ratio
@@ -249,6 +312,30 @@ def estimate_model_input_from_tokens(
     if len(matches) != 1:
         return None
     return matches[0]
+
+
+def estimate_model_input_from_log(
+    record: RequestLog,
+    text_tokens: int | None,
+    aspect_ratio: float,
+) -> tuple[int, int] | None:
+    """用**请求日志**反查服务端实际看到的那张图有多大（**用总和**）。
+
+    输入是 :class:`minicode.model.request_log.RequestLog`（请求日志那条记录），
+    观测 token 数取 :attr:`minicode.model.request_log.RequestLog.total_input_tokens`
+    —— 也就是 ``input + cache_read + cache_creation`` 的**总和**
+    （服务端开了提示词缓存时，图像那部分的 token 落在缓存项里；
+    只看 ``input_tokens`` 会小到几十 → 相减出负数）。
+
+    其余语义与 :func:`estimate_model_input_from_tokens` 完全一致：
+    **反查不出就返回 ``None``**（不猜、不返回「最接近的」）。
+    """
+    observed = total_input_tokens(
+        record.input_tokens,
+        record.cache_read_input_tokens,
+        record.cache_creation_input_tokens,
+    )
+    return estimate_model_input_from_tokens(observed, text_tokens, aspect_ratio)
 
 
 class CalibrationProbe:
@@ -433,6 +520,9 @@ class CalibrationProbe:
             median_error_px=_percentile(best_errors, 0.5),
             p90_error_px=_percentile(best_errors, 0.9),
             scale_equivalence_verdict=landing_equivalence,
+            denominator_pair_divergence_px=_denominator_pair_divergence(
+                self.spec, frame
+            ),
             probe_digest=probe_digest(frame_image),
             probe_size=(self.spec.width, self.spec.height),
             model_input_size=self.model_input_size,

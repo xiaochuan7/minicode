@@ -67,6 +67,9 @@ def _describe(outcome, admission) -> str:
         f"（{outcome.rounds} 轮 × {len(outcome.targets)} 个目标）",
         f"落点误差：中位数 {outcome.median_error_px:.2f} px｜p90 {outcome.p90_error_px:.2f} px",
         f"等价族最大分歧：{family_divergence:.2f} px",
+        f"两个带分母的相对标度（0~999 / 0~1000）之间的分歧（探针几何常量）："
+        f"{outcome.denominator_pair_divergence_px:.2f} px"
+        f"（落点等价容差 {outcome.equivalence_tolerance_px:.1f} px 的基线）",
         f"等价标度列表：{'、'.join(s.value for s in outcome.equivalent_scales) or '（无）'}",
         f"视觉通道准入：{'可用' if admission.available else '不可用'} —— {admission.reason}",
         "各候选标度：",
