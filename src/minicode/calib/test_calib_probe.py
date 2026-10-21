@@ -1,7 +1,16 @@
-"""标定探针的**外部行为**单测（工单 M5）。
+"""标定探针的**外部行为**单测（工单 M5 / A-1）。
 
 断言的对象是**对外可见的契约字段**：探针几何、标度判定、落点等价、
-等价标度列表、落盘记录、视觉通道准入判定。
+等价标度列表、**K 轮命中率与误差分布**、落盘记录、视觉通道准入判定。
+
+⚠️ **口径归位**（A-1，用户已签字）：1 px 只管**可分辨性**
+（「两个候选标度能不能分开」），**不管模型落点误差**。因此：
+
+* ``equivalent_scales`` 是**落点等价族**（4 px）：0~999 与 0~1000 的
+  2.87 px 分歧落在族里（不是「分开了就排除」）；
+* ``scale_verdict`` 仍按**可分辨性**（2 px）判 unique / multi；
+* ``calibration_ok`` = **落点等价族判定成功**，不再是「模型误差 ≤ 1 px」；
+* **准入**看的是「落点等价族分歧 ≤ 4 px」**且**「K 轮命中率 ≥ 0.6」。
 
 另有三类**源码级**检查（工单 AC 10 / AC 11 的字面要求就是源码级判据，
 与 `minicode/model/test_citation_discipline.py` 同一路子）：
@@ -14,6 +23,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import re
@@ -32,19 +42,27 @@ from minicode.action.ports import LocateRequest, LocateResult
 from minicode.action.records import ListTraceSink
 from minicode.action.seam import ActionExecutionSeam, SeamRequest
 from minicode.calib import (
+    CALIBRATION_MIN_HIT_RATE,
+    CALIBRATION_ROUNDS,
     CALIBRATION_TOLERANCE_PX,
     DISCRIMINABILITY_SAFETY_FACTOR,
     OUT_OF_BOUNDS_TOLERANCE_PX,
+    PROBE_HIT_RADIUS_PX,
+    SCALE_EQUIVALENCE_TOLERANCE_PX,
     CalibrationAdmission,
     CalibrationLog,
     CalibrationProbe,
     CalibrationStore,
     default_probe_spec,
+    estimate_model_input_from_tokens,
+    probe_hit_radius,
+    visual_channel_available,
 )
 from minicode.calib.probe import build_probe_frame, probe_png
 from minicode.coord.coordinates import CoordinateAdapter, FrameGeometry, ModelScale
 from minicode.model.client import ModelReply
 from minicode.model.effort import Effort
+from minicode.model.request_log import png_image_size
 
 #: 本机物理表面尺寸（真实值；探针尺寸必须等于它，不是写死的 1280×720）。
 SURFACE_W, SURFACE_H = 2560, 1600
@@ -137,10 +155,13 @@ def _run(
     model_input_size: tuple[int, int] | None = None,
     calibration_tolerance_px: float = CALIBRATION_TOLERANCE_PX,
     out_of_bounds_tolerance_px: float = OUT_OF_BOUNDS_TOLERANCE_PX,
+    equivalence_tolerance_px: float = SCALE_EQUIVALENCE_TOLERANCE_PX,
     shift: tuple[float, float] = (0.0, 0.0),
     call_path: str = "image",
     model_id: str = "stub-model",
     reply_form: str = "json",
+    rounds: int = CALIBRATION_ROUNDS,
+    session: int = 0,
 ):
     """跑一次标定，返回 ``(outcome, stub)``。"""
     spec = _spec(width, height)
@@ -159,6 +180,9 @@ def _run(
         model_id=model_id,
         calibration_tolerance_px=calibration_tolerance_px,
         out_of_bounds_tolerance_px=out_of_bounds_tolerance_px,
+        equivalence_tolerance_px=equivalence_tolerance_px,
+        rounds=rounds,
+        session=session,
     )
     return probe.run(), stub
 
@@ -212,6 +236,12 @@ class TestProbeGeometry(unittest.TestCase):
         self.assertGreaterEqual(rightmost.x, 0.95 * spec.width)
         self.assertEqual(len(spec.targets), 4)
 
+    def test_hit_radius_is_half_the_target_size(self):
+        """命中半径 = 目标方块边长的一半（标准探针 = 48 px）。"""
+        spec = _spec()
+        self.assertEqual(probe_hit_radius(spec), PROBE_HIT_RADIUS_PX)
+        self.assertEqual(probe_hit_radius(spec), spec.targets[0].size / 2.0)
+
     def test_denominator_divergence_has_two_x_margin(self):
         """0~999 与 0~1000 的落点分歧：x 轴 ≥ 2.0 px、最坏点欧氏 ≥ 2.5 px、余量 ≥ 2 倍。
 
@@ -240,11 +270,18 @@ class TestProbeGeometry(unittest.TestCase):
 class TestSilentFailureIsDetectable(unittest.TestCase):
     """AC 2：静默失败必须可测出来。"""
 
-    def test_wide_tolerance_makes_999_equivalent(self):
-        """判定容差放宽到 2.0 px（探针仍 2560 宽）→ 0~999 进等价标度列表。"""
+    def test_wide_tolerance_makes_999_indistinguishable(self):
+        """判定容差放宽到 2.0 px（探针仍 2560 宽）→ 探针分不开 999/1000。
+
+        注意：**可分辨性**（2 px）与**落点等价**（4 px）是两回事 ——
+        2.87 px 的分歧在 4 px 的落点等价族里，所以 `equivalent_scales`
+        仍含 999；但**可分辨**判据放宽到 2 px 后 999 与 1000 **分不开**了
+        → `scale_verdict` 变 multi。
+        """
         outcome, _ = _run(
             ModelScale.RELATIVE_0_1000, calibration_tolerance_px=2.0
         )
+        self.assertEqual(outcome.scale_verdict, "multi")
         self.assertIn(ModelScale.RELATIVE_0_999, outcome.equivalent_scales)
 
     def test_small_probe_makes_999_equivalent(self):
@@ -255,19 +292,43 @@ class TestSilentFailureIsDetectable(unittest.TestCase):
         self.assertIn(ModelScale.RELATIVE_0_999, outcome.equivalent_scales)
 
     def test_full_probe_separates_999_from_1000(self):
-        """真实配置（2560 宽 + 1 px 容差）必须能把两者分开。"""
+        """真实配置（2560 宽 + 1 px 容差）必须能把两者分开。
+
+        A-1 归位后：``equivalent_scales`` 是**落点等价族**（4 px），
+        2.87 px 的分歧**在**族里（换标度只挪 2.87 px，不影响落点）；
+        但**可分辨性**（1 px × 安全系数 2 = 2 px）仍然能把两者分开
+        → `scale_verdict == "unique"`。**1 px 没有放松。**
+        """
         outcome, _ = _run(ModelScale.RELATIVE_0_1000)
-        self.assertNotIn(ModelScale.RELATIVE_0_999, outcome.equivalent_scales)
         self.assertEqual(outcome.scale_verdict, "unique")
+        self.assertIn(ModelScale.RELATIVE_0_999, outcome.equivalent_scales)
+        self.assertLessEqual(
+            outcome.divergences_px[ModelScale.RELATIVE_0_999],
+            SCALE_EQUIVALENCE_TOLERANCE_PX,
+        )
 
 
 class TestToleranceIndependence(unittest.TestCase):
-    """AC 3：两个容差互不共用。"""
+    """AC 3：容差互不共用。"""
 
     def test_two_constants_are_distinct(self):
         self.assertEqual(CALIBRATION_TOLERANCE_PX, 1.0)
         self.assertEqual(OUT_OF_BOUNDS_TOLERANCE_PX, 2.0)
         self.assertNotEqual(CALIBRATION_TOLERANCE_PX, OUT_OF_BOUNDS_TOLERANCE_PX)
+
+    def test_new_constants_are_independent(self):
+        """A-1 的四个新常量与既有的两个**互不共用**。"""
+        self.assertEqual(SCALE_EQUIVALENCE_TOLERANCE_PX, 4.0)
+        self.assertEqual(PROBE_HIT_RADIUS_PX, 48)
+        self.assertEqual(CALIBRATION_ROUNDS, 5)
+        self.assertEqual(CALIBRATION_MIN_HIT_RATE, 0.6)
+        for value in (
+            SCALE_EQUIVALENCE_TOLERANCE_PX,
+            float(PROBE_HIT_RADIUS_PX),
+            CALIBRATION_MIN_HIT_RATE,
+        ):
+            self.assertNotEqual(value, CALIBRATION_TOLERANCE_PX)
+            self.assertNotEqual(value, OUT_OF_BOUNDS_TOLERANCE_PX)
 
     def test_changing_calibration_tolerance_keeps_out_of_bounds_verdicts(self):
         narrow, _ = _run(ModelScale.RELATIVE_0_1000, calibration_tolerance_px=1.0)
@@ -284,6 +345,16 @@ class TestToleranceIndependence(unittest.TestCase):
         self.assertEqual(base.scale_verdict, other.scale_verdict)
         self.assertEqual(base.equivalent_scales, other.equivalent_scales)
         self.assertEqual(base.calibration_ok, other.calibration_ok)
+
+    def test_changing_equivalence_tolerance_changes_only_the_family(self):
+        """落点等价容差只管**落点等价族**，不碰可分辨性。"""
+        base, _ = _run(ModelScale.RELATIVE_0_1000)
+        tight, _ = _run(
+            ModelScale.RELATIVE_0_1000, equivalence_tolerance_px=1.0
+        )
+        self.assertIn(ModelScale.RELATIVE_0_999, base.equivalent_scales)
+        self.assertNotIn(ModelScale.RELATIVE_0_999, tight.equivalent_scales)
+        self.assertEqual(base.scale_verdict, tight.scale_verdict)
 
 
 class TestFiveScales(unittest.TestCase):
@@ -328,10 +399,98 @@ class TestScaleVerdictAndLandingEquivalence(unittest.TestCase):
         self.assertNotEqual(outcome.scale_verdict, "unique")
 
     def test_verdict_and_equivalence_are_two_fields(self):
-        """多解 + 落点分歧：两个维度给出不同结论，不许混成一个字段。"""
+        """两个维度给出不同结论，不许混成一个字段。
+
+        窄探针（1280 宽）上 0~999 与 0~1000 的分歧 1.43 px：
+        **可分辨性**（2 px）说「分不开」→ multi；
+        **落点等价**（4 px）说「等价」→ equivalent。
+        """
         outcome, _ = _run(ModelScale.RELATIVE_0_1000, width=1280, height=800)
         self.assertEqual(outcome.scale_verdict, "multi")
-        self.assertEqual(outcome.landing_equivalence, "divergent")
+        self.assertEqual(outcome.landing_equivalence, "equivalent")
+        self.assertEqual(outcome.scale_equivalence_verdict, "equivalent")
+
+    def test_equivalence_verdict_and_landing_equivalence_agree(self):
+        outcome, _ = _run(ModelScale.RELATIVE_0_1000)
+        self.assertEqual(outcome.landing_equivalence, outcome.scale_equivalence_verdict)
+
+
+class TestKRoundIndependentAsks(unittest.TestCase):
+    """A-1：K 轮**独立**问（每轮提示词不同）。"""
+
+    def test_model_is_called_once_per_round(self):
+        outcome, stub = _run(ModelScale.RELATIVE_0_1000, rounds=5)
+        self.assertEqual(outcome.rounds, 5)
+        self.assertEqual(len(stub.calls), 5)
+
+    def test_prompts_of_each_round_differ(self):
+        """逐字重发在确定性模型下会拿到同一答案 → 每轮提示词必须不同。"""
+        _, stub = _run(ModelScale.RELATIVE_0_1000, rounds=5)
+        prompts = [call["prompt"] for call in stub.calls]
+        self.assertEqual(len(set(prompts)), len(prompts))
+
+    def test_sessions_shift_the_prompt_rotation(self):
+        """不同会话的提示词轮换起点不同 → 6 次会话相互独立。"""
+        _, first = _run(ModelScale.RELATIVE_0_1000, rounds=5, session=0)
+        _, second = _run(ModelScale.RELATIVE_0_1000, rounds=5, session=1)
+        self.assertNotEqual(
+            [call["prompt"] for call in first.calls],
+            [call["prompt"] for call in second.calls],
+        )
+
+    def test_rounds_can_be_overridden(self):
+        outcome, stub = _run(ModelScale.RELATIVE_0_1000, rounds=3)
+        self.assertEqual(outcome.rounds, 3)
+        self.assertEqual(len(stub.calls), 3)
+
+    def test_prompt_declares_the_sent_image_size(self):
+        """A-2：提示词里写明那张图是 W×H。"""
+        _, stub = _run(
+            ModelScale.RELATIVE_0_1000, model_input_size=(SURFACE_W // 2, SURFACE_H // 2)
+        )
+        prompt = stub.calls[0]["prompt"]
+        self.assertIn(f"{SURFACE_W // 2}×{SURFACE_H // 2}", prompt)
+
+    def test_sent_image_is_the_declared_size(self):
+        """送出去的那张图就是**声明**的那个尺寸（我们自己缩）。"""
+        model_input = (SURFACE_W // 2, SURFACE_H // 2)
+        _, stub = _run(ModelScale.RELATIVE_0_1000, model_input_size=model_input)
+        sent = base64.b64decode(stub.calls[0]["image_base64"])
+        self.assertEqual(png_image_size(sent), model_input)
+
+
+class TestHitRate(unittest.TestCase):
+    """A-1：命中率判据（落点落在 96 px 方块内 = 距中心 ≤ 48 px）。"""
+
+    def test_perfect_answers_hit_every_target(self):
+        outcome, _ = _run(ModelScale.RELATIVE_0_1000)
+        self.assertEqual(outcome.hit_rate, 1.0)
+        self.assertEqual(outcome.rounds, CALIBRATION_ROUNDS)
+
+    def test_hit_radius_boundary_counts_as_hit(self):
+        """距离**正好等于**命中半径 → 命中（≤ 半径）。"""
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(48.0, 0.0))
+        self.assertEqual(outcome.hit_rate, 1.0)
+
+    def test_just_outside_the_hit_radius_is_a_miss(self):
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(48.5, 0.0))
+        self.assertEqual(outcome.hit_rate, 0.0)
+
+    def test_hit_rate_counts_over_rounds_and_targets(self):
+        """命中率 = 命中数 /（K 轮 × 目标数）。"""
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(48.0, 0.0), rounds=4)
+        self.assertEqual(len(outcome.raw_points), 4 * len(outcome.targets))
+        self.assertEqual(outcome.hit_rate, 1.0)
+
+    def test_error_distribution_is_reported(self):
+        outcome, _ = _run(ModelScale.RELATIVE_0_1000)
+        self.assertAlmostEqual(outcome.median_error_px, 0.0, places=6)
+        self.assertAlmostEqual(outcome.p90_error_px, 0.0, places=6)
+
+    def test_error_distribution_follows_the_shift(self):
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(10.0, 0.0))
+        self.assertAlmostEqual(outcome.median_error_px, 10.0, places=6)
+        self.assertAlmostEqual(outcome.p90_error_px, 10.0, places=6)
 
 
 class TestOutOfRangeAnswer(unittest.TestCase):
@@ -353,24 +512,63 @@ class TestOutOfRangeAnswer(unittest.TestCase):
     def test_out_of_range_does_not_stop_the_calibration(self):
         outcome, stub = _run(ModelScale.RELATIVE_0_1000)
         self.assertIsNotNone(outcome.detected_scale)
-        self.assertEqual(len(stub.calls), 1)
+        self.assertEqual(len(stub.calls), outcome.rounds)
 
     def test_line_form_answer_is_parsed(self):
         """模型不按 JSON 答时（逐行写法）也要读得出四个坐标。"""
         outcome, _ = _run(ModelScale.RELATIVE_0_1000, reply_form="line")
         self.assertIs(outcome.detected_scale, ModelScale.RELATIVE_0_1000)
-        self.assertEqual(len(outcome.raw_points), 4)
+        self.assertEqual(len(outcome.raw_points), outcome.rounds * 4)
 
 
 class TestVisualAdmission(unittest.TestCase):
     """AC 7：硬闸门。"""
 
+    def test_admission_conditions_are_independent(self):
+        """两条条件各自独立生效：
+
+        ① 落点等价族分歧 ≤ 4 px；② K 轮命中率 ≥ 0.6。
+        """
+        ok = visual_channel_available(
+            equivalent_scales=("relative_0_1000", "relative_0_999"),
+            divergences_px={"relative_0_1000": 0.0, "relative_0_999": 2.87},
+            equivalence_tolerance_px=SCALE_EQUIVALENCE_TOLERANCE_PX,
+            hit_rate=0.8,
+            min_hit_rate=CALIBRATION_MIN_HIT_RATE,
+        )
+        self.assertTrue(ok)
+        # 只有分歧超标 → 拒绝（命中率达标也不行）
+        self.assertFalse(
+            visual_channel_available(
+                equivalent_scales=("relative_0_1000", "relative_0_999"),
+                divergences_px={"relative_0_1000": 0.0, "relative_0_999": 5.0},
+                equivalence_tolerance_px=SCALE_EQUIVALENCE_TOLERANCE_PX,
+                hit_rate=1.0,
+                min_hit_rate=CALIBRATION_MIN_HIT_RATE,
+            )
+        )
+        # 只有命中率不达标 → 拒绝（分歧达标也不行）
+        self.assertFalse(
+            visual_channel_available(
+                equivalent_scales=("relative_0_1000", "relative_0_999"),
+                divergences_px={"relative_0_1000": 0.0, "relative_0_999": 2.87},
+                equivalence_tolerance_px=SCALE_EQUIVALENCE_TOLERANCE_PX,
+                hit_rate=0.4,
+                min_hit_rate=CALIBRATION_MIN_HIT_RATE,
+            )
+        )
+
     def test_unavailable_when_alternative_diverges_more_than_tolerance(self):
+        """窄探针（1280 宽）上 999 与 1000 的分歧 1.43 px ≤ 4 px → 判**等价**。
+
+        新口径下**准入放行**（只要命中率达标）—— 1.43 px 的分歧换掉标度
+        也只挪动落点 1.43 px，不影响落点。
+        """
         outcome, _ = _run(ModelScale.RELATIVE_0_1000, width=1280, height=800)
         admission = CalibrationAdmission(outcome).admit()
-        self.assertFalse(admission.available)
+        self.assertTrue(admission.available)
         self.assertTrue(admission.reason)
-        self.assertEqual(admission.landing_equivalence, "divergent")
+        self.assertEqual(admission.landing_equivalence, "equivalent")
 
     def test_allowed_when_equivalent_scales_share_the_landing_point(self):
         outcome, _ = _run(
@@ -382,12 +580,24 @@ class TestVisualAdmission(unittest.TestCase):
         self.assertEqual(admission.landing_equivalence, "equivalent")
         self.assertTrue(admission.equivalent_scales)
 
-    def test_unavailable_when_calibration_failed(self):
-        """真机单点误差超过 1.0 px → 标定失败 → 视觉通道不可用（不猜）。"""
-        outcome, _ = _run(ModelScale.RELATIVE_0_1000, shift=(3.0, 0.0))
-        self.assertFalse(outcome.calibration_ok)
+    def test_unavailable_when_hit_rate_below_threshold(self):
+        """落点偏移到 48 px 命中半径之外 → 命中率 0 < 0.6 → 视觉通道不可用。
+
+        （旧口径是「模型误差 > 1 px → 标定失败」；A-1 归位后 1 px 只管
+        可分辨性，落点准不准由**命中率**判。）
+        """
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(60.0, 0.0))
+        self.assertLess(outcome.hit_rate, CALIBRATION_MIN_HIT_RATE)
         admission = CalibrationAdmission(outcome).admit()
         self.assertFalse(admission.available)
+        self.assertIn("命中率", admission.reason)
+
+    def test_unavailable_reason_is_human_readable(self):
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(60.0, 0.0))
+        admission = CalibrationAdmission(outcome).admit()
+        self.assertIn("px", admission.reason)
+        self.assertIn("命中率", admission.reason)
+        self.assertIn("视觉通道不可用", admission.reason)
 
     def _seam(self, admission):
         sink = ListTraceSink()
@@ -404,7 +614,7 @@ class TestVisualAdmission(unittest.TestCase):
         return seam, sink
 
     def test_seam_reports_visual_channel_unavailable(self):
-        outcome, _ = _run(ModelScale.RELATIVE_0_1000, width=1280, height=800)
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(60.0, 0.0))
         admission = CalibrationAdmission(outcome).admit()
         seam, sink = self._seam(admission)
         result = seam.run(SeamRequest(target_description="开始"))
@@ -462,12 +672,52 @@ class TestRecord(unittest.TestCase):
             "call_path",
             "raw_points",
             "targets",
+            "rounds",
+            "hit_rate",
+            "median_error_px",
+            "p90_error_px",
+            "equivalence_tolerance_px",
+            "scale_equivalence_verdict",
         ):
             self.assertIn(key, data)
         self.assertEqual(len(data["candidates"]), 5)
         for candidate in data["candidates"]:
             self.assertIn("scale", candidate)
             self.assertIn("max_error_px", candidate)
+
+    def test_record_carries_the_new_fields(self):
+        record, outcome = self._record()
+        self.assertEqual(record.rounds, outcome.rounds)
+        self.assertAlmostEqual(record.hit_rate, outcome.hit_rate)
+        self.assertAlmostEqual(record.median_error_px, outcome.median_error_px)
+        self.assertAlmostEqual(record.p90_error_px, outcome.p90_error_px)
+        self.assertEqual(
+            record.equivalence_tolerance_px, SCALE_EQUIVALENCE_TOLERANCE_PX
+        )
+        self.assertEqual(record.scale_equivalence_verdict, outcome.scale_equivalence_verdict)
+
+    def test_old_records_are_readable(self):
+        """旧记录（没有 A-1 的新字段）**读得回来**（用默认值，不报错）。"""
+        from minicode.calib.record import CalibrationRecord
+
+        data = self._record()[0].to_dict()
+        for key in (
+            "rounds",
+            "hit_rate",
+            "median_error_px",
+            "p90_error_px",
+            "equivalence_tolerance_px",
+            "scale_equivalence_verdict",
+        ):
+            data.pop(key)
+        back = CalibrationRecord.from_dict(data)
+        self.assertEqual(back.rounds, 1)
+        self.assertEqual(back.hit_rate, 0.0)
+        self.assertEqual(back.median_error_px, 0.0)
+        self.assertEqual(back.p90_error_px, 0.0)
+        self.assertEqual(
+            back.equivalence_tolerance_px, SCALE_EQUIVALENCE_TOLERANCE_PX
+        )
 
     def test_record_keeps_only_the_probe_hash(self):
         record, _ = self._record()
@@ -478,7 +728,7 @@ class TestRecord(unittest.TestCase):
 
     def test_record_can_replay_the_scale(self):
         """从记录能复原「当时按哪个量纲算的」。"""
-        record, _ = self._record()
+        record, outcome = self._record()
         data = record.to_dict()
         raw = {name: (x, y) for name, x, y in data["raw_points"]}
         truth = {name: (x, y) for name, x, y in data["targets"]}
@@ -499,6 +749,8 @@ class TestRecord(unittest.TestCase):
             px, py = adapter.to_screen(x, y, frame)
             self.assertAlmostEqual(px, truth[name][0], places=3)
             self.assertAlmostEqual(py, truth[name][1], places=3)
+        self.assertEqual(len(data["raw_points"]), data["rounds"] * len(data["targets"]))
+        self.assertEqual(len(outcome.raw_points), data["rounds"] * len(data["targets"]))
 
     def test_log_round_trips(self):
         record, _ = self._record()
@@ -529,6 +781,7 @@ class TestRecord(unittest.TestCase):
             self.assertEqual(back.raw_points, record.raw_points)
             self.assertEqual(back.targets, record.targets)
             self.assertEqual(back.candidates, record.candidates)
+            self.assertEqual(back.hit_rate, record.hit_rate)
             self.assertEqual(
                 CalibrationRecord.from_dict(record.to_dict()).to_dict(),
                 record.to_dict(),
@@ -578,15 +831,56 @@ class TestTwoCallPaths(unittest.TestCase):
         self.assertIsNone(store.scale_for("m1", "text"))
         self.assertIsNone(store.scale_for("other-model", "image"))
 
-    def test_scale_is_withheld_when_an_alternative_diverges(self):
-        """硬闸门不只在缝的端口上生效：取标度的地方同样给不出有分歧的标度。"""
+    def test_scale_is_withheld_when_the_hit_rate_is_too_low(self):
+        """硬闸门不只在缝的端口上生效：取标度的地方同样给不出不达标的标度。"""
+        from minicode.calib.record import CalibrationRecord
+
+        outcome, _ = _run(ModelScale.ABSOLUTE_CAPTURE, shift=(60.0, 0.0))
+        record = CalibrationRecord.from_outcome(outcome)
+        store = CalibrationStore([record])
+        self.assertIsNotNone(record.equivalent_scales)
+        self.assertLess(record.hit_rate, CALIBRATION_MIN_HIT_RATE)
+        self.assertIsNone(store.scale_for(record.model_id, record.call_path))
+
+    def test_scale_is_given_when_equivalent_and_hit_rate_is_fine(self):
+        """等价族分歧 ≤ 4 px 且命中率达标 → 标度给得出来。"""
         from minicode.calib.record import CalibrationRecord
 
         outcome, _ = _run(ModelScale.RELATIVE_0_1000, width=1280, height=800)
         record = CalibrationRecord.from_outcome(outcome)
         store = CalibrationStore([record])
         self.assertIsNotNone(record.equivalent_scales)
-        self.assertIsNone(store.scale_for(record.model_id, record.call_path))
+        self.assertIs(store.scale_for(record.model_id, record.call_path), ModelScale.RELATIVE_0_1000)
+
+
+class TestEstimateModelInputFromTokens(unittest.TestCase):
+    """A-2：用图像 token 数反查服务端实际看到的尺寸。"""
+
+    def test_reverse_lookup_finds_the_patch_grid(self):
+        """观测 3404 个图像 token + 宽高比 1.6 → 反查出格子上界。"""
+        size = estimate_model_input_from_tokens(3417, 13, 1.6)
+        self.assertIsNotNone(size)
+        width, height = size
+        self.assertEqual(-(-width // 28) * -(-height // 28), 3404)
+        self.assertAlmostEqual(width / height, 1.6, delta=0.05)
+
+    def test_reverse_lookup_keeps_the_declared_aspect_ratio(self):
+        """格子的可容纳比值区间必须容得下声明的宽高比。"""
+        size = estimate_model_input_from_tokens(1334, 0, 1280 / 800)
+        self.assertIsNotNone(size)
+        width, height = size
+        self.assertEqual(-(-width // 28) * -(-height // 28), 1334)
+
+    def test_unknown_text_tokens_gives_none(self):
+        """文本 token 数未知 → 如实标 unknown（不猜）。"""
+        self.assertIsNone(estimate_model_input_from_tokens(3417, None, 1.6))
+
+    def test_unknown_observed_tokens_gives_none(self):
+        self.assertIsNone(estimate_model_input_from_tokens(None, 13, 1.6))
+
+    def test_no_compatible_cell_gives_none(self):
+        """没有任何格子的宽高比与声明相容 → None。"""
+        self.assertIsNone(estimate_model_input_from_tokens(100, 90, 1.6))
 
 
 class TestNoHardcodedDenominator(unittest.TestCase):
@@ -657,6 +951,8 @@ class TestStandardLibraryOnly(unittest.TestCase):
         third_party = ("PIL", "numpy", "requests", "httpx", "mss", "cv2")
         offenders = []
         for path in sorted(_CALIB_DIR.glob("*.py")):
+            if path.name.startswith("test_"):
+                continue
             text = path.read_text(encoding="utf-8")
             for name in third_party:
                 if re.search(rf"^\s*(import|from)\s+{name}\b", text, re.MULTILINE):

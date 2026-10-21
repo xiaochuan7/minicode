@@ -1,7 +1,8 @@
 """标定记录：每次标定落一条，可离线读回（工单 M5 AC 8 / AC 9）。
 
 记录里有什么：标定时间、探针图哈希、探针尺寸、判定标度、标定容差、
-各候选标度与最大误差、等价标度列表、**标度判定**与**落点等价**两个字段、
+各候选标度与误差、等价标度列表、**标度判定**与**落点等价**两个字段、
+**轮数 / 命中率 / 中位数与 p90 误差 / 落点等价容差与判定**（A-1）、
 模型标识、调用路径，外加模型的原始回答与探针真值 ——
 有了后两者就能复盘「当时按哪个量纲算的」。
 
@@ -24,7 +25,8 @@ from typing import Any
 from minicode.coord.coordinates import ModelScale
 
 from .admission import visual_channel_available
-from .calibrate import CalibrationOutcome
+from .calibrate import EQUIVALENCE_EQUIVALENT, CalibrationOutcome
+from .tolerance import CALIBRATION_MIN_HIT_RATE, SCALE_EQUIVALENCE_TOLERANCE_PX
 
 __all__ = ["CalibrationRecord", "CalibrationLog", "CalibrationStore"]
 
@@ -52,6 +54,18 @@ class CalibrationRecord:
     call_path: str
     raw_points: tuple[tuple[str, float, float], ...]
     targets: tuple[tuple[str, float, float], ...]
+    #: **标定轮数**（K）。旧记录没有这个字段 → 读回来按 1 轮算。
+    rounds: int = 1
+    #: **命中率** = 命中数 /（K 轮 × 目标数）。旧记录没有 → 0.0（**不猜**）。
+    hit_rate: float = 0.0
+    #: 判定标度下每个预测的物理误差：**中位数**。
+    median_error_px: float = 0.0
+    #: 同上：**p90**。
+    p90_error_px: float = 0.0
+    #: **落点等价容差**（物理像素）。旧记录没有 → 用当时的默认值。
+    equivalence_tolerance_px: float = SCALE_EQUIVALENCE_TOLERANCE_PX
+    #: **落点等价判定**（``"equivalent"`` / ``"divergent"``）。
+    scale_equivalence_verdict: str = EQUIVALENCE_EQUIVALENT
 
     @classmethod
     def from_outcome(
@@ -74,6 +88,7 @@ class CalibrationRecord:
                     "scale": candidate.scale.value,
                     "max_error_px": candidate.max_error_px,
                     "mean_error_px": candidate.mean_error_px,
+                    "total_error_px": candidate.total_error_px,
                     "out_of_bounds": candidate.out_of_bounds,
                 }
                 for candidate in outcome.candidates
@@ -88,6 +103,12 @@ class CalibrationRecord:
             call_path=outcome.call_path,
             raw_points=outcome.raw_points,
             targets=outcome.targets,
+            rounds=outcome.rounds,
+            hit_rate=outcome.hit_rate,
+            median_error_px=outcome.median_error_px,
+            p90_error_px=outcome.p90_error_px,
+            equivalence_tolerance_px=outcome.equivalence_tolerance_px,
+            scale_equivalence_verdict=outcome.scale_equivalence_verdict,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,11 +133,21 @@ class CalibrationRecord:
             "call_path": self.call_path,
             "raw_points": [list(point) for point in self.raw_points],
             "targets": [list(target) for target in self.targets],
+            "rounds": self.rounds,
+            "hit_rate": self.hit_rate,
+            "median_error_px": self.median_error_px,
+            "p90_error_px": self.p90_error_px,
+            "equivalence_tolerance_px": self.equivalence_tolerance_px,
+            "scale_equivalence_verdict": self.scale_equivalence_verdict,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CalibrationRecord:
-        """从落盘形状读回一条记录（**可离线读回**）。"""
+        """从落盘形状读回一条记录（**可离线读回**，**旧记录也读得回来**）。
+
+        A-1 新增的字段用 ``.get(..., 默认值)`` 读 —— 旧记录缺它们时用默认值，
+        **不报错、不假装量过**（例如旧记录没有命中率 → 0.0 → 闸门不通过）。
+        """
         return cls(
             timestamp=str(data["timestamp"]),
             probe_sha256=str(data["probe_sha256"]),
@@ -142,6 +173,16 @@ class CalibrationRecord:
             ),
             targets=tuple(
                 (str(name), float(x), float(y)) for name, x, y in data["targets"]
+            ),
+            rounds=int(data.get("rounds", 1)),
+            hit_rate=float(data.get("hit_rate", 0.0)),
+            median_error_px=float(data.get("median_error_px", 0.0)),
+            p90_error_px=float(data.get("p90_error_px", 0.0)),
+            equivalence_tolerance_px=float(
+                data.get("equivalence_tolerance_px", SCALE_EQUIVALENCE_TOLERANCE_PX)
+            ),
+            scale_equivalence_verdict=str(
+                data.get("scale_equivalence_verdict", EQUIVALENCE_EQUIVALENT)
             ),
         )
 
@@ -197,8 +238,8 @@ class CalibrationStore:
     def scale_for(self, model_id: str, call_path: str) -> ModelScale | None:
         """取某条路径的判定标度（**没有记录就没有标度**）。
 
-        **硬闸门在这里也生效**：标定失败、或候选族里有落点分歧 > 标定容差的
-        标度时，一律给不出标度 —— 免得有人绕过准入判定直接拿一个
+        **硬闸门在这里也生效**：落点等价族分歧超出容差、或命中率不达标时，
+        一律给不出标度 —— 免得有人绕过准入判定直接拿一个
         「会让落点挪出容差」的标度去换算（准入规则只有一处：
         :func:`minicode.calib.admission.visual_channel_available`）。
         """
@@ -206,10 +247,11 @@ class CalibrationStore:
         if record is None:
             return None
         if not visual_channel_available(
-            calibration_ok=record.calibration_ok,
             equivalent_scales=record.equivalent_scales,
             divergences_px=record.divergences_px,
-            tolerance_px=record.calibration_tolerance_px,
+            equivalence_tolerance_px=record.equivalence_tolerance_px,
+            hit_rate=record.hit_rate,
+            min_hit_rate=CALIBRATION_MIN_HIT_RATE,
         ):
             return None
         return ModelScale(record.detected_scale)

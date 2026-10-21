@@ -1,13 +1,17 @@
-"""视觉通道准入判定：把标定结论翻译成「能不能走视觉通道」（工单 M5 AC 7）。
+"""视觉通道准入判定：把标定结论翻译成「能不能走视觉通道」（工单 M5 AC 7 / A-1）。
 
-**硬闸门**（架构决策备忘 §2.6 C-03 的落点等价判据）：
+**硬闸门**（A-1 的口径：1 px 归位）：
 
-* 标定失败（判定标度的最大误差 > 标定容差）→ **视觉通道不可用**。
-  不为让它通过而放宽判定容差。
-* 存在使物理落点分歧 > 标定容差的替代标度 → **视觉通道不可用**：
-  选错那个标度会把落点挪出容差，宁可回落 UIA 或直接报明确错误码。
-* 标度判定为**多解**、但各等价标度族的落点分歧都在容差内 → **允许继续**，
-  标上「落点等价」并附等价列表，**不**标记通道不可用。
+* **落点等价族分歧 > 落点等价容差（4 px）** → **视觉通道不可用**：
+  选错那个标度会把落点挪出可接受范围，宁可回落 UIA 或直接报明确错误码。
+* **K 轮命中率 < 命中率下限（0.6）** → **视觉通道不可用**：
+  模型的落点落不进目标的方块，通道没有用。
+
+两条**同时**满足才放行。**1 px 的可分辨容差不参与这个闸门** ——
+它管的是「两个候选标度能不能分开」（可分辨性），不是「落点准不准」。
+
+标度判定为**多解**、但落点等价族的分歧都在容差内 → **允许继续**，
+标上「落点等价」并附等价列表，**不**标记通道不可用。
 
 本模块只做判定，**不产出任何视觉通道落点**。
 """
@@ -17,39 +21,99 @@ from __future__ import annotations
 from minicode.action.ports import VisualAdmission
 
 from .calibrate import SCALE_VERDICT_MULTI, CalibrationOutcome
+from .tolerance import CALIBRATION_MIN_HIT_RATE
 
-__all__ = ["CalibrationAdmission", "visual_channel_available"]
+__all__ = [
+    "CalibrationAdmission",
+    "visual_channel_available",
+    "visual_channel_reason",
+]
+
+
+def _family_divergence(
+    equivalent_scales: tuple[str, ...], divergences_px: dict[str, float]
+) -> tuple[float, str]:
+    """落点等价族里的**最大分歧**（物理像素）与达成它的那个标度。"""
+    worst = 0.0
+    worst_name = ""
+    for name in equivalent_scales:
+        value = divergences_px.get(name, 0.0)
+        if value > worst:
+            worst = value
+            worst_name = name
+    return worst, worst_name
 
 
 def visual_channel_available(
     *,
-    calibration_ok: bool,
     equivalent_scales: tuple[str, ...],
     divergences_px: dict[str, float],
-    tolerance_px: float,
+    equivalence_tolerance_px: float,
+    hit_rate: float,
+    min_hit_rate: float,
 ) -> bool:
     """**硬闸门的一条规则**（准入判定与取标度的地方共用这一处）。
 
-    不可用的两个条件：
+    放行条件（**两条都要满足**）：
 
-    1. **标定失败**（判定标度的最大误差 > 标定容差）；
-    2. 候选族里有标度的**落点分歧 > 标定容差** —— 选错它会把落点挪出容差。
+    1. 落点等价族里最大的**物理落点分歧** ≤ 落点等价容差（4 px）；
+    2. K 轮**命中率** ≥ 命中率下限（0.6）。
 
-    两条路径的「替代标度」都指**探针排除不掉的那些标度**（候选族），
-    不是全部候选：否则 0~999 这种永远存在的候选会让视觉通道永远不可用。
+    两条路径的「替代标度」都指**落点等价族**（探针排除不掉、且落点分歧
+    在容差内的那些标度），不是全部候选：否则 0~999 这种永远存在的候选
+    会让视觉通道永远不可用。
     """
-    if not calibration_ok:
+    worst, _ = _family_divergence(equivalent_scales, divergences_px)
+    if worst > equivalence_tolerance_px:
         return False
-    return not any(
-        divergences_px.get(name, 0.0) > tolerance_px for name in equivalent_scales
+    return hit_rate >= min_hit_rate
+
+
+def visual_channel_reason(
+    *,
+    equivalent_scales: tuple[str, ...],
+    divergences_px: dict[str, float],
+    equivalence_tolerance_px: float,
+    hit_rate: float,
+    min_hit_rate: float,
+    rounds: int = 0,
+) -> str:
+    """人可读的理由（放行与拒绝都给）。
+
+    例：「候选标度分歧 2.87 px ≤ 4 px，但 5 轮命中率 0.4 < 0.6」。
+    """
+    worst, worst_name = _family_divergence(equivalent_scales, divergences_px)
+    rounds_text = f"{rounds} 轮" if rounds else "本轮"
+    if worst > equivalence_tolerance_px:
+        return (
+            f"存在使物理落点分歧 {worst:.2f} px > 落点等价容差 "
+            f"{equivalence_tolerance_px:.1f} px 的替代标度（{worst_name}）"
+            f" —— 视觉通道不可用"
+        )
+    if hit_rate < min_hit_rate:
+        return (
+            f"候选标度分歧 {worst:.2f} px ≤ {equivalence_tolerance_px:.1f} px，"
+            f"但 {rounds_text}命中率 {hit_rate:.2f} < {min_hit_rate:.2f}"
+            f" —— 视觉通道不可用"
+        )
+    return (
+        f"落点等价族最大分歧 {worst:.2f} px ≤ {equivalence_tolerance_px:.1f} px"
+        f"｜{rounds_text}命中率 {hit_rate:.2f} ≥ {min_hit_rate:.2f}"
+        f" —— 视觉通道可用"
     )
 
 
 class CalibrationAdmission:
     """由一条标定结论得到视觉通道的准入判定。"""
 
-    def __init__(self, outcome: CalibrationOutcome):
+    def __init__(
+        self,
+        outcome: CalibrationOutcome,
+        *,
+        min_hit_rate: float = CALIBRATION_MIN_HIT_RATE,
+    ):
         self.outcome = outcome
+        self.min_hit_rate = float(min_hit_rate)
 
     def admit(self) -> VisualAdmission:
         outcome = self.outcome
@@ -64,47 +128,33 @@ class CalibrationAdmission:
             "equivalent_scales": equivalent,
         }
         available = visual_channel_available(
-            calibration_ok=outcome.calibration_ok,
             equivalent_scales=equivalent,
             divergences_px=divergences,
-            tolerance_px=outcome.calibration_tolerance_px,
+            equivalence_tolerance_px=outcome.equivalence_tolerance_px,
+            hit_rate=outcome.hit_rate,
+            min_hit_rate=self.min_hit_rate,
+        )
+        reason = visual_channel_reason(
+            equivalent_scales=equivalent,
+            divergences_px=divergences,
+            equivalence_tolerance_px=outcome.equivalence_tolerance_px,
+            hit_rate=outcome.hit_rate,
+            min_hit_rate=self.min_hit_rate,
+            rounds=outcome.rounds,
         )
         if not available:
-            if not outcome.calibration_ok:
-                best = outcome.candidate(outcome.detected_scale)
-                reason = (
-                    f"标定失败：判定标度 {outcome.detected_scale.value} 的最大误差 "
-                    f"{best.max_error_px:.2f} px 超过标定容差 "
-                    f"{outcome.calibration_tolerance_px:.1f} px —— 视觉通道不可用"
-                )
-            else:
-                diverging = [
-                    name
-                    for name in equivalent
-                    if divergences.get(name, 0.0) > outcome.calibration_tolerance_px
-                ]
-                worst = max(divergences[name] for name in diverging)
-                reason = (
-                    f"存在使物理落点分歧 {worst:.2f} px > 标定容差 "
-                    f"{outcome.calibration_tolerance_px:.1f} px 的替代标度"
-                    f"（{'、'.join(diverging)}） —— 视觉通道不可用"
-                )
             return VisualAdmission(available=False, reason=reason, **base)
         if outcome.scale_verdict == SCALE_VERDICT_MULTI:
             return VisualAdmission(
                 available=True,
                 reason=(
-                    "标度判定为多解，但各等价标度的落点分歧都在标定容差内"
-                    f"（等价列表：{'、'.join(equivalent)}）—— 视觉通道允许继续"
+                    f"{reason}（标度判定为多解，但落点等价族的分歧都在容差内："
+                    f"等价列表 {'、'.join(equivalent)}）"
                 ),
                 **base,
             )
         return VisualAdmission(
             available=True,
-            reason=(
-                f"标定唯一命中 {outcome.detected_scale.value}，"
-                f"最大误差 {outcome.candidate(outcome.detected_scale).max_error_px:.2f} px"
-                f" ≤ 标定容差 {outcome.calibration_tolerance_px:.1f} px"
-            ),
+            reason=f"{reason}（标度判定唯一：{outcome.detected_scale.value}）",
             **base,
         )
