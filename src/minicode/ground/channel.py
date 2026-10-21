@@ -22,6 +22,12 @@
 **整屏第二遍**（不是围绕粗点的裁剪窗口；也不是逐字重发同一条请求），
 它也失败就**报定位失败** —— 不落点、不挪到最近的可行位置。
 
+⚠️ **「第二次独立粗定位」的那个端口删掉了**（2026-10-21 拍板）：
+门控降级为记录器 → 那一次调用没有了（实测它正是 −19.0 pp 的来源 ——
+触发条件恰好是精定位前提条件的反面）。一致性那条条件（``COARSE_INCONSISTENT``）
+**判据留在** :mod:`minicode.ground.gate` 当记录器，但从此**永远不可判定**，
+如实记进 ``undecidable``。
+
 **分母来自标定**：换算用的标度由调用方从标定结果给出（构造参数，**没有默认值**）；
 代码里不出现写死的 1000 / 999，也不按数值大小猜量纲（架构决策备忘 §2.6 C-04）。
 
@@ -96,9 +102,9 @@ from .prompt import (
 
 __all__ = [
     "TwoStageGrounder",
-    "SecondOpinion",
     "TargetNames",
     "ask_model_point",
+    "box_center",
     "default_crop_size",
 ]
 
@@ -135,24 +141,9 @@ MAX_TARGET_NAMES = 5
 #: **目标描述规范化**的名字清单端口（一帧 → 一串**已脱敏**的名字）。
 TargetNames = Callable[[CapturedFrame], "list[str]"]
 
-#: **第二次独立粗定位**的端口形状（工单 M8 用它把 C-16 的「一致性」条件变成可判定）。
-#:
-#: 拿到的是**模型自己那个坐标系**里的原始坐标（不换算）—— 换算由本模块的
-#: 适配器做（**坐标换算链路只有一个真值来源**）。
-#: 拿不到就返回 ``None`` → 一致性条件**不可判定**（照旧显式记进追踪记录）。
-#:
-#: ⚠️ 端口收到的是**送模型的那张图**（整屏那一级缩到声明尺寸的那张）与
-#: **规范化后的目标描述** —— 两次粗定位必须**看同一张图、问同一件事**，
-#: 比出来的数才有意义（否则比的是两个没法比的数）。
-#:
-#: ⚠️ **它算一次模型调用**：给了这个端口 = 这一级**多问模型一次**
-#: （问不出坐标**也是问过了**）→ 通道把它记进 ``model_calls``
-#: （不记 →「平均模型调用数/目标」这条验收线**少算一次**，两个数没法比）。
-SecondOpinion = Callable[[CapturedFrame, str], "tuple[float, float] | None"]
-
 
 def default_crop_size() -> tuple[int, int]:
-    """**裁剪窗口的默认尺寸**（物理像素）—— 取冻结原型的那份默认值。
+    """**裁剪窗口的默认尺寸**（物理像素）—— 取**ground 层**的那份默认值。
 
     评测台要报「裁剪参数」，就得报**实际用的那个尺寸**（不另写一份常量）。
     """
@@ -206,11 +197,19 @@ def _image_source(frame: CapturedFrame) -> str:
     return f"{frame.source}|{frame.backend}"
 
 
-def _model_center(target: CoarseTarget) -> tuple[float, float]:
-    """模型给的**那个数**（框 → 中心点；只有点就是那个点）—— 回显用。
+def box_center(target: CoarseTarget) -> tuple[float, float]:
+    """**框 → 点**的**唯一一处**换算（模型输入空间的数值，原样带回）。
 
-    ⚠️ **只是回显**：落点取的是**物理像素**下的框中心（换算在通道里，
-    只做一处，见 :meth:`TwoStageGrounder._coarse_physical`）。
+    * 有框 → **框中心**（官方通用 API 协议：论文 ScreenSpot-Pro Table 3 题注
+      "For models inferencing boxes, we consider the center point of the
+      generated box as the prediction"）；
+    * 只有点 → 就是那个点（**框退化成点**）；
+    * 两者都没有 → :class:`GroundingParseError`（显式失败，不猜）。
+
+    ⚠️ **只做这一处**（ADR-0006：框→点的换算只能有一处，两处就会分叉）：
+    回显（模型自己发的那个数）与落点（物理像素）**都调它** ——
+    落点那条只是再经过一次 :class:`~minicode.coord.coordinates.CoordinateAdapter`
+    的换算（模型空间 → 物理像素），**不另算一遍中心**。
     """
     if target.bbox is not None:
         x1, y1, x2, y2 = target.bbox
@@ -255,18 +254,14 @@ class TwoStageGrounder:
         粗定位之后**直接返回** —— 落点 = 粗定位点、**1.00 次模型调用/目标**、
         **不裁剪、不问第二次**。回显里多一条 ``stage="coarse_only"``，
         落盘时能看出这一臂走的是「只有粗定位」。
-    second_opinion
-        ⚠️ **已废**（门控降级为记录器之后**不再有第二次粗定位调用** ——
-        那一次调用正是 −19.0 pp 的来源）。参数**留着只为不让接线方立刻炸**：
-        通道**不调用它、也不把它记成模型调用**。
-        一致性那条条件从此**永远不可判定**，如实记进 ``undecidable``。
     gate_params
         **门控参数**（运行时参数 + 取值来源）。缺省 = 带来源的默认值。
     gate_mode
         ``GateMode.ON_DEMAND`` / ``GateMode.ALWAYS``。
-        ⚠️ **门控降级为记录器之后，两个 mode 不再改变行为**（精定位恒执行）；
-        它们留着是因为单测与历史报告在用，落盘的 ``gate_hit`` 记的仍是
-        **门控自己的判定**（「本来会不会开」看得见）。
+        ⚠️ **它不再改变任何行为**（门控降级为记录器 → 两个 mode 的落点
+        **逐条相同**）。**留着**是因为：① ``GateMode`` 是 ``CONTEXT.md`` 的
+        词条，单测与评测台都在用；② 接线与历史报告要能读出「当时标的是
+        哪一档」。**不是**用来决定开不开精定位的。
     candidate_source
         **候选源**（可空，工单 B-1）—— **主表**（UIA 控件）。
         给了它：目标描述能匹配上候选时走**编号选择**分支（模型只答编号，
@@ -304,7 +299,6 @@ class TwoStageGrounder:
         coarse_only: bool = False,
         gate_params: GateParams | None = None,
         gate_mode: GateMode | str = GateMode.ON_DEMAND,
-        second_opinion: SecondOpinion | None = None,
         candidate_source: CandidateSource | None = None,
         additional_candidate_source: CandidateSource | None = None,
         target_names: TargetNames | None = None,
@@ -325,8 +319,6 @@ class TwoStageGrounder:
         self.coarse_only = bool(coarse_only)
         self.gate_params = gate_params or default_gate_params()
         self.gate_mode = GateMode(gate_mode)
-        #: ⚠️ **已废**：不再有第二次粗定位调用（见构造参数的说明）。
-        self.second_opinion = second_opinion
         #: **候选源**（工单 B-1）—— **主表**。``None`` = 这条分支不存在（默认）。
         self.candidate_source = candidate_source
         #: **附加候选源** —— **附加表**（OCR）。``None`` = 没有附加表。
@@ -466,7 +458,7 @@ class TwoStageGrounder:
             coarse_issue = f"粗定位失败：{exc}"
         raw_center: tuple[float, float] | None = None
         if raw is not None:
-            raw_center = _model_center(raw)
+            raw_center = box_center(raw)
             echoes.append(
                 GroundingEcho(
                     stage=STAGE_COARSE,
@@ -658,24 +650,18 @@ class TwoStageGrounder:
     ) -> tuple[tuple[float, float], float]:
         """粗定位的回答 → **物理像素**的落点 + **目标半径**（物理像素）。
 
-        ⚠️ **框 → 点的换算只在这里做一处**（官方通用 API 协议：落点取**框中心**；
-        论文 ScreenSpot-Pro Table 3 题注："For models inferencing boxes, we
-        consider the center point of the generated box as the prediction"）。
+        ⚠️ **框 → 点的换算只有一处**（:func:`box_center`）：这里只做
+        「模型空间 → 物理像素」那一步（走适配器，**不自己写比例**）。
 
         * 只有框 → 落点 = 框中心，半径 = 物理像素下框的**较大边**的一半
           （门控的「目标外接正方形」用它）；
         * 只有点 → **框退化成那个点**（落点不变，半径 0 → 占比判不了）。
-
-        换算**只走适配器**（``CoordinateAdapter``）—— 不自己写比例。
         """
+        center = box_center(target)
+        landing = self.adapter.to_screen(center[0], center[1], geometry)
         if target.bbox is None:
-            if target.point is None:
-                raise GroundingParseError("回答里既没有框也没有点")
-            landing = self.adapter.to_screen(target.point[0], target.point[1], geometry)
             return (landing, 0.0)
         x1, y1, x2, y2 = target.bbox
-        center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-        landing = self.adapter.to_screen(center[0], center[1], geometry)
         # 半径：**物理像素**下的框边长（用适配器的换算，虚拟桌面原点会抵消）。
         cap1 = self.adapter.model_to_capture(x1, y1, geometry)
         cap2 = self.adapter.model_to_capture(x2, y2, geometry)
@@ -1035,8 +1021,8 @@ class TwoStageGrounder:
         echoes.append(
             GroundingEcho(
                 stage=STAGE_WHOLE_SCREEN,
-                raw_x=_model_center(raw)[0],
-                raw_y=_model_center(raw)[1],
+                raw_x=box_center(raw)[0],
+                raw_y=box_center(raw)[1],
                 sent_width=screen_frame.width,
                 sent_height=screen_frame.height,
                 image_source=_image_source(screen_frame),

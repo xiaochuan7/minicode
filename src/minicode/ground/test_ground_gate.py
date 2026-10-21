@@ -339,63 +339,48 @@ class SecondOpinionTests(unittest.TestCase):
 
     门控降级为**记录器**之后，「第二次独立粗定位」那一次调用被删掉了 ——
     实测它正是 −19.0 pp 的来源（触发条件恰好是精定位前提条件的反面）。
-    端口**留着但不再被调用**（接线方正在删那一行），判据**留着当记录器**：
-    一致性这条**永远不可判定**，如实记进 ``undecidable``。
+    **端口本身也删了**（留着就是**永远不会被调用**的死参数）：
+    判据**留着当记录器**（:mod:`minicode.ground.gate` 的
+    ``COARSE_INCONSISTENT``），一致性这条**永远不可判定**，
+    如实记进 ``undecidable``。
     """
 
-    def test_without_the_hook_the_condition_is_undecidable(self):
+    def test_the_condition_is_undecidable(self):
         model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
         self.assertIn("consistency", result.gate_undecidable)
         self.assertNotIn("coarse_inconsistent", result.gate_reasons)
 
-    def test_the_port_is_not_called_anymore(self):
-        """**给了端口也不调用它** —— 那一次模型调用被删掉了。
-
-        ⚠️ 不删它 →「平均模型调用数/目标」那条验收线会**多算一次**
-        （报告里的两个「模型调用数」对不上 → 两个数没法比）。
-        """
-        seen: list[tuple] = []
-
-        def _hook(frame, target):
-            seen.append((frame.width, frame.height, target))
-            return (700.0, 500.0)
-
+    def test_there_is_only_one_coarse_call(self):
+        """**只有一次粗定位**（没有第二次）—— 调用数不许多算。"""
         model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
-        grounder = _grounder(
-            model, gate_mode=GateMode.ON_DEMAND, second_opinion=_hook
-        )
+        grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertEqual(seen, [])
         # 粗定位 1 次 + 精定位 1 次（**没有**第三次）。
         self.assertEqual(result.model_calls, 2)
         self.assertEqual(len(model.calls), 2)
 
-    def test_the_condition_stays_undecidable_with_the_port(self):
-        """给了端口 → 一致性**仍然不可判定**（端口不再被调用）。"""
-        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
-        grounder = _grounder(
-            model,
-            gate_mode=GateMode.ON_DEMAND,
-            second_opinion=lambda frame, target: (700.0, 500.0),
-        )
-        result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertIn("consistency", result.gate_undecidable)
-        self.assertNotIn("coarse_inconsistent", result.gate_reasons)
+    def test_the_port_is_gone(self):
+        """**端口删了** —— 通道不再接受那个参数（死参数不许留着）。"""
+        from minicode.coord.coordinates import ModelScale
+        from minicode.ground.channel import TwoStageGrounder
+        from minicode.model.effort import Effort
 
-    def test_a_failing_port_leaves_it_undecidable(self):
-        """端口炸了也一样（它压根不会被调用）→ 照旧记「不可判定」。"""
+        with self.assertRaises(TypeError):
+            TwoStageGrounder(
+                _StubModel(_reply(390.625, 500.0)),
+                scale=ModelScale.RELATIVE_0_1000,
+                model_input_size=(2560, 1600),
+                full_screen_size=(2560, 1600),
+                effort=Effort.LOW,
+                second_opinion=lambda frame, target: (700.0, 500.0),  # type: ignore[call-arg]
+            )
 
-        def _boom(frame, target):
-            raise RuntimeError("第二次粗定位炸了")
-
-        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
-        grounder = _grounder(
-            model, gate_mode=GateMode.ON_DEMAND, second_opinion=_boom
-        )
-        result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertIn("consistency", result.gate_undecidable)
+    def test_the_prompt_of_the_second_opinion_is_gone(self):
+        """**提示词也删了**（只剩它自己的测试引用 = 死代码）。"""
+        with self.assertRaises(ImportError):
+            from minicode.ground.prompt import second_opinion_prompt  # noqa: F401
 
 
 class ModelCallAccountingTests(unittest.TestCase):
@@ -425,58 +410,10 @@ class ModelCallAccountingTests(unittest.TestCase):
         self.assertEqual(result.model_calls, 2)
         self.assertEqual(len(model.calls), 2)
 
-    def test_second_opinion_sees_the_same_image_as_the_coarse_level(self):
-        """第二次粗定位必须看到**同一张图**（整屏那一级送模型的那张）。
-
-        ⚠️ 门控降级之后**那个端口不再被调用** —— 这条契约留着是为了
-        「哪天要把它接回来」时不被忘掉（比的是两个没法比的数）。
-        """
-        seen: list[tuple[int, int]] = []
-
-        def _hook(frame, target):
-            seen.append((frame.width, frame.height))
-            return (390.625, 500.0)
-
-        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
-        grounder = _grounder(
-            model,
-            gate_mode=GateMode.ON_DEMAND,
-            second_opinion=_hook,
-            model_input_size=(1280, 800),
-        )
-        result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertEqual(seen, [])
-        coarse = next(echo for echo in result.echoes if echo.stage == "coarse")
-        self.assertEqual((coarse.sent_width, coarse.sent_height), (1280, 800))
-
-    def test_second_opinion_prompt_asks_for_the_same_quantity(self):
-        """两次粗定位必须问**同一个量**（这张图的像素坐标），否则没法比。"""
-        from minicode.ground.prompt import second_opinion_prompt
-
-        prompt = second_opinion_prompt("开始", image_size=(1280, 800))
-        self.assertIn("1280×800", prompt)
-        self.assertIn("像素坐标", prompt)
-
-    def test_second_opinion_prompt_without_a_size_still_asks_for_pixels(self):
-        """不给尺寸时也要问像素坐标（**问的量不能变**）。"""
-        from minicode.ground.prompt import second_opinion_prompt
-
-        prompt = second_opinion_prompt("开始")
-        self.assertIn("像素坐标", prompt)
-
-    def test_second_point_without_a_coarse_point_is_undecidable(self):
-        """第一次粗定位为空、第二次有点 → **比不了** → 记「不可判定」（不静默）。
-
-        ⚠️ 这一支以前是静默的（既不记命中也不记不可判定）；工单 M8 的端口
-        让它可达，按 README 的口径必须显式记。
-        """
+    def test_a_coarse_point_out_of_bounds_still_leaves_it_undecidable(self):
+        """粗定位越界 → 一致性**比不了** → 记「不可判定」（不静默）。"""
         model = _StubModel(_reply(5000.0, 5000.0))
-        grounder = _grounder(
-            model,
-            gate_mode=GateMode.ON_DEMAND,
-            second_opinion=lambda frame, target: (500.0, 500.0),
-        )
-        # 粗定位**越界** → coarse_point 为 None（有第二次结果也比不了）。
+        grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
         self.assertIn("consistency", result.gate_undecidable)
 

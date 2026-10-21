@@ -56,7 +56,6 @@ __all__ = [
     "parse_coarse_target",
     "parse_point",
     "refine_prompt",
-    "second_opinion_prompt",
     "whole_screen_prompt",
 ]
 
@@ -132,10 +131,10 @@ def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
         "请在图里找到与下面这个指令对应的界面元素，"
         "并给出它的外接矩形（bounding box）。\n"
         f"指令：{target_description}\n"
-        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}\n'
+        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}'
+        "（坐标是这张图的像素）。\n"
         "bbox 是这个元素在图里的外接矩形的左上角与右下角，point 是它的中心点。\n"
         "不要输出分析。"
-        "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
 
@@ -186,38 +185,11 @@ def whole_screen_prompt(
         "并给出它的外接矩形（bounding box）。\n"
         f"指令：{target_description}\n"
         f"（上一次没能给出可用的位置：{retry_reason}。请再看一遍这张图。）\n"
-        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}\n'
+        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}'
+        "（坐标是这张图的像素）。\n"
         "bbox 是这个元素在图里的外接矩形的左上角与右下角，point 是它的中心点。\n"
         "不要输出分析。"
-        "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
-
-
-def second_opinion_prompt(
-    target_description: str, image_size: tuple[int, int] | None = None
-) -> str:
-    """**第二次独立粗定位**的提示词（工单 M8）。
-
-    **不是逐字重发**（逐字重发同一条请求，确定性模型会给出同一个答案 →
-    「两次粗定位是否一致」永远判不出）。措辞与粗定位那条不同，
-    但**不含任何量纲暗示**（量纲只由标定判定，架构备忘 §2.6 C-04）。
-
-    ⚠️ **问的必须是同一个量**（与 :func:`coarse_prompt` 一致）：
-    第一次粗定位问的是「**这张图的像素坐标**」，这一条也必须问同一个量 ——
-    否则两次的答案**没法比**（一个像素、一个「模型惯用的坐标系」），
-    「两次粗定位是否一致」这条门控条件就成了**空判**。
-    **尺寸声明也给上**（``image_size`` 给了就写「这张图是 W×H」）：
-    模型答的像素必须是**它看到的那张图**的像素。
-    """
-    lines = [
-        "这是一张桌面软件的界面截图。",
-        f"请在图里找到符合这个描述的元素：{target_description}",
-    ]
-    if image_size is not None:
-        lines.append(f"{_size_line(image_size)}下面所有位置都是这张图的像素坐标。")
-    lines.append(_answer_format())
-    lines.append("请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。")
-    return "\n".join(lines)
 
 
 def numbered_candidates_prompt(

@@ -87,10 +87,9 @@ def zoom_region_prompt(target_description: str, *, image_size: tuple[int, int]) 
     答案单位由标定探针判定，不在这里写死。
 
     ⚠️ **这个提示词住在本模块**：坐标契约变了（整屏坐标 → 图内坐标），
-    而 :mod:`minicode.ground.prompt` 在另一批人的范围里 —— 那边的
-    ``zoom_prompt`` 仍写着旧契约（整屏坐标），待它的 owner 收口
-    （本函数**故意不叫那个名字**：``minicode.ground.zoom_prompt`` 仍指向
-    旧的那个，别拿错）。
+    :mod:`minicode.ground.prompt` 里**旧契约的那份已经删掉**
+    （两套坐标契约不许并存 —— ADR-0006：混用会静默偏移一整个窗口）。
+    ``minicode.ground.zoom_prompt`` 现在是**本函数的别名**。
     """
     return (
         "这是一块从 Windows 桌面回源重抓的屏幕区域（未缩放，1 像素 = 1 屏幕像素）。\n"
