@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from minicode.action.ports import CHANNEL_VISUAL
@@ -127,28 +128,59 @@ def capability_is(expected: str) -> Any:
     return check
 
 
+def _sibling(context: Mapping[str, Any], key: str, suffix: str) -> Any:
+    """读数的**来源 / 备注**在上下文里的键名。
+
+    约定：``<键>_source`` / ``<键>_note``（键是 ``scale_value`` → ``scale_value_source``）。
+    ⚠️ **本仓的缩放读数用的是 ``scale_source`` / ``scale_note``**（键名 ``scale_value``）→
+    键以 ``_value`` 结尾时**也认**去掉 ``_value`` 的那一份
+    （否则这两个字段就是「只写不读」，报告里分不清读数是**界面读到的**还是
+    **系统状态读到的**）。
+    """
+    candidates = [f"{key}{suffix}"]
+    if key.endswith("_value"):
+        candidates.append(f"{key[: -len('_value')]}{suffix}")
+    for candidate in candidates:
+        value = context.get(candidate)
+        if value:
+            return value
+    return None
+
+
 def context_value(key: str, expected: Any = None, *, nonempty: bool = False) -> Any:
     """**上下文里的某个读数**（如「读出的缩放值」「剪贴板是否恢复」）。
 
     ⚠️ **键不在上下文里 = 没测过** → 判「**判不了**」，
     不许当成「测了，结果不成立」。
+
+    ⚠️ **读数的来源与备注要一起报出来**：同一个键的值可能来自**不同的源**
+    （缩放值就可能是：界面树里读到的 / 注册表读到的 / 系统 DPI 读到的）
+    → 报告里**分不清来源就分不清口径**（工单 M14 的「读出的缩放值与界面显示一致」
+    在读的是**系统状态**时，那「与界面显示一致」并没有被验证）。
+    键名见 :func:`_sibling`。
     """
 
     def check(evidence: TaskEvidence) -> tuple[bool, str]:
-        if key not in evidence.context:
-            note = evidence.context.get(f"{key}_note")
+        context = evidence.context
+        if key not in context:
+            note = _sibling(context, key, "_note")
             suffix = f"（{note}）" if note else ""
             return False, f"{key} **没测过**（上下文里没有这个读数）{suffix}"
-        actual = evidence.context.get(key)
+        actual = context.get(key)
+        source = _sibling(context, key, "_source")
+        source_suffix = f"（来源：{source}）" if source else ""
         if nonempty:
             if actual in (None, "", False):
-                note = evidence.context.get(f"{key}_note")
+                note = _sibling(context, key, "_note")
                 suffix = f"（{note}）" if note else ""
                 return False, f"{key} 没有读到值{suffix}"
-            return True, f"{key} = {actual}"
+            return True, f"{key} = {actual}{source_suffix}"
         if actual != expected:
-            return False, f"{key} = {actual!r}，不是 {expected!r}"
-        return True, f"{key} = {actual!r}"
+            return (
+                False,
+                f"{key} = {actual!r}，不是 {expected!r}{source_suffix}",
+            )
+        return True, f"{key} = {actual!r}{source_suffix}"
 
     return check
 

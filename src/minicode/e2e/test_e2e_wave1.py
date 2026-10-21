@@ -636,6 +636,39 @@ def test_context_clause_reports_unmeasured_as_undecidable():
     assert "False" in detail
 
 
+def test_context_clause_reports_where_the_reading_came_from():
+    """**读数的来源要进明细** —— 缩放值可能来自界面树，也可能来自系统状态读数。
+
+    工单 M14 的条款写的是「读出的缩放值**与界面显示一致**」；读的是**注册表**
+    时那半句并没有被验证 → 报告里**必须分得清是哪一个来源**
+    （改动 6 的 docstring 自己要求「报告里要分得清」）。
+    """
+    ok, detail = context_value("scale_value", nonempty=True)(
+        _evidence(
+            [],
+            {
+                "scale_value": "150%",
+                "scale_source": "注册表 HKCU\\Control Panel\\Desktop\\WindowMetrics\\AppliedDPI",
+            },
+        )
+    )
+    assert ok
+    assert "150%" in detail
+    assert "AppliedDPI" in detail
+    # 没有来源时（老读数）**不编一个来源出来**。
+    ok, detail = context_value("scale_value", nonempty=True)(
+        _evidence([], {"scale_value": "150%"})
+    )
+    assert ok
+    assert "来源" not in detail
+    # 读不到时，**备注**也要进明细（`scale_note` 那个键名）。
+    ok, detail = context_value("scale_value", nonempty=True)(
+        _evidence([], {"scale_value": "", "scale_note": "缩放值在树里读不到"})
+    )
+    assert not ok
+    assert "缩放值在树里读不到" in detail
+
+
 # ---------------------------------------------------------------------------
 # 第一波的六张票
 # ---------------------------------------------------------------------------
