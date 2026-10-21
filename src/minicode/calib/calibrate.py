@@ -302,6 +302,10 @@ def estimate_model_input_from_tokens(
             (patch_width, patch_height),
             (patch_height, patch_width),
         ):
+            if width_patches == height_patches:
+                # 同一个格子（token 数是完全平方数）→ **只算一次**，
+                # 否则「唯一相容」会被自己数成两个 → 反查白丢一个真答案。
+                continue
             min_width = (width_patches - 1) * IMAGE_PATCH_PX + 1
             max_width = width_patches * IMAGE_PATCH_PX
             min_height = (height_patches - 1) * IMAGE_PATCH_PX + 1

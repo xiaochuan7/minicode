@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import platform
 import sys
 import threading
@@ -323,20 +324,25 @@ def _calibrate(
         f"{f'{server_input[0]}×{server_input[1]}' if server_input else 'unknown'}"
         f"｜最大误差 {best.max_error_px:.2f} px｜标定成功 {outcome.calibration_ok}"
     )
-    # 逐目标的误差（**模型输入空间**的像素）：看它是系统偏差还是随机误差。
+    # 逐目标的误差（**物理像素** = ‖落点 − 真值‖，与 D-0 口径一致）：
+    # 用**判定标度换算出来的物理落点**（outcome 里已经算好），**不拿模型原始数值**
+    # 去比「模型输入空间的像素」—— 那是**两个空间**：标度一旦不是绝对像素
+    # （0~1 / 0~999 / 0~1000），比出来的就是一个**废数**。
     truth = {name: (x, y) for name, x, y in outcome.targets}
-    factor = declared[0] / width if width else 1.0
     point_errors = []
-    for name, raw_x, raw_y in outcome.raw_points:
-        if name not in truth:
+    for index, (name, _raw_x, _raw_y) in enumerate(outcome.raw_points):
+        if name not in truth or index >= len(best.landing_points):
             continue
-        expected_x = truth[name][0] * factor
-        expected_y = truth[name][1] * (declared[1] / height if height else 1.0)
+        px, py = best.landing_points[index]
+        if not (math.isfinite(px) and math.isfinite(py)):
+            # 越界的那个预测**没有物理落点** → 如实记 ``None``（不编一个数）。
+            point_errors.append({"target": name, "error_px": None})
+            continue
         point_errors.append(
             {
                 "target": name,
                 "error_px": round(
-                    ((raw_x - expected_x) ** 2 + (raw_y - expected_y) ** 2) ** 0.5, 2
+                    math.hypot(px - truth[name][0], py - truth[name][1]), 2
                 ),
             }
         )
@@ -366,8 +372,6 @@ def _reverse_lookup(client, sink, declared: tuple[int, int], args) -> tuple[int,
     * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次；
     * 反查不出（token 数对不上任何尺寸 / 文字那部分量不出来）→ ``None``
       —— 调用方记 ``unknown``，**不许填一个猜的数**。
-    """
-    """**用 token 数反查**服务端实际看到的那张图（反查不出 → ``None``）。
 
     实现只有一处：:func:`minicode.e2e.visual.reverse_lookup_from_log`
     （反查口径不许有第二份）。

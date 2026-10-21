@@ -283,7 +283,8 @@ def normalize_target(
     # ② 描述里已经含有界面上的名字（原名就一致）
     for _name, normalized in names:
         if len(normalized) >= 2 and normalized in target:
-            return (description, False)    # ③ 近名（错字级）：唯一的最优匹配 → 换成界面上的原名
+            return (description, False)
+    # ③ 近名（错字级）：唯一的最优匹配 → 换成界面上的原名
     scored: list[tuple[int, str]] = []
     for name, normalized in names:
         limit = 1 if len(normalized) <= 4 else 2
