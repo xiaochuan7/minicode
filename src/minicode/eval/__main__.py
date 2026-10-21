@@ -138,7 +138,9 @@ def main(argv=None) -> int:
         default=0.0,
         help=(
             "「两次粗定位一致性」容差（物理像素）的覆盖值；0 = 用门控自带值。"
-            "**调它就是调门控**（工单 M8：硬判据不满足时调门控，不改判据）"
+            "⚠️ **门控降级为记录器之后，这个参数不再改变任何行为** —— "
+            "「第二次独立粗定位」那次调用已被删掉，一致性这条**永远不可判定**；"
+            "它只是被**记进报告的 ``gate.params``**（事后复盘用）"
         ),
     )
     parser.add_argument(
@@ -479,8 +481,9 @@ def _print_summary(report: dict, comparison: dict) -> None:
     print(
         f"记录器这一臂：开启精定位 {gate['refine_enabled']} 次"
         f"｜门控判中 {gate['gate_hits']} 次"
-        f"｜**门控关闭率** {1 - gate['hit_rate']:.1%}"
-        f"（⚠️ 门控不再决定开不开 → 这一列只是记录）"
+        f"｜**没做精定位的比例** {1 - gate['hit_rate']:.1%}"
+        f"（⚠️ 门控不再决定开不开 → 这一列只是记录，"
+        f"**不是**「门控关掉的比例」）"
     )
     print(f"命中原因：{gate['reason_distribution']}")
     print(f"判不了的条件：{gate['undecidable_distribution']}")

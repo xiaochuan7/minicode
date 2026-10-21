@@ -17,6 +17,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from minicode.eval.sspro import (
+    GATE_INPUT_SOURCES,
     OFFICIAL_ROWS,
     ArmOutcome,
     SsproSample,
@@ -26,6 +27,11 @@ from minicode.eval.sspro import (
     stratified_subset,
     summarize,
     table_rows,
+)
+from minicode.ground.gate import (
+    GateCondition,
+    GateInputs,
+    evaluate_gate,
 )
 
 
@@ -288,6 +294,41 @@ class TableTests(unittest.TestCase):
         table = render_table(rows)
         self.assertIn("只用粗定位", table)
         self.assertEqual(len(table.splitlines()), 10)  # 多了一行基线臂
+
+
+class GateInputSourceTests(unittest.TestCase):
+    """报告抬头那份「门控输入来源」必须与**代码实际判的**一致。
+
+    ⚠️ 它进 ``sspro-report.json`` 的 ``gate.input_sources`` —— 读报告的人
+    **照着它判断「哪条条件当时判了」**。口径变过（门控降级为记录器、
+    粗定位出框）却没回来改这里的话，报告就会**说反话**。
+    """
+
+    def test_the_code_judges_what_the_report_claims(self):
+        decision = evaluate_gate(
+            GateInputs(
+                coarse_point=(100.0, 100.0),
+                coarse_out_of_bounds=False,
+                #: 粗定位**出框** → 通道用框推出半径 → 占比**第一次可判定**。
+                target_radius_px=8.0,
+                coarse_confidence=None,
+                #: 没有第二次独立粗定位（那次调用已被删掉）→ 一致性**不可判定**。
+                second_coarse_point=None,
+                surface_size=(1000, 1000),
+            )
+        )
+        self.assertNotIn(GateCondition.TARGET_AREA_RATIO, decision.undecidable)
+        self.assertIn(GateCondition.CONSISTENCY, decision.undecidable)
+
+    def test_the_report_text_matches_that_behaviour(self):
+        self.assertTrue(
+            GATE_INPUT_SOURCES["target_area_ratio"].startswith("可判定"),
+            msg=GATE_INPUT_SOURCES["target_area_ratio"],
+        )
+        self.assertTrue(
+            GATE_INPUT_SOURCES["consistency"].startswith("不可判定"),
+            msg=GATE_INPUT_SOURCES["consistency"],
+        )
 
 
 if __name__ == "__main__":
