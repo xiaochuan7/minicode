@@ -18,6 +18,18 @@ Single-context: one root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.
 
 **Naming a domain concept? Use the term `CONTEXT.md` defines it.** Read it before writing an issue title, a test name, or any prose that names a layer, a channel, a coordinate space, or a workflow object.
 
+### 工单与验收标准的改动时机
+
+**改需求 / 改验收标准的动作，只在 agent 停下之后做；agent 运行期间只做实现与记录，不动工单的验收标准。**
+
+`docs/tickets/` 里的工单是**唯一真值来源**。agent 跑一轮票时，它读工单、按工单实现、把自己的发现写进 `docs/reviews/M<N>.md` §5（待拍板清单）—— 但**它不回头改工单的 AC**，也不自行给待拍板项拍板。
+
+理由：agent 运行期间改 AC，等于**用实现去追认规格**，规格就不再是判据；两份真值会在同一轮里互相漂移。
+
+- agent 发现工单字面与实测/实现不符 → **记进 §5**，不改 AC。
+- agent 认为某条口径该改 → **写进 §5 的待拍板清单**，由人决定；人决定后**在 agent 停下之后**统一改 AC 并同步文档。
+- 例外：**标定 / 坐标契约这类口径变更必须由人拍板**（见 `docs/tickets/README.md` 的「待拍板清单」）。
+
 ## 真机占用锁（人机互斥）
 
 **本项目唯一的人机互斥约定。** 任何要动真机的动作（真机截图 / 真机点击 / 真机读控件树 / 真机跑端到端任务）**之前**必须先拿锁；做完必须释放。
