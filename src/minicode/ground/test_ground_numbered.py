@@ -236,6 +236,27 @@ class NumberedBranchTests(unittest.TestCase):
         self.assertFalse(result.refine_enabled)
         self.assertIsNone(result.crop_plan)
 
+    def test_the_numbered_branch_reports_the_gate_as_undecidable(self):
+        """编号分支**没有门控这一级** → 四条条件照实记成「不可判定」。
+
+        ⚠️ 回空元组 = 说「门控判了、而且全部判得出来」→ 聚合出来的
+        「``undecidable`` 数 = 0」这条验收线会被**白拿**。
+        """
+
+        class _Source:
+            def candidates(self, frame, description):
+                return [GroundingCandidate(number=1, text="甲", box=(10, 10, 30, 20))]
+
+        model = _StubModel(_reply(json.dumps({"chosen": 1})))
+        grounder = self._grounder(model, _Source())
+        result = grounder.locate(_request("甲", _frame()))
+        self.assertFalse(result.gate_hit)
+        self.assertEqual(result.gate_reasons, ())
+        self.assertEqual(
+            set(result.gate_undecidable),
+            {"target_area_ratio", "coarse_validity", "confidence", "consistency"},
+        )
+
     def test_prompt_asks_for_a_number_only(self):
         class _Source:
             def candidates(self, frame, description):
@@ -287,6 +308,30 @@ class NumberedBranchTests(unittest.TestCase):
         self.assertTrue(result.fallback)
         self.assertEqual(result.fallback_cause, "candidate_selection_failed")
         self.assertEqual(len(model.calls), 3)
+
+    def test_a_failed_numbered_call_is_still_a_model_call(self):
+        """编号分支**问过了**就算一次模型调用（回答解析失败也是问过了）。
+
+        ⚠️ 不记它 →「平均模型调用数/目标」这条验收线**少算一次**。
+        """
+
+        class _Source:
+            def candidates(self, frame, description):
+                return [GroundingCandidate(number=1, text="甲", box=(10, 10, 30, 20))]
+
+        model = _StubModel(
+            RuntimeError("模型回答里没有编号"),
+            _reply(json.dumps({"x": 10.0, "y": 10.0})),
+            _reply(json.dumps({"x": 20.0, "y": 20.0})),
+        )
+        grounder = self._grounder(model, _Source())
+        result = grounder.locate(_request("甲", _frame()))
+        # 编号分支炸了 → 回落点式路径（粗定位 + 精定位）。
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_cause, "candidate_selection_failed")
+        self.assertEqual(len(model.calls), 3)
+        # **炸掉的那一次也算一次模型调用**（问过了）。
+        self.assertEqual(result.model_calls, 3)
 
     def test_the_numbered_call_gets_its_own_budget(self):
         """**编号分支单独给一份预算**（默认 4000）—— 思考链与输出共用预算。"""

@@ -61,6 +61,7 @@ from .candidates import CandidateSource, GroundingCandidate
 from .crop import crop_frame
 from .gate import (
     FallbackCause,
+    GateCondition,
     GateDecision,
     GateInputs,
     GateMode,
@@ -113,6 +114,10 @@ TargetNames = Callable[[CapturedFrame], "list[str]"]
 #: ⚠️ 端口收到的是**送模型的那张图**（整屏那一级缩到声明尺寸的那张）与
 #: **规范化后的目标描述** —— 两次粗定位必须**看同一张图、问同一件事**，
 #: 比出来的数才有意义（否则比的是两个没法比的数）。
+#:
+#: ⚠️ **它算一次模型调用**：给了这个端口 = 这一级**多问模型一次**
+#: （问不出坐标**也是问过了**）→ 通道把它记进 ``model_calls``
+#: （不记 →「平均模型调用数/目标」这条验收线**少算一次**，两个数没法比）。
 SecondOpinion = Callable[[CapturedFrame, str], "tuple[float, float] | None"]
 
 
@@ -410,6 +415,12 @@ class TwoStageGrounder:
         # -- 门控：命中才开第二遍（工单 M7 AC 1）-----------------------------
         left, top, right, bottom = (int(value) for value in request.surface)
         second_coarse = self._second_coarse_point(description, screen_frame, geometry)
+        if self.second_opinion is not None:
+            # ⚠️ **第二次独立粗定位本身就是一次模型调用** —— 不记它，
+            # 「平均模型调用数/目标」这条验收线会**少算一次**
+            # （报告里的两个「模型调用数」对不上 → 两个数没法比）。
+            # 端口的契约就是「问模型一次」→ 问不出坐标**也是问过了**。
+            model_calls += 1
         decision = evaluate_gate(
             GateInputs(
                 coarse_point=coarse,
@@ -686,7 +697,9 @@ class TwoStageGrounder:
                 description, lines, screen_frame
             )
         except Exception as exc:
-            return self._failure(f"编号选择失败：{exc}", echoes, model_calls)
+            # ⚠️ **这一次模型调用已经发出去了**（回答解析不出来**也是问过了**）
+            # —— 不记它 → 「平均模型调用数/目标」少算一次。
+            return self._failure(f"编号选择失败：{exc}", echoes, model_calls + 1)
         model_calls += 1
         if numbers == (0,):
             # 模型说「**清单里没有**与目标描述对应的一项」（ground 层的解释，
@@ -725,7 +738,11 @@ class TwoStageGrounder:
             crop_plan=None,
             gate_hit=False,
             gate_reasons=(),
-            gate_undecidable=(),
+            #: ⚠️ **编号分支没有门控这一级** —— 四条条件**一条都没判**。
+            #: 回空元组等于说「门控判了、而且全部判得出来」，那是**假的**
+            #: （聚合出来的「undecidable 数 = 0」会被**白拿**）→
+            #: 照实把四条都记成**不可判定**。
+            gate_undecidable=tuple(condition.value for condition in GateCondition),
             refine_enabled=False,
             echoes=tuple(echoes),
             model_calls=model_calls,

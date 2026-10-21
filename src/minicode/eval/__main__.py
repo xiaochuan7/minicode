@@ -299,8 +299,10 @@ def _calibrate(
        （纯文字那部分**量出来**：同一条提示词不带图再发一次）。
        **反查不出就如实记 ``unknown``，不许填一个猜的数。**
     """
+    from minicode.calib.admission import CalibrationAdmission
     from minicode.calib.calibrate import CalibrationProbe
     from minicode.calib.probe import default_probe_spec
+    from minicode.calib.tolerance import CALIBRATION_MIN_HIT_RATE
 
     #: **声明的模型输入尺寸**（按**这张图**的尺寸算）。
     declared = model_input_size_for(width, height)
@@ -315,6 +317,8 @@ def _calibrate(
     ).run()
     best = outcome.candidate(outcome.detected_scale)
     scale = outcome.detected_scale
+    #: **准入判定**（A-1 的真闸门：等价族分歧 ≤ 4 px **且** K 轮命中率 ≥ 0.6）。
+    admission = CalibrationAdmission(outcome).admit()
     #: **反查服务端实际看到的那张图**（反查不出 → ``None`` → 报告里写 unknown）。
     server_input = _reverse_lookup(client, sink, declared, args)
     print(
@@ -322,7 +326,9 @@ def _calibrate(
         f"｜声明的模型输入 {declared[0]}×{declared[1]}"
         f"｜服务端实际 "
         f"{f'{server_input[0]}×{server_input[1]}' if server_input else 'unknown'}"
-        f"｜最大误差 {best.max_error_px:.2f} px｜标定成功 {outcome.calibration_ok}"
+        f"｜最大误差 {best.max_error_px:.2f} px"
+        f"｜{outcome.rounds} 轮命中率 {outcome.hit_rate:.2f}"
+        f"｜视觉通道准入 {'可用' if admission.available else '不可用'}"
     )
     # 逐目标的误差（**物理像素** = ‖落点 − 真值‖，与 D-0 口径一致）：
     # 用**判定标度换算出来的物理落点**（outcome 里已经算好），**不拿模型原始数值**
@@ -358,6 +364,23 @@ def _calibrate(
             list(server_input) if server_input is not None else "unknown"
         ),
         "max_error_px": round(best.max_error_px, 3),
+        #: **A-1 的真闸门**（准入门看的就是这两条）：
+        #:
+        #: * ``hit_rate`` —— **K 轮独立问的 96 px 方块命中率**；
+        #: * ``visual_channel_available`` —— 准入门**放行 / 不放行**。
+        #:
+        #: ⚠️ 下面那个 ``calibration_ok`` **不是**闸门：它的语义是
+        #: 「落点等价族判定成功」，而那个族**按 4 px 定义** → **按定义恒为真**
+        #: （见 :mod:`minicode.calib.calibrate` 的说明）。它**不能**当成
+        #: 「标定通过」的绿灯 —— 真正的绿灯是 ``visual_channel_available``。
+        "rounds": outcome.rounds,
+        "hit_rate": round(outcome.hit_rate, 4),
+        "min_hit_rate": CALIBRATION_MIN_HIT_RATE,
+        "median_error_px": round(outcome.median_error_px, 3),
+        "p90_error_px": round(outcome.p90_error_px, 3),
+        "equivalence_tolerance_px": outcome.equivalence_tolerance_px,
+        "visual_channel_available": admission.available,
+        "visual_channel_reason": admission.reason,
         "calibration_ok": outcome.calibration_ok,
         "point_errors_px": point_errors,
         "probe_digest": outcome.probe_digest,

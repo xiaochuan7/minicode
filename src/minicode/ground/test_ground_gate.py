@@ -326,6 +326,29 @@ class SecondOpinionTests(unittest.TestCase):
         self.assertIn("consistency", result.gate_undecidable)
         self.assertNotIn("coarse_inconsistent", result.gate_reasons)
 
+    def test_the_second_opinion_counts_as_a_model_call(self):
+        """第二次独立粗定位**本身就是一次模型调用** —— 必须记进 ``model_calls``。
+
+        ⚠️ 不记它 →「平均模型调用数/目标」这条验收线**少算一次**
+        （同一份报告里两个「模型调用数」对不上 → 两个数没法比）。
+        """
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = _grounder(
+            model,
+            gate_mode=GateMode.ON_DEMAND,
+            second_opinion=lambda frame, target: (390.625, 500.0),
+        )
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        # 粗定位 1 次 + 第二次独立粗定位 1 次（门控没命中 → 没有精定位）。
+        self.assertEqual(result.model_calls, 2)
+
+    def test_without_the_hook_no_extra_model_call_is_counted(self):
+        """没给端口 → **没有**第二次粗定位 → 不多记调用数。"""
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertEqual(result.model_calls, 1)
+
     def test_disagreeing_second_opinion_hits_the_gate(self):
         """第二次粗定位与第一次差得远 → 门控命中（开精定位）。
 
