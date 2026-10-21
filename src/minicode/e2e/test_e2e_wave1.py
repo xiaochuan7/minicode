@@ -6,9 +6,17 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from minicode.action.protocol import ActionKind
+from minicode.e2e import real as real_module
+from minicode.e2e.real import (
+    WindowsDesktopExecutor,
+    read_scale_from_registry,
+    scale_percent_from_log_pixels,
+)
 from minicode.verification.expect import Expectation, ExpectationKind
 
 from .checks import (
@@ -248,6 +256,98 @@ def test_preflight_failure_skips_with_environment_reason():
     assert outcome.verdict == VERDICT_SKIP
     assert outcome.skip_reason == "环境不可达：未登录"
     assert executor.executed == []
+
+
+# ---------------------------------------------------------------------------
+# 缩放值：先读树，读不到就用**系统状态读数**兜底（改动 6）
+# ---------------------------------------------------------------------------
+
+
+class _FakeUiaPort:
+    """假的 UIA 查询端口：每次查询都返回同一组控件。"""
+
+    def __init__(self, elements=()):
+        self._elements = list(elements)
+
+    def find(self, request):
+        return SimpleNamespace(elements=list(self._elements))
+
+
+def _scale_executor(tmp_path, elements=()):
+    """一台只用来读缩放值的执行器（**不碰真桌面**）。"""
+    executor = WindowsDesktopExecutor(out_dir=tmp_path)
+    executor._port = _FakeUiaPort(elements)
+    return executor
+
+
+def test_log_pixels_maps_to_the_documented_scale_values():
+    """注册表里的 DPI → 缩放百分比（96/120/144 → 100/125/150%）。"""
+    assert scale_percent_from_log_pixels(96) == "100%"
+    assert scale_percent_from_log_pixels(120) == "125%"
+    assert scale_percent_from_log_pixels(144) == "150%"
+    assert scale_percent_from_log_pixels(108) == "112.5%"
+
+
+def test_the_registry_reading_is_a_percentage_or_nothing():
+    """真机读注册表：要么读到「N%」，要么读不到（**不许读出别的东西**）。"""
+    reading = read_scale_from_registry()
+    assert reading is None or reading[0].endswith("%")
+    assert reading is None or "注册表" in reading[1]
+
+
+def test_scale_is_read_from_the_tree_when_the_tree_has_it(tmp_path):
+    """树里读得到就用树里的（**来源如实记**）。"""
+    executor = _scale_executor(
+        tmp_path, [SimpleNamespace(name="缩放 150%", value="", automation_id="")]
+    )
+    executor._record_scale(SimpleNamespace(anchor=None))
+    context = executor.task_context()
+    assert context["scale_value"] == "150%"
+    assert context["scale_percent"] == 150
+    assert "控件名" in context["scale_source"]
+
+
+def test_scale_falls_back_to_the_system_reading_when_the_tree_is_empty(
+    tmp_path, monkeypatch
+):
+    """**树读失败 → 用系统状态读数兜底**（UWP 的树里没有那个百分比）。"""
+    monkeypatch.setattr(
+        real_module,
+        "read_scale_from_registry",
+        lambda: ("125%", "注册表 HKCU\\Control Panel\\Desktop\\LogPixels（120 → 125%）"),
+    )
+    executor = _scale_executor(tmp_path)
+    executor._record_scale(SimpleNamespace(anchor=None))
+    context = executor.task_context()
+    assert context["scale_value"] == "125%"
+    assert context["scale_percent"] == 125
+    assert "注册表" in context["scale_source"]
+    assert "读不到" in context["scale_note"]
+
+
+def test_scale_falls_back_to_the_system_dpi_when_the_registry_has_nothing(
+    tmp_path, monkeypatch
+):
+    """注册表读不到 → 再退到系统 DPI 读数（还是读不到就**如实记空**）。"""
+    monkeypatch.setattr(real_module, "read_scale_from_registry", lambda: None)
+    monkeypatch.setattr(
+        real_module, "read_scale_from_system_dpi", lambda: ("150%", "系统 DPI 读数")
+    )
+    executor = _scale_executor(tmp_path)
+    executor._record_scale(SimpleNamespace(anchor=None))
+    assert executor.task_context()["scale_value"] == "150%"
+    assert "系统 DPI" in executor.task_context()["scale_source"]
+
+
+def test_scale_is_recorded_empty_when_nothing_can_be_read(tmp_path, monkeypatch):
+    """**都读不到就如实记空** —— 判不了 ≠ 不成立，也不许拿别处的值充数。"""
+    monkeypatch.setattr(real_module, "read_scale_from_registry", lambda: None)
+    monkeypatch.setattr(real_module, "read_scale_from_system_dpi", lambda: None)
+    executor = _scale_executor(tmp_path)
+    executor._record_scale(SimpleNamespace(anchor=None))
+    context = executor.task_context()
+    assert context["scale_value"] == ""
+    assert "读不到" in context["scale_note"]
 
 
 # ---------------------------------------------------------------------------

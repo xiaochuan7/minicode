@@ -49,6 +49,89 @@ MAX_STEPS_BEFORE_STOP = 8
 #: 缩放值的样子（「150%」「125 %」）。
 _SCALE_PATTERN = re.compile(r"(\d{2,3})\s*%")
 
+#: **缩放值的系统状态读数**（注册表）。
+#:
+#: ⚠️ **为什么读系统状态而不是只读界面树**：Windows 设置是 UWP 应用，
+#: 它的可访问性树里**没有那个百分比**（控件名里没有、「缩放」下拉框的
+#: ``Value`` 也是空的）→ 只读树的话 W-1.E **永远判不了**。
+#: 依据【一手】WAA 官方 ``desktop_env/evaluators/getters/settings.py``：
+#: 5 条 Windows Settings 任务全部用 ``exact_match`` 读**注册表 / PowerShell**
+#: —— **验收读系统状态，不读界面树**。
+#:
+#: 注册表读数的位置（按优先级，第一个读到的就是答案）：
+#:
+#: 1. ``HKCU\Control Panel\Desktop\LogPixels`` —— 经典的系统 DPI；
+#: 2. ``HKCU\Control Panel\Desktop\WindowMetrics\AppliedDPI``。
+#:
+#: ⚠️ **本机实测（Windows 11 26100，2026-10-22）**：第 1 个键
+#: **不存在**（那个键是老式 GDI 缩放留下的），真正落数的是第 2 个
+#: （``AppliedDPI`` = 144 → 150%，与 ``GetDpiForSystem()`` = 144 一致）。
+#: 两个都读、按顺序取，**来源如实记**（不许把两个说成一个）。
+SCALE_REGISTRY_KEYS: tuple[tuple[str, str], ...] = (
+    (r"Control Panel\Desktop", "LogPixels"),
+    (r"Control Panel\Desktop\WindowMetrics", "AppliedDPI"),
+)
+
+#: Windows 的 DPI 基准：``96`` ↔ 100%。
+BASE_LOG_PIXELS = 96
+
+
+def scale_percent_from_log_pixels(log_pixels: int) -> str:
+    """DPI → 缩放百分比（96 → ``100%``；120 → ``125%``；144 → ``150%``）。"""
+    percent = float(log_pixels) * 100.0 / BASE_LOG_PIXELS
+    if abs(percent - round(percent)) < 1e-6:
+        return f"{int(round(percent))}%"
+    return f"{percent:g}%"
+
+
+def read_scale_from_registry() -> tuple[str, str] | None:
+    """读注册表里的缩放值。返回 ``(值, 来源)``；读不到返回 ``None``。
+
+    读的是 :data:`SCALE_REGISTRY_KEYS` 里那几处（**来源写进返回值**，
+    报告里要分得清读的是哪一个键）。
+    """
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - 非 Windows 上没有这个模块
+        return None
+    for subkey, value_name in SCALE_REGISTRY_KEYS:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey) as key:
+                raw, _kind = winreg.QueryValueEx(key, value_name)
+        except OSError:
+            continue
+        try:
+            dpi = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if dpi <= 0:
+            continue
+        value = scale_percent_from_log_pixels(dpi)
+        return value, f"注册表 HKCU\\{subkey}\\{value_name}（{dpi} → {value}）"
+    return None
+
+
+def read_scale_from_system_dpi() -> tuple[str, str] | None:
+    """读 Win32 的**系统 DPI**（注册表读不到时的最后兜底）。
+
+    读数来自冻结原型 :mod:`minicode.exec.dpi`（本机 144 → 150%）。
+    """
+    try:
+        from minicode.exec import dpi
+    except ImportError:  # pragma: no cover - 冻结原型一定在
+        return None
+    value = int(dpi.system_dpi() or 0)
+    if value <= 0:
+        return None
+    percent = scale_percent_from_log_pixels(value)
+    return percent, f"系统 DPI 读数（{value} → {percent}）"
+
+
+def _percent_of(value: str) -> int:
+    """从「125%」这样的值里取百分比数（取不到就是 0）。"""
+    match = _SCALE_PATTERN.search(value or "")
+    return int(match.group(1)) if match else 0
+
 #: 找窗口时用的可见窗口枚举。
 def find_window_by_title(title: str) -> int:
     """按**标题**找可见窗口（找不到返回 0）。"""
@@ -412,9 +495,46 @@ class WindowsDesktopExecutor:
         self._context["zoom_raw"] = (echo.raw_x, echo.raw_y) if echo is not None else None
 
     def _record_scale(self, wiring: _Wiring) -> None:
-        """读出界面上的缩放值（**从树里读**：控件名里的百分比，或「缩放」那个下拉框的值）。
+        """读出当前缩放值（**先读树；读不到就用系统状态读数兜底**）。
 
-        ⚠️ **读不到就如实记空** —— 不拿别处的值来充数（工单 M14 的口径：
+        ⚠️ **为什么要有兜底**：Windows 设置是 UWP 应用，它的可访问性树里
+        **没有那个百分比**（控件名里没有、「缩放」下拉框的 ``Value`` 也是空的）
+        → 只读树的话，工单 W-1.E **永远判不了**。
+        兜底读的是**注册表**（``HKCU\\Control Panel\\Desktop\\LogPixels``：
+        96/120/144 → 100%/125%/150%）——
+        依据【一手】WAA 官方 ``desktop_env/evaluators/getters/settings.py``：
+        5 条 Windows Settings 任务全部用 ``exact_match`` 读注册表 / PowerShell。
+
+        ⚠️ **来源必须如实记**（``scale_source``）：树里读到的与注册表读到的
+        不是一回事，报告里要分得清。
+        """
+        found = self._read_scale_from_tree(wiring)
+        if found is not None:
+            value, source = found
+            self._context["scale_value"] = value
+            self._context["scale_percent"] = _percent_of(value)
+            self._context["scale_source"] = source
+            return
+        reading = read_scale_from_registry() or read_scale_from_system_dpi()
+        if reading is not None:
+            value, source = reading
+            self._context["scale_value"] = value
+            self._context["scale_percent"] = _percent_of(value)
+            self._context["scale_source"] = source
+            self._context["scale_note"] = (
+                "缩放值在树里读不到（UWP 的树里既没有那个百分比，"
+                "「缩放」下拉框的值也是空的）→ 改读**系统状态**"
+            )
+            return
+        self._context["scale_value"] = ""
+        self._context["scale_note"] = (
+            "缩放值在树里读不到，注册表与系统 DPI 读数里也没有"
+        )
+
+    def _read_scale_from_tree(self, wiring: _Wiring) -> tuple[str, str] | None:
+        """从**树**里读缩放值（控件名里的百分比 /「缩放」下拉框的值）。
+
+        读不到返回 ``None`` —— **不假装读到了**（工单 M14 的口径：
         判不了 ≠ 不成立，也不许当成读到了）。
         """
         from minicode.uia.ports import UiaFindRequest
@@ -427,22 +547,13 @@ class WindowsDesktopExecutor:
             for element in result.elements:
                 match = _SCALE_PATTERN.search(element.name or "")
                 if match:
-                    self._context["scale_value"] = match.group(0)
-                    self._context["scale_percent"] = int(match.group(1))
-                    self._context["scale_source"] = f"控件名「{element.name}」"
-                    return
+                    return match.group(0), f"控件名「{element.name}」"
         result = port.find(UiaFindRequest(anchor=wiring.anchor, name="缩放"))
         for element in result.elements:
             value = (element.value or "").strip()
             if value:
-                self._context["scale_value"] = value
-                self._context["scale_source"] = f"下拉框「{element.name}」的值"
-                return
-        self._context["scale_value"] = ""
-        self._context["scale_note"] = (
-            "缩放值在树里读不到：界面上显示的百分比既不在控件名里，"
-            "「缩放」那个下拉框的 Value 也是空的（本层没有 OCR）"
-        )
+                return value, f"下拉框「{element.name}」的值"
+        return None
 
     def _reset_to_home(self) -> None:
         """把「设置」拨回首页（**上一步的状态不能污染这一步的断言**）。
