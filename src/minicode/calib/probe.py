@@ -24,6 +24,7 @@ __all__ = [
     "ProbeSpec",
     "default_probe_spec",
     "build_probe_frame",
+    "probe_hit_radius",
     "probe_png",
     "probe_digest",
     "MARGIN_RATIO",
@@ -118,6 +119,18 @@ def build_probe_frame(spec: ProbeSpec) -> CapturedFrame:
 def probe_png(spec: ProbeSpec) -> bytes:
     """探针图的 PNG 字节（送模型的那一张的等价物）。"""
     return encode_png(build_probe_frame(spec))
+
+
+def probe_hit_radius(spec: ProbeSpec) -> float:
+    """**命中半径**（物理像素）：目标方块边长的一半。
+
+    命中判据：预测的物理落点与目标中心的距离 ≤ 它 → 落在方块内（命中）。
+    标准探针（2560 宽）上 = 96 / 2 = **48 px**
+    （= :data:`minicode.calib.tolerance.PROBE_HIT_RADIUS_PX`）。
+    """
+    if not spec.targets:
+        raise ValueError("探针没有目标，命中半径无从谈起")
+    return spec.targets[0].size / 2.0
 
 
 def probe_digest(frame: CapturedFrame) -> str:

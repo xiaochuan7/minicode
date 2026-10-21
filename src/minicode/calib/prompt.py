@@ -5,11 +5,20 @@
 （描述画面几何时用到的「像素」是**画面本身的度量**、不是对答案单位的暗示；
 但它确实会让模型倾向用像素作答 —— 文本路径的固有污染，见 ``docs/reviews/M5.md`` §3。）
 
+⚠️ **尺寸声明是允许的**（A-2 明确要求）：**声明这张图是 W×H**，
+让「模型发的坐标对应哪一张图」这件事不再是猜的。声明的是**图本身的大小**，
+**不是答案单位**（不许写「0~1000」「归一化」「分母」）。
+
 两条调用路径各有一份提示词（工单 M5 AC 9）：
 
 * **图像路径**：把探针图发给模型，问四个方块中心的坐标；
 * **文本路径**：不发明图，只用文字描述探针布局（屏幕尺寸 + 四个方块离各条边的距离），
   问同样的问题 —— 测的是模型在**纯文本**上下文里的坐标习惯。
+
+**每轮提示词必须不同**（A-1）：逐字重发同一条请求在确定性模型下会拿到**同一答案**
+（``ground/channel.py`` 的 ``second_opinion`` 注释记过这个坑），
+所以 K 轮独立问靠**轮换报告顺序** + **轮换措辞**实现。
+:func:`parse_points` **按名字取值**，与回答里的顺序无关 → 轮换顺序是安全的。
 
 回答解析接受两种形态：**JSON**（首选）与**逐行写法**（``tl: (120, 120)``）；
 两种形态都按**目标名字**取值，取不到就**显式失败**，不猜、不按数值大小猜量纲。
@@ -19,9 +28,11 @@ from __future__ import annotations
 
 import json
 import re
+from itertools import permutations
 from typing import Any
 
 from .probe import ProbeSpec
+from .tolerance import CALIBRATION_ROUNDS
 
 __all__ = [
     "CalibrationParseError",
@@ -35,26 +46,83 @@ class CalibrationParseError(Exception):
     """模型回答里取不出四个目标的坐标。"""
 
 
-def _answer_format(spec: ProbeSpec) -> str:
-    names = ", ".join(f'"{target.name}": [x, y]' for target in spec.targets)
-    return (
-        "用 JSON 回答，格式："
-        '{"points": {' + names + "}}"
+#: 四个目标的**报告顺序**排列表（4! = 24 种，字典序）。
+#:
+#: 按轮次 / 会话号取用，保证每轮提示词不同（逐字重发会拿到同一答案）。
+_ORDERINGS: tuple[tuple[int, ...], ...] = tuple(permutations(range(4)))
+
+#: 请求句的**措辞变体**（轮换用）。语义相同、字面不同 → 提示词逐轮不同。
+_REQUEST_TEMPLATES: tuple[str, ...] = (
+    "请按 {order} 的顺序给出这四个方块中心的坐标。",
+    "请按 {order} 的次序依次给出这四个方块中心的坐标。",
+    "请依照 {order} 的先后顺序给出这四个方块中心的坐标。",
+)
+
+
+def _report_order(spec: ProbeSpec, round_index: int, session: int) -> tuple[str, ...]:
+    """本轮的**报告顺序**（目标名字的元组）。
+
+    * 轮次之间：顺序不同（轮换）→ 提示词不同 → 每轮是**另一次问**；
+    * 会话之间：起点不同（``session`` 偏移）→ 不同会话的提示词不同 →
+      6 次独立标定会话**相互独立**（不是逐字重发同一份请求）。
+    """
+    key = session * CALIBRATION_ROUNDS + round_index
+    if len(spec.targets) != len(_ORDERINGS[0]):
+        # 目标数不是 4（排列表是按 4 个目标建的）→ 不轮换，顺序照旧。
+        return tuple(target.name for target in spec.targets)
+    ordering = _ORDERINGS[key % len(_ORDERINGS)]
+    return tuple(spec.targets[index].name for index in ordering)
+
+
+def _request_sentence(order: tuple[str, ...], round_index: int) -> str:
+    """本轮的请求句（措辞随轮次轮换）。"""
+    template = _REQUEST_TEMPLATES[round_index % len(_REQUEST_TEMPLATES)]
+    return template.format(order="、".join(order))
+
+
+def _answer_format(spec: ProbeSpec, order: tuple[str, ...] | None = None) -> str:
+    names = ", ".join(
+        f'"{name}": [x, y]'
+        for name in (order or tuple(target.name for target in spec.targets))
     )
+    return "用 JSON 回答，格式：" + '{"points": {' + names + "}}"
 
 
-def image_prompt(spec: ProbeSpec) -> str:
-    """图像路径的提示词（探针图 + 这段文字）。"""
+def image_prompt(
+    spec: ProbeSpec,
+    model_input_size: tuple[int, int],
+    *,
+    round_index: int = 0,
+    session: int = 0,
+) -> str:
+    """图像路径的提示词（探针图 + 这段文字）。
+
+    **声明这张图的尺寸**（A-2）：「这张图是 W×H」—— 让模型发的坐标
+    对应哪一张图变成**已知比例**，而不是猜的。
+
+    ``round_index`` / ``session`` 轮换**报告顺序与措辞**：
+    每轮提示词因此不同 → K 轮是 K 次**独立**的问。
+    """
+    width, height = model_input_size
+    order = _report_order(spec, round_index, session)
     return (
-        "这是一张标定图。图中有 4 个实心深色方块，请给出每个方块【中心】的坐标。\n"
+        f"这是一张标定图，这张图是 {width}×{height}。\n"
+        "图中有 4 个实心深色方块，请给出每个方块【中心】的坐标。\n"
         "其中 tl = 左上角那个方块，tr = 右上角，bl = 左下角，br = 右下角。\n"
-        f"{_answer_format(spec)}\n"
-        "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
+        f"{_answer_format(spec, order)}\n"
+        f"{_request_sentence(order, round_index)}\n"
+        "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
 
-def text_prompt(spec: ProbeSpec) -> str:
+def text_prompt(
+    spec: ProbeSpec,
+    *,
+    round_index: int = 0,
+    session: int = 0,
+) -> str:
     """文本路径的提示词（**不发图**，只有文字描述）。"""
+    order = _report_order(spec, round_index, session)
     lines = [
         f"下面是一张 {spec.width}×{spec.height} 屏幕的文字描述（不附图片），"
         f"图中有 4 个边长 {spec.targets[0].size} 像素的实心深色方块：",
@@ -75,7 +143,8 @@ def text_prompt(spec: ProbeSpec) -> str:
             gaps.append(f"离下边 {bottom_gap:.0f} 像素")
         lines.append(f"- {target.name}：{'、'.join(gaps)}")
     lines.append("请给出这 4 个方块【中心】的坐标。")
-    lines.append(_answer_format(spec))
+    lines.append(_answer_format(spec, order))
+    lines.append(_request_sentence(order, round_index))
     lines.append("坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。")
     return "\n".join(lines)
 
