@@ -16,12 +16,21 @@
 像素差分                **界面有没有变**（通用条件）                **具体期望**
 ======================  ==========================================  ======================
 
+「文本比对」这一路有**两个来源**（工单 M27）：**树里的控件名** 与
+**画面 OCR**。树覆盖不全时（Windows 设置的缩放百分比、界面上的时钟读数、
+微信聊天区的标题 —— 它们**根本不在树里**），就从画面上读。
+
+⚠️ **OCR 不是新的一种验证手段**：手段还是三个，断言形态还是三种
+（状态变化 / 文本出现 / 文本消失）。OCR 只是「文本比对」多出来的一个来源，
+而且**只读画面**（不产生动作、不注入输入）。
+
 三条硬规矩：
 
 * **像素变化 ≠ 成功** —— 像素差分**不判具体期望**（点错打开错对话框也会安定）；
   没有期望时它只给出「有反应 / 界面无变化」这个**信号**。
 * **模型不参与裁判** —— 本层**没有任何模型依赖**（``model_calls`` 恒为 0）。
-* **判不了 ≠ 不成立** —— 树读不出来（0 节点 = 通道不可用，C-09）时一律「判不了」。
+* **判不了 ≠ 不成立** —— 树读不出来（0 节点 = 通道不可用，C-09）时一律「判不了」；
+  **OCR 不可用 / 读不出也一样**（工单 M27 AC 5）。
 
 期望的语义是**变化**（工单：「某个按钮变成不可用」「某段文本出现」）：
 断言的是「动作之后 X 现在是这个状态」，**并且**这次动作**促成了**它
@@ -52,6 +61,15 @@ from .diff import (
     poll_change,
 )
 from .expect import Expectation, ExpectationKind, Verdict
+from .ocr import (
+    TRUTH_SOURCE_NONE,
+    TRUTH_SOURCE_SCREEN,
+    TRUTH_SOURCE_TREE,
+    OcrPort,
+    OcrReading,
+    OcrStatus,
+    normalize_ocr_text,
+)
 
 __all__ = [
     "StateObserver",
@@ -96,12 +114,15 @@ class VerificationBaseline:
     * ``candidates`` —— 之前观测到的控件；
     * ``reachable`` —— 树读到了吗（读不到 → **判不了**，不是「没找到」；
       C-09：**0 节点 = 通道不可用**）；
-    * ``error`` —— 读不到的原因（人读）。
+    * ``error`` —— 读不到的原因（人读）；
+    * ``ocr`` —— **画面 OCR** 那一路的基线读数（工单 M27）。
     """
 
     candidates: tuple[ControlCandidate, ...] = ()
     reachable: bool = True
     error: str = ""
+    #: OCR 那一路的基线读数（动作**之前**从画面读的）。没读就是 ``None``。
+    ocr: OcrReading | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +144,11 @@ class VerifyRequest:
     window_title: str = ""
     #: 动作的目标描述（没有期望时，动作日志里的「前后状态」用它当目标）。
     target_description: str = ""
+    #: 要 OCR 读**哪一块**（**物理像素**矩形 ``(left, top, right, bottom)``）。
+    #: ``None`` = 整屏（工单 M27）。
+    ocr_region: tuple[int, int, int, int] | None = None
+    #: 这一块的**来源**（人读，进 OCR 读数记录 —— 供人工核对）。
+    ocr_region_source: str = ""
 
 
 @runtime_checkable
@@ -167,6 +193,12 @@ class VerificationResult:
     state_before: Mapping[str, Any] | None = None
     #: 动作**后**的状态。
     state_after: Mapping[str, Any] | None = None
+    #: **OCR 的读数**（工单 M27）—— 基线那一次 + 动作后那一次。
+    #: 每次读数都带**区域坐标 + 读到的文本 + 区域来源**，可人工核对。
+    ocr_readings: tuple[OcrReading, ...] = ()
+    #: **真值来源**：观测值是从哪儿来的
+    #: （「画面量的」/「树里取的」/「（没有）」—— 判不了时没有真值来源）。
+    truth_source: str = ""
     #: 模型调用次数。**恒为 0** —— 模型不参与裁判。
     model_calls: int = 0
 
@@ -192,6 +224,8 @@ class VerificationResult:
                 dict(self.state_before) if self.state_before is not None else None
             ),
             "state_after": dict(self.state_after) if self.state_after is not None else None,
+            "ocr_readings": [reading.to_dict() for reading in self.ocr_readings],
+            "truth_source": self.truth_source,
             "model_calls": self.model_calls,
         }
 
@@ -221,6 +255,19 @@ def _match(candidates: Sequence[ControlCandidate], name: str) -> list[ControlCan
     return [candidate for candidate in candidates if name_matches(candidate.name, name)]
 
 
+def _frame_rect(frame: CapturedFrame) -> tuple[int, int, int, int]:
+    """一帧画面在**物理表面空间**里的矩形 ``(left, top, right, bottom)``。
+
+    OCR 读数要记**区域坐标**（工单 M27 AC 6）—— 人工核对时靠它回到屏幕上。
+    """
+    return (
+        frame.left,
+        frame.top,
+        frame.left + frame.width,
+        frame.top + frame.height,
+    )
+
+
 class VerificationLayer:
     """校验层：期望断言 + 默认校验。"""
 
@@ -229,6 +276,7 @@ class VerificationLayer:
         *,
         screenshot_port: ScreenshotPort,
         observer: StateObserver | None = None,
+        ocr_port: OcrPort | None = None,
         params: ChangeDetectParams | None = None,
         clock: Callable[[], float] = time.perf_counter,
         sleeper: Callable[[float], None] = time.sleep,
@@ -236,6 +284,9 @@ class VerificationLayer:
         self.screenshot_port = screenshot_port
         #: 定点观察端口（可访问性树那一路）。缺省 = 树这一路判不了。
         self.observer = observer
+        #: **OCR 端口**（「文本比对」这一路的**第二个来源**，工单 M27）。
+        #: 缺省 = 只有树里的文本进比对（工单 M11 的口径，一个字没改）。
+        self.ocr_port = ocr_port
         self.params = params or ChangeDetectParams()
         self._clock = clock
         self._sleeper = sleeper
@@ -250,18 +301,23 @@ class VerificationLayer:
         没有期望时**不观测**（默认校验只需要基线帧）。
         """
         observation = self._observe(request)
+        ocr = self._ocr_read(request)
         if observation is None:
-            return VerificationBaseline(candidates=(), reachable=False, error="没有期望")
+            return VerificationBaseline(
+                candidates=(), reachable=False, error="没有期望", ocr=ocr
+            )
         return VerificationBaseline(
             candidates=observation.controls,
             reachable=observation.reachable,
             error=observation.error,
+            ocr=ocr,
         )
 
     def verify(self, request: VerifyRequest) -> VerificationResult:
         """动作之后跑一次校验。"""
         change = self._detect_change(request)
         observation = self._observe(request)
+        ocr_now = self._ocr_read(request)
         state_before = self._state_before(request)
         state_after = self._state_after(request, observation, change)
 
@@ -299,7 +355,7 @@ class VerificationLayer:
                 model_calls=0,
             )
 
-        means = self._judge(request, observation)
+        means = self._judge(request, observation, ocr_now)
         verdicts = [Verdict(value) for value in means.values()]
         decidable = [verdict for verdict in verdicts if verdict is not Verdict.UNKNOWN]
         if not decidable:
@@ -312,7 +368,7 @@ class VerificationLayer:
             satisfied = False
             outcome = OUTCOME_EXPECTATION_NOT_MET
         expected, observed, diff = self._describe(
-            request.expectation, observation, request.baseline, satisfied
+            request.expectation, observation, request.baseline, satisfied, ocr_now
         )
         return VerificationResult(
             outcome=outcome,
@@ -325,6 +381,10 @@ class VerificationLayer:
             change=change,
             state_before=state_before,
             state_after=state_after,
+            ocr_readings=self._ocr_readings(request, ocr_now),
+            truth_source=self._truth_source(
+                request.expectation, observation, ocr_now, means, satisfied
+            ),
             model_calls=0,
         )
 
@@ -357,14 +417,79 @@ class VerificationLayer:
             return _Observation(controls=(), reachable=False, error=str(exc))
         return _Observation(controls=tuple(controls), reachable=True)
 
+    def _ocr_read(self, request: VerifyRequest) -> OcrReading | None:
+        """OCR 那一路：从画面上读文字（**只读**）。
+
+        没接 OCR 端口 / 没有期望 → **不读**（``None``）。
+        读不出来（抓不到画面 / 后端不可用 / 识别失败）→ 记一条
+        ``unavailable`` 的读数 —— 上层据此判「判不了」（工单 M27 AC 5）。
+        """
+        if self.ocr_port is None or request.expectation is None:
+            return None
+        region = request.ocr_region
+        source = request.ocr_region_source or ("整屏" if region is None else "")
+        try:
+            frame = self.screenshot_port.screenshot(region)
+        except Exception as exc:
+            return OcrReading(
+                text="",
+                region=region or (0, 0, 0, 0),
+                region_source=source,
+                status=OcrStatus.UNAVAILABLE,
+                backend=self.ocr_port.name,
+                error=f"抓画面失败：{exc}",
+            )
+        if frame.is_empty:
+            return OcrReading(
+                text="",
+                region=region or (0, 0, 0, 0),
+                region_source=source,
+                status=OcrStatus.UNAVAILABLE,
+                backend=self.ocr_port.name,
+                error="画面是 0×0（抓不到）",
+            )
+        read_region = region if region is not None else _frame_rect(frame)
+        try:
+            text = self.ocr_port.read(frame)
+        except Exception as exc:
+            return OcrReading(
+                text="",
+                region=read_region,
+                region_source=source,
+                status=OcrStatus.UNAVAILABLE,
+                backend=self.ocr_port.name,
+                error=f"OCR 读不出来：{exc}",
+            )
+        return OcrReading(
+            text=text,
+            region=read_region,
+            region_source=source,
+            status=OcrStatus.OK,
+            backend=self.ocr_port.name,
+        )
+
+    def _ocr_readings(
+        self, request: VerifyRequest, ocr_now: OcrReading | None
+    ) -> tuple[OcrReading, ...]:
+        """这一步的**全部 OCR 读数**（基线那一次 + 动作后那一次）。
+
+        每次读数都带区域坐标 + 读到的文本 + 区域来源 —— 可人工核对
+        （工单 M27 AC 6）。
+        """
+        baseline = request.baseline.ocr if request.baseline is not None else None
+        return tuple(reading for reading in (baseline, ocr_now) if reading is not None)
+
     def _judge(
-        self, request: VerifyRequest, observation: _Observation | None
+        self,
+        request: VerifyRequest,
+        observation: _Observation | None,
+        ocr_now: OcrReading | None,
     ) -> dict[str, str]:
         """三个手段各给一个判定（判不了就给 ``unknown``）。"""
         expectation = request.expectation
         assert expectation is not None  # 只有有期望时才走到这里
         tree = self._tree_verdict(expectation, observation, request.baseline)
-        text = self._text_verdict(expectation, observation, request.baseline)
+        text = self._text_verdict(expectation, observation, request.baseline, ocr_now)
         return {
             "tree": tree.value,
             "text": text.value,
@@ -411,21 +536,82 @@ class VerificationLayer:
         expectation: Expectation,
         observation: _Observation | None,
         baseline: VerificationBaseline | None,
+        ocr_now: OcrReading | None,
     ) -> Verdict:
-        """文本比对这一路：查**文本出现或消失**。"""
-        if observation is None or not observation.reachable:
+        """文本比对这一路：查**文本出现或消失**。
+
+        两个来源（工单 M27）：
+
+        * **树里的控件名**（工单 M11 的口径）；
+        * **画面 OCR**（读不出的那些值靠它：缩放百分比 / 时钟读数 /
+          微信聊天区的标题）。
+
+        ⚠️ **接了 OCR 之后，画面这一路是权威的** ——
+        树覆盖不全（那些值**根本不在树里**），所以「树里没有」
+        **不能**说「期望不成立」；画面读到了才算数，读不到就是**判不了**
+        （工单 M27 AC 2 / AC 5）。
+        """
+        target = expectation.target
+        tree_now = (
+            _text_corpus(observation.controls)
+            if observation is not None and observation.reachable
+            else None
+        )
+        tree_before = (
+            _text_corpus(baseline.candidates)
+            if baseline is not None and baseline.reachable
+            else None
+        )
+
+        if self.ocr_port is None:
+            # **没接 OCR**：树的口径（工单 M11 的行为，一个字没改）。
+            if tree_now is None or tree_before is None:
+                return Verdict.UNKNOWN
+            present_now = target in tree_now
+            present_before = target in tree_before
+            if expectation.kind is ExpectationKind.TEXT_APPEARS:
+                if not present_now:
+                    return Verdict.NOT_MET
+                return Verdict.NOT_MET if present_before else Verdict.MET
+            if expectation.kind is ExpectationKind.TEXT_DISAPPEARS:
+                if present_now:
+                    return Verdict.NOT_MET
+                return Verdict.MET if present_before else Verdict.UNKNOWN
+            # 状态类期望：文本这一路判不了。
             return Verdict.UNKNOWN
-        if baseline is None or not baseline.reachable:
-            return Verdict.UNKNOWN
-        present_now = expectation.target in _text_corpus(observation.controls)
-        present_before = expectation.target in _text_corpus(baseline.candidates)
+
+        # **接了 OCR**：画面这一路是权威的。
+        ocr_before = baseline.ocr if baseline is not None else None
+        norm_target = normalize_ocr_text(target)
+        # 「读到了画面」与「读出了字」是两件事：
+        # 前者能证明**之前那一面**是什么样，后者才够格说「那儿没有它」。
+        ocr_now_ok = ocr_now is not None and ocr_now.readable
+        ocr_before_ok = ocr_before is not None and ocr_before.readable
+        ocr_now_decisive = ocr_now is not None and ocr_now.decisive
+        # **正面证据**（读到了它）：树与 OCR 取并 —— 树是精确的，OCR 是有损的，
+        # 谁看到都算数。
+        present_now = (tree_now is not None and target in tree_now) or (
+            ocr_now_ok and norm_target in normalize_ocr_text(ocr_now.text)
+        )
+        present_before = (tree_before is not None and target in tree_before) or (
+            ocr_before_ok and norm_target in normalize_ocr_text(ocr_before.text)
+        )
         if expectation.kind is ExpectationKind.TEXT_APPEARS:
-            if not present_now:
-                return Verdict.NOT_MET
-            return Verdict.NOT_MET if present_before else Verdict.MET
+            if present_now:
+                if present_before:
+                    return Verdict.NOT_MET
+                if not ocr_before_ok:
+                    # 「之前」那一面读不出来 → 说不出「它出现了」。
+                    return Verdict.UNKNOWN
+                return Verdict.MET
+            # 现在没有它：**读出了字**才算「不成立」，
+            # 读不到 / 没读出字 → 判不了（工单 M27 AC 5）。
+            return Verdict.NOT_MET if ocr_now_decisive else Verdict.UNKNOWN
         if expectation.kind is ExpectationKind.TEXT_DISAPPEARS:
             if present_now:
                 return Verdict.NOT_MET
+            if not ocr_now_decisive:
+                return Verdict.UNKNOWN
             return Verdict.MET if present_before else Verdict.UNKNOWN
         # 状态类期望：文本这一路判不了。
         return Verdict.UNKNOWN
@@ -436,6 +622,7 @@ class VerificationLayer:
         observation: _Observation | None,
         baseline: VerificationBaseline | None,
         satisfied: bool | None,
+        ocr_now: OcrReading | None = None,
     ) -> tuple[str, str, str]:
         """（期望内容, 实际观测, 差异）—— 断言失败时靠这三样定位问题。"""
         expected = expectation.describe()
@@ -470,6 +657,10 @@ class VerificationLayer:
                     f"现在：{_text_corpus(controls) or '（空）'}"
                     f"｜之前：{before_text or '（空）'}"
                 )
+        if ocr_now is not None:
+            # OCR 那一路的读数也进「实际观测」—— 人工核对时一眼看得到。
+            screen = ocr_now.text.strip() or f"（没读出字：{ocr_now.error}）"
+            observed = f"{observed}｜画面（{ocr_now.region_source or '整屏'}）：{screen}"
         if satisfied is None:
             diff = "判不了（没有能判它的手段）"
         elif satisfied:
@@ -477,6 +668,37 @@ class VerificationLayer:
         else:
             diff = f"期望：{expected}；实际：{observed}"
         return expected, observed, diff
+
+    def _truth_source(
+        self,
+        expectation: Expectation,
+        observation: _Observation | None,
+        ocr_now: OcrReading | None,
+        means: Mapping[str, str],
+        satisfied: bool | None,
+    ) -> str:
+        """**真值来源**：这次观测值是从哪儿来的（工单 M27 AC 3）。
+
+        * 「画面量的」—— 从画面上量的（OCR 读到的那一份）；
+        * 「树里取的」—— 从可访问性树里取的；
+        * 「（没有）」—— **判不了**，没有真值来源。
+        """
+        if satisfied is None:
+            return TRUTH_SOURCE_NONE
+        tree_now = (
+            _text_corpus(observation.controls)
+            if observation is not None and observation.reachable
+            else None
+        )
+        text_decided = means.get("text", Verdict.UNKNOWN.value) != Verdict.UNKNOWN.value
+        if not text_decided:
+            # 文本这一路判不了 → 是树那一路定的 → 树里取的。
+            return TRUTH_SOURCE_TREE
+        if tree_now is not None and expectation.target in tree_now:
+            return TRUTH_SOURCE_TREE
+        if ocr_now is not None and ocr_now.readable:
+            return TRUTH_SOURCE_SCREEN
+        return TRUTH_SOURCE_TREE
 
     def _state_before(self, request: VerifyRequest) -> dict[str, Any]:
         """动作**前**的状态（进动作日志）。"""

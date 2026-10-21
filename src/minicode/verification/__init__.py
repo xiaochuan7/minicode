@@ -7,6 +7,9 @@
 * :mod:`minicode.verification.expect` —— **期望**（动作之后应当成立、可被确定性验证的状态）。
 * :mod:`minicode.verification.diff` —— **界面无变化检测**（8×8 像素块 + 32 位精确比较 + 轮询节奏）。
 * :mod:`minicode.verification.layer` —— 校验层本体（期望断言 / 默认校验 / 三种手段取并）。
+* :mod:`minicode.verification.ocr` —— **OCR 通道**（工单 M27：「文本比对」这一路
+  多出来的一个**来源** —— 从画面上读）。
+* :mod:`minicode.verification.ocr_windows` —— Windows 自带的 OCR 后端（**只读**画面）。
 * :mod:`minicode.verification.telemetry` —— **三段耗时**与**三类失败**的统计（单步 + 整任务）。
 
 > **词汇**：本包说的「期望」「三段耗时」「三类失败」「动作日志」「追踪记录」
@@ -36,5 +39,7 @@ __all__ = [
     "diff",
     "expect",
     "layer",
+    "ocr",
+    "ocr_windows",
     "telemetry",
 ]

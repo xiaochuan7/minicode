@@ -1,4 +1,4 @@
-"""校验层的假实现：截图端口（按脚本给画面）与定点观察端口。
+"""校验层的假实现：截图端口（按脚本给画面）、定点观察端口、OCR 端口。
 
 有了它们，校验层的整条链路可以在**不碰真桌面、不需要凭据、不产生费用**的条件下被观测。
 """
@@ -12,6 +12,7 @@ from minicode.action.ports import CapturedFrame, ControlCandidate
 __all__ = [
     "ScriptedScreenshotPort",
     "FakeStateObserver",
+    "FakeOcrPort",
     "make_frame",
 ]
 
@@ -69,6 +70,44 @@ class FakeStateObserver:
             index = min(self.calls - 1, len(self.sequence) - 1)
             return self.sequence[index].get(name, ())
         return self.controls.get(name, ())
+
+
+class FakeOcrPort:
+    """按脚本给 OCR 读数的端口（工单 M27）。
+
+    ``text``
+        每次都给同一份读数。
+    ``texts``
+        按次序给不同的读数（**第一份 = 动作之前（基线），第二份 = 动作之后**）。
+    ``error``
+        非空时**读不出来**（校验层据此判「判不了」，不是「没读到」）。
+
+    ``frames`` 记下它读到过哪几帧（供断言「它只读画面」）。
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        texts: Sequence[str] = (),
+        error: Exception | None = None,
+        name: str = "fake-ocr",
+    ):
+        self.text = text
+        self.texts = list(texts)
+        self.error = error
+        self.name = name
+        self.calls = 0
+        self.frames: list[CapturedFrame] = []
+
+    def read(self, frame: CapturedFrame) -> str:
+        self.calls += 1
+        self.frames.append(frame)
+        if self.error is not None:
+            raise self.error
+        if self.texts:
+            index = min(self.calls - 1, len(self.texts) - 1)
+            return self.texts[index]
+        return self.text
 
 
 def make_frame(
