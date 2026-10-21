@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .scratch/
+# 并行开发用的 git worktree 目录（每个 agent 一个工作树 + 分支）
+.worktrees/
 # 真机占用锁（人机互斥状态位）：`.scratch/desktop.lock`
 # M0 最小闭环的动作记录落盘目录（运行时产物）
 runs/
