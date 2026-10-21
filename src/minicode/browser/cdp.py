@@ -36,6 +36,20 @@ __all__ = [
     "PLAYWRIGHT_REQUIRED",
 ]
 
+
+def _ax_name(node: dict) -> str:
+    """**AX 树节点的可见文本**（读不出来就是空串）。"""
+    return ((node.get("name") or {}).get("value") or "").strip()
+
+
+def _first_common(left: list[int], right: list[int]) -> int | None:
+    """两条「自己 → 根」的祖先链上的**最近公共祖先**（没有 → ``None``）。"""
+    seen = set(right)
+    for node_id in left:
+        if node_id in seen:
+            return node_id
+    return None
+
 #: 浏览器窗口的类名前缀（Chromium 系：Chrome / Edge / 夸克……）。
 _WINDOW_CLASS_PREFIX = "Chrome_WidgetWin_"
 
@@ -173,6 +187,18 @@ class _AxNode:
     ancestor_names: tuple[str, ...] = ()
 
 
+def _ax_node(raw: dict) -> _AxNode:
+    """由**原始 AX 节点**造出 :class:`_AxNode`（没有 DOM 引用 → backend_id = 0）。"""
+    role = ((raw.get("role") or {}).get("value") or "").strip()
+    name = _ax_name(raw)
+    backend_id = raw.get("backendDOMNodeId")
+    return _AxNode(
+        role=role,
+        name=name,
+        backend_id=int(backend_id) if backend_id else 0,
+    )
+
+
 class ChromiumPage:
     """真机页面（走 CDP）：结构快照 + 浏览器自己的输入通道 + 元素调用。"""
 
@@ -202,35 +228,10 @@ class ChromiumPage:
         for node in nodes:
             if not self._kept(node):
                 continue
-            geometry = self._node_geometry(node.backend_id)
-            if geometry is None:
+            element = self._element_of(node, viewport)
+            if element is None:
                 continue
-            box = geometry.get("box")
-            if not box:
-                continue
-            css_rect = (
-                float(box["x"]),
-                float(box["y"]),
-                float(box["w"]),
-                float(box["h"]),
-            )
-            rect = css_rect_to_physical(css_rect, viewport)
-            element_id = str(node.backend_id)
-            self._css_rects[element_id] = css_rect
-            text = measure_visible_text(geometry, viewport)
-            css_text = css_text_rect(geometry)
-            if css_text is not None:
-                self._css_text_rects[element_id] = css_text
-            elements.append(
-                BrowserElement(
-                    name=node.name,
-                    role=node.role.lower(),
-                    rect=rect,
-                    element_id=element_id,
-                    window_handle=self.hwnd,
-                    text=text,
-                )
-            )
+            elements.append(element)
         self._generation += 1
         focused_value, focused_id = self._focused()
         return PageSnapshot(
@@ -240,6 +241,52 @@ class ChromiumPage:
             focused_value=focused_value,
             focused_element_id=focused_id,
         )
+
+    # -- 容器内的定位 -----------------------------------------------------
+
+    def find_in_container(
+        self, container_name: str, child_name: str
+    ) -> tuple[BrowserElement, BrowserElement] | None:
+        """在「可见文本含 ``container_name`` 的容器」里找「可见文本含 ``child_name`` 的后代」。
+
+        **为什么需要它**：扁平的页面结构快照**分不出父子关系** ——
+        cc-switch 的每张供应商卡片里都有一个「启用」按钮，
+        按名字找会命中一堆（→ 候选超上限 → 通道直接拒绝）。
+        而它的动作正是「点某个条目**里面**的按钮」。
+
+        容器 = 那个**同时**含起点与目标后代的**最近公共祖先**
+        （再往上的祖先会把别的卡片也含进来 → 不算数）。
+
+        返回 ``(容器元素, 后代元素)``；找不到 → ``None``。
+        """
+        raw, parents = self._ax_nodes()
+        names = {node_id: _ax_name(node) for node_id, node in raw.items()}
+        chains = {node_id: self._ancestor_chain(parents, node_id) for node_id in raw}
+        #: 起点：名字里含 ``container_name`` 的节点（**精确匹配优先**）。
+        starts = [
+            node_id for node_id, name in names.items() if name and container_name in name
+        ]
+        starts.sort(
+            key=lambda node_id: (names[node_id] != container_name, len(names[node_id]))
+        )
+        #: 候选后代：名字里含 ``child_name`` 的节点。
+        candidates = [
+            node_id for node_id, name in names.items() if name and child_name in name
+        ]
+        viewport = self.viewport()
+        for start in starts:
+            for ancestor in chains[start][1:]:
+                for child_id in candidates:
+                    child_chain = chains[child_id]
+                    if ancestor not in child_chain:
+                        continue
+                    if _first_common(chains[start], child_chain) != ancestor:
+                        continue
+                    container = self._element_of(_ax_node(raw[ancestor]), viewport)
+                    child = self._element_of(_ax_node(raw[child_id]), viewport)
+                    if container is not None and child is not None:
+                        return container, child
+        return None
 
     def viewport(self) -> PageViewport:
         """视口在物理表面空间的位置与比例（比例是**量出来的**）。"""
@@ -293,6 +340,32 @@ class ChromiumPage:
             )
         return True
 
+    def invoke_box(self, element_id: str) -> bool:
+        """按元素**自己的盒子**点它（CDP 的鼠标事件；CSS 像素）。
+
+        ⚠️ **什么时候用它**：元素**没有可见文本**（图标按钮、标签被裁掉的
+        折叠按钮）。那种情况下「可见文本的实际区域」要么读不出来，
+        要么量出来的是**裁掉之前**的宽度 —— 那个中心点会**落到旁边的元素上**
+        （实测：cc-switch 顶栏收起来的应用类型按钮，点「Claude」会点到「Codex」）。
+        """
+        css_rect = self._css_rects.get(element_id)
+        if css_rect is None:
+            return False
+        x = css_rect[0] + css_rect[2] / 2.0
+        y = css_rect[1] + css_rect[3] / 2.0
+        for event_type in ("mousePressed", "mouseReleased"):
+            self.cdp.send(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": event_type,
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "clickCount": 1,
+                },
+            )
+        return True
+
     # -- 能力探测 ---------------------------------------------------------
 
     def assess(self) -> PageAssessment:
@@ -324,6 +397,57 @@ class ChromiumPage:
         )
 
     # -- 内部 -------------------------------------------------------------
+
+    def _element_of(self, node: _AxNode, viewport: PageViewport) -> BrowserElement | None:
+        """由一个 AX 节点造出页面结构元素（矩形换算到**物理表面空间**）。
+
+        读不出矩形 → ``None``（**不猜一个位置**）。
+        """
+        geometry = self._node_geometry(node.backend_id)
+        if geometry is None:
+            return None
+        box = geometry.get("box")
+        if not box:
+            return None
+        css_rect = (
+            float(box["x"]),
+            float(box["y"]),
+            float(box["w"]),
+            float(box["h"]),
+        )
+        element_id = str(node.backend_id)
+        self._css_rects[element_id] = css_rect
+        css_text = css_text_rect(geometry)
+        if css_text is not None:
+            self._css_text_rects[element_id] = css_text
+        return BrowserElement(
+            name=node.name,
+            role=node.role.lower(),
+            rect=css_rect_to_physical(css_rect, viewport),
+            element_id=element_id,
+            window_handle=self.hwnd,
+            text=measure_visible_text(geometry, viewport),
+        )
+
+    def _ax_nodes(self) -> tuple[dict[int, dict], dict[int, int]]:
+        """AX 树的原始节点 + **父节点表**（父子关系只有这里有）。"""
+        tree = self.cdp.send("Accessibility.getFullAXTree")
+        nodes = {int(node["nodeId"]): node for node in tree.get("nodes", [])}
+        parents: dict[int, int] = {}
+        for node_id, node in nodes.items():
+            for child in node.get("childIds", []) or []:
+                parents[int(child)] = node_id
+        return nodes, parents
+
+    @staticmethod
+    def _ancestor_chain(parents: dict[int, int], node_id: int) -> list[int]:
+        """「自己 → 根」的祖先链。"""
+        chain = [node_id]
+        current = node_id
+        while current in parents:
+            current = parents[current]
+            chain.append(current)
+        return chain
 
     def _parse_tree(self) -> list[_AxNode]:
         """把 AX 树解析成节点列表，并记下每个节点的**祖先可见文本**。
