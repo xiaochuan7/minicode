@@ -34,6 +34,7 @@ from minicode.ground import (
     summarize_errors,
     zoom_locate,
 )
+from minicode.ground.zoom import region_geometry
 from minicode.model.client import ModelReply
 from minicode.model.effort import Effort
 from minicode.model.errors import NoTextOutputError
@@ -462,39 +463,92 @@ class EchoTests(unittest.TestCase):
 
 
 class ZoomTests(unittest.TestCase):
-    """AC 6 · 放大动作与裁剪不是一回事。"""
+    """AC 6 · 放大的坐标契约 = **图内坐标 + 物理原点**（M14 实测后拍板）。"""
 
-    def test_zoom_does_not_use_a_crop_plan(self):
-        model = _StubModel(_reply(1000.0, 500.0))
-        region_frame = _detail_frame(200, 200, left=300, top=400)
-        result = zoom_locate(
+    def _request(self, *, left=300, top=400, width=200, height=200) -> ZoomRequest:
+        return ZoomRequest(
+            target_description="开始",
+            region=(left, top, left + width, top + height),
+            region_frame=_detail_frame(width, height, left=left, top=top),
+            full_screen_size=(2560, 1600),
+            surface=(0, 0, 2560, 1600),
+        )
+
+    def _locate(self, model, request, *, scale=ModelScale.RELATIVE_0_1000):
+        return zoom_locate(
             model,
-            ZoomRequest(
-                target_description="开始",
-                region=(300, 400, 500, 600),
-                region_frame=region_frame,
-                full_screen_size=(2560, 1600),
-                surface=(0, 0, 2560, 1600),
-            ),
-            scale=ModelScale.RELATIVE_0_1000,
+            request,
+            scale=scale,
             model_input_size=(2560, 1600),
             effort=Effort.LOW,
         )
+
+    def test_zoom_adds_the_physical_origin_of_the_region(self):
+        """模型报**图内坐标** → **系统加这块区域的物理原点**映射回整屏。"""
+        model = _StubModel(_reply(500.0, 500.0))
+        result = self._locate(model, self._request())
         self.assertTrue(result.ok)
-        # 放大路径**不产生裁剪计划**。
-        self.assertIsNone(result.crop_plan)
-        # 模型回答的是**整屏坐标**：直接按整屏换算，不再加任何裁剪原点偏移。
-        self.assertEqual(result.landing_point, (2560, 800))
+        # 图内 (100, 100) → 整屏物理 (300+100, 400+100)。
+        self.assertEqual(result.landing_point, (400, 500))
         self.assertEqual(result.echo.stage, "zoom")
         self.assertEqual((result.echo.sent_width, result.echo.sent_height), (200, 200))
 
-    def test_zoom_prompt_states_full_screen_coordinates_and_no_crop_offset(self):
-        from minicode.ground.prompt import zoom_prompt
+    def test_zoom_does_not_use_a_crop_plan(self):
+        """放大路径**不产生裁剪计划**（原点是这块区域自己的物理原点）。"""
+        model = _StubModel(_reply(500.0, 500.0))
+        result = self._locate(model, self._request())
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.crop_plan)
 
-        prompt = zoom_prompt("开始", origin_in_model_space=(150.0, 200.0))
-        self.assertIn("整屏", prompt)
-        self.assertNotIn("裁剪", prompt)
+    def test_the_landing_follows_the_region_origin(self):
+        """**坐标偏移**：同一份图内坐标，区域原点挪到哪，落点就挪到哪。"""
+        model = _StubModel(_reply(500.0, 500.0))
+        result = self._locate(
+            model, self._request(left=1900, top=1400, width=660, height=200)
+        )
+        # 图内 (330, 100) → 物理 (1900+330, 1400+100)。
+        self.assertEqual(result.landing_point, (2230, 1500))
+
+    def test_the_m14_measured_case_lands_on_the_clock(self):
+        """M14 实测那一组（W-3 的托盘区域）：模型答 (603, 165) → (2503, 1565)。"""
+        model = _StubModel(_reply(603.0, 165.0))
+        result = self._locate(
+            model,
+            self._request(left=1900, top=1400, width=660, height=200),
+            scale=ModelScale.ABSOLUTE_CAPTURE,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.landing_point, (2503, 1565))
+
+    def test_zoom_rejects_a_landing_outside_the_region(self):
+        """**越界不夹取**：模型报的落点落在这块区域外 → 显式失败。"""
+        model = _StubModel(_reply(300.0, 300.0))
+        result = self._locate(
+            model, self._request(), scale=ModelScale.ABSOLUTE_CAPTURE
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ErrorCode.LOCATE_FAILED)
+        self.assertIsNone(result.landing_point)
+
+    def test_the_prompt_asks_for_a_position_inside_the_image(self):
+        """提示词问的是**这张图里**的位置（**不许出现原点**，也不许提整屏）。"""
+        model = _StubModel(_reply(500.0, 500.0))
+        self._locate(model, self._request())
+        prompt = model.calls[0]["prompt"]
+        self.assertIn("这张图里", prompt)
+        self.assertIn("200×200", prompt)
+        self.assertNotIn("整屏", prompt)
         self.assertNotIn("300, 400", prompt)
+
+    def test_the_region_geometry_carries_the_physical_origin(self):
+        """放大那一块的帧几何：原点 = 这块区域的物理原点，表面 = 这块区域。"""
+        frame = _detail_frame(200, 200, left=300, top=400)
+        geometry = region_geometry(frame)
+        self.assertEqual(geometry.virtual_origin_x, 300)
+        self.assertEqual(geometry.virtual_origin_y, 400)
+        self.assertEqual(geometry.capture_width, 200)
+        self.assertEqual(geometry.model_input_width, 200)
+        self.assertEqual(geometry.surface_width, 200)
 
 
 class DenominatorTests(unittest.TestCase):
