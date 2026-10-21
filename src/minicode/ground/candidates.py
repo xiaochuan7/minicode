@@ -5,8 +5,16 @@
 物理中心**（UIA 通道早就跑通了同一范式，见 :mod:`minicode.uia.pointer`：
 模型只答行号 → 落点取控件框的物理像素中心 → 偏差 0.0 px）。
 
-**候选从哪来**：Windows 自带 OCR 的**词级框**
-（:meth:`minicode.verification.ocr_windows.WindowsOcrPort.read_words`）。
+**候选从哪来**（UFO² 的混合检测：**UIA 主表 + OCR 附加表**）：
+
+* **UIA 控件**（:class:`UiaCandidateSource`）—— 主表：控件框是**物理屏幕坐标**，
+  名字可能为空（图标控件）→ 给位置型占位描述，**不丢**；
+* **Windows 自带 OCR 的词级框**
+  （:meth:`minicode.verification.ocr_windows.WindowsOcrPort.read_words`）——
+  附加表：图标没有文字，**原理上召不回**（静态图 icon 0/13 的成因）。
+
+两者按 :func:`merge_candidate_sources` 合并：**主表全留**，附加表里与主表
+IoU > 0.1 的丢弃（**方向不能反**）。
 
 **坐标系 —— 唯一真值 = 物理像素 × 虚拟桌面原点**：
 
@@ -34,12 +42,16 @@ __all__ = [
     "CandidateSource",
     "GroundingCandidate",
     "IOU_THRESHOLD_FOR_MERGE",
+    "MAX_CANDIDATES",
     "MIN_MATCH_LENGTH",
     "OcrCandidateSource",
     "OcrWordLike",
+    "UiaCandidateSource",
+    "UiaControlLike",
     "WordReader",
     "dedupe_by_iou",
     "iou",
+    "merge_candidate_sources",
 ]
 
 #: **IoU 去重阈值**（抄 UFO² 官方文档的 ``IOU_THRESHOLD_FOR_MERGE: 0.1``）。
@@ -53,6 +65,12 @@ IOU_THRESHOLD_FOR_MERGE = 0.1
 #:
 #: 一个字/一个字母不当候选 —— 否则「的」「on」这种满屏都是的词会把清单淹掉。
 MIN_MATCH_LENGTH = 2
+
+#: **候选清单的长度上限**（提示词长度有上限）。
+#:
+#: 来源：UFO² 官方 ``config/ufo/system.yaml`` 的 ``CONTROL_FILTER_TOP_K_ICON: 15``
+#: 是**图标**那一档的上限；我们清单里混着控件，取 **20**（与 OCR 源同一档）。
+MAX_CANDIDATES = 20
 
 
 @dataclass(frozen=True)
@@ -151,7 +169,8 @@ class CandidateSource(Protocol):
     """**候选源**端口：一句目标描述 + 一帧 → 一串候选框（**物理像素**）。
 
     实现可以是 OCR 词级框（:class:`OcrCandidateSource`），
-    也可以是别的来源 —— 单测塞假候选、评测台塞真 OCR 源，都走这一个口。
+    也可以是 UIA 控件（:class:`UiaCandidateSource`）——
+    单测塞假候选、评测台塞真 OCR 源，都走这一个口。
     """
 
     def candidates(
@@ -159,6 +178,144 @@ class CandidateSource(Protocol):
     ) -> Sequence[GroundingCandidate]:
         """这一帧上与描述匹配的候选（**物理像素**，已编号）。"""
         ...
+
+
+class UiaControlLike(Protocol):
+    """UIA 控件的形状：**名字 + 物理像素矩形**。
+
+    :class:`minicode.uia.elements.UiaElement` 与
+    :class:`minicode.action.ports.ControlCandidate` 都满足它。
+    """
+
+    @property
+    def name(self) -> str:
+        """控件名（**可能为空** —— 图标控件常常没有名字）。"""
+
+    @property
+    def rect(self) -> tuple[int, int, int, int]:
+        """控件框 ``(left, top, right, bottom)``，**物理像素**。"""
+
+
+def _placeholder_names(controls: Sequence[UiaControlLike]) -> dict[int, str]:
+    """**无名控件**的位置型占位描述（``{控件下标: 描述}``）。
+
+    ⚠️ **不静默丢弃无名控件** —— 图标控件本来就没有文字，丢了它们
+    「图标召回」就永远是 0。占位描述按画面**自上而下、同排自左而右**编号。
+    """
+    unnamed = [
+        (index, control)
+        for index, control in enumerate(controls)
+        if not (control.name or "").strip()
+    ]
+    unnamed.sort(key=lambda item: (int(item[1].rect[1]), int(item[1].rect[0])))
+    names: dict[int, str] = {}
+    for order, (index, control) in enumerate(unnamed, start=1):
+        kind = (getattr(control, "control_type", "") or "").strip()
+        names[index] = f"无名{kind or '控件'}（自上而下第 {order} 个）"
+    return names
+
+
+class UiaCandidateSource:
+    """**UIA 控件**当候选源（UFO² 的「UIA 主表」那一半）。
+
+    * 输入：一批 UIA 控件（名字 + **物理像素**矩形，形状见 :class:`UiaControlLike`）；
+    * 输出：``GroundingCandidate``（编号 1 起、框是**物理像素**、``source="uia"``）。
+
+    ⚠️ **UIA 的框不要加任何偏移**：``BoundingRectangle`` 已经是物理屏幕坐标
+    （微软官方文档：矩形 "is expressed in physical screen coordinates"）。
+
+    ⚠️ **无名控件不丢**：名字为空时给**位置型占位描述**
+    （如「无名Button（自上而下第 3 个）」）—— 静默丢弃就是「图标召回 0」的成因。
+
+    清单长度上限 :data:`MAX_CANDIDATES`：**先按「名字与目标描述的匹配度」排**，
+    匹配不上的**按面积升序**补位（面积小的先上 —— 图标比大窗口更像目标）。
+    """
+
+    def __init__(
+        self,
+        controls: Sequence[UiaControlLike],
+        *,
+        max_candidates: int = MAX_CANDIDATES,
+    ):
+        self._controls = list(controls)
+        self.max_candidates = int(max_candidates)
+
+    def candidates(
+        self, frame: CapturedFrame, description: str
+    ) -> list[GroundingCandidate]:
+        """这一帧上的候选（**物理像素**，编号 1 起）。
+
+        ⚠️ ``frame`` **不用**（UIA 的框本来就是物理屏幕坐标，不是帧像素）。
+        """
+        placeholders = _placeholder_names(self._controls)
+        rows: list[tuple[str, tuple[int, int, int, int]]] = []
+        for index, control in enumerate(self._controls):
+            rect = tuple(int(value) for value in control.rect)
+            if rect[2] <= rect[0] or rect[3] <= rect[1]:
+                # 退化框（没有面积）不是候选。
+                continue
+            text = (control.name or "").strip() or placeholders.get(index, "")
+            if not text:
+                continue
+            rows.append((text, rect))
+
+        target_compact = _compact(description)
+        target_spaced = _spaced(description)
+
+        def _sort_key(item: tuple[str, tuple[int, int, int, int]]) -> tuple:
+            text, rect = item
+            matched = _is_target(text, target_compact, target_spaced)
+            area = (rect[2] - rect[0]) * (rect[3] - rect[1])
+            return (0 if matched else 1, area, text)
+
+        rows.sort(key=_sort_key)
+        kept = rows[: self.max_candidates]
+        return [
+            GroundingCandidate(
+                number=index + 1,
+                text=text,
+                box=rect,
+                source="uia",
+            )
+            for index, (text, rect) in enumerate(kept)
+        ]
+
+
+def merge_candidate_sources(
+    main: Sequence[GroundingCandidate],
+    additional: Sequence[GroundingCandidate],
+    *,
+    iou_threshold: float = IOU_THRESHOLD_FOR_MERGE,
+) -> list[GroundingCandidate]:
+    """**主表全留 + 附加表去重**（UFO² 的混合检测合并规则）。
+
+    * ``main`` —— **主表**（UIA 控件）：**全部保留**；
+    * ``additional`` —— **附加表**（OCR 词框）：与**任一**主表项
+      **IoU > 阈值**的**丢弃**，其余**追加在主表之后**；
+    * 阈值抄 UFO² 官方 ``config/ufo/system.yaml`` 的
+      ``IOU_THRESHOLD_FOR_MERGE: 0.1``；论文 §3.4："Visual detections with
+      IoU greater than 10% against any UIA-derived control are discarded"；
+    * 比较**一律在物理像素空间**（红线①：唯一真值 = 物理像素 × 虚拟桌面原点）。
+
+    ⚠️ **方向不能反**：UIA 框与 OCR 框重叠时**保留 UIA 框**。
+    绝不能学 OmniParser 的「图标框落在 OCR 框内就删图标」
+    （官方 ``util/utils.py::remove_overlap_new()``）—— 那正好会**精确复现**
+    「图标召回 0/13」。
+    """
+    kept = list(main)
+    for candidate in additional:
+        if any(iou(candidate.box, other.box) > iou_threshold for other in main):
+            continue
+        kept.append(candidate)
+    return [
+        GroundingCandidate(
+            number=index + 1,
+            text=candidate.text,
+            box=candidate.box,
+            source=candidate.source,
+        )
+        for index, candidate in enumerate(kept)
+    ]
 
 
 class OcrCandidateSource:

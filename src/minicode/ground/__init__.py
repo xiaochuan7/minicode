@@ -9,8 +9,8 @@
 * :mod:`minicode.ground.crop` —— 从**原始物理分辨率帧**上 1:1 裁一块；
 * :mod:`minicode.ground.gate` —— **精定位门控**（四个触发条件 + 运行时参数与取值来源）；
 * :mod:`minicode.ground.geometry` —— 帧元数据、裁剪计划字段、往返自检；
-* :mod:`minicode.ground.prompt` —— 三条提示词（粗定位 / 精定位 / 放大）与回答解析；
-* :mod:`minicode.ground.zoom` —— **放大**动作（回源重抓 + 模型报整屏坐标）；
+* :mod:`minicode.ground.prompt` —— 提示词与回答解析（粗定位**出框** / 精定位 / 编号清单）；
+* :mod:`minicode.ground.zoom` —— **放大**动作（回源重抓 + 模型报**图内坐标**）。
 * :mod:`minicode.ground.stats` —— 落点误差的**分布**统计（验收判据用分布，不用单点）。
 
 坐标换算链路的唯一真值来源仍是冻结原型 :mod:`minicode.coord`；
@@ -54,12 +54,13 @@ from .geometry import (
 from .prompt import (
     GroundingParseError,
     coarse_prompt,
+    parse_coarse_target,
     parse_point,
     refine_prompt,
-    zoom_prompt,
 )
 from .stats import ErrorDistribution, not_worse_than, summarize_errors
-from .zoom import zoom_locate
+from .zoom import zoom_locate, zoom_region_prompt
+from .zoom import zoom_region_prompt as zoom_prompt
 
 __all__ = [
     "ErrorDistribution",
@@ -90,10 +91,12 @@ __all__ = [
     "evaluate_gate",
     "full_screen_geometry",
     "not_worse_than",
+    "parse_coarse_target",
     "parse_point",
     "refine_prompt",
     "summarize_errors",
     "surface_rect",
     "zoom_locate",
     "zoom_prompt",
+    "zoom_region_prompt",
 ]

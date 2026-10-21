@@ -13,13 +13,18 @@
 
 四个提示词对应四条**不同的契约**：
 
-* :func:`coarse_prompt` —— 整屏粗定位（L0）：模型报**整屏**位置；
+* :func:`coarse_prompt` —— 整屏粗定位（L0）：模型报**整屏**位置，
+  **出框**（``{"bbox": [...], "point": [...]}``；**落点取框中心**）；
 * :func:`refine_prompt` —— crop 内精定位（L1）：模型报**这张图里**的位置，
   **不许提裁剪原点**（提了模型就会改报整屏坐标，那是另一套契约）；
 * :func:`whole_screen_prompt` —— 整屏第二遍（带上一次失败的原因）；
 * :func:`numbered_candidates_prompt` —— **编号清单**（B-1）：模型**只答编号**，
-  **不产坐标**；
-* :func:`zoom_prompt` —— 放大动作：模型报**整屏**位置（回源重抓的物理画面）。
+  **不产坐标**。
+
+⚠️ **放大（zoom）的提示词不在本模块**：它的坐标契约已经改成
+「图内坐标 + 物理原点」（M14 实测），提示词住在 :mod:`minicode.ground.zoom`
+（:func:`minicode.ground.zoom.zoom_region_prompt`）——
+**两套坐标契约不许并存**（ADR-0006：混用会静默偏移一整个窗口）。
 
 回答解析只认 JSON（``{"x": .., "y": ..}`` 或 ``[x, y]``）与一行 ``x: .., y: ..``；
 取不出就**显式失败**（不猜、不按数值大小猜量纲）。
@@ -41,22 +46,44 @@ from minicode.verification.ocr import normalize_ocr_text
 
 __all__ = [
     "CandidateLine",
+    "CoarseTarget",
     "GroundingParseError",
     "coarse_prompt",
     "normalize_target",
     "normalize_target_prompt",
     "numbered_candidates_prompt",
     "parse_chosen_numbers",
+    "parse_coarse_target",
     "parse_point",
     "refine_prompt",
     "second_opinion_prompt",
     "whole_screen_prompt",
-    "zoom_prompt",
 ]
 
 
 class GroundingParseError(Exception):
     """模型回答里取不出坐标。"""
+
+
+@dataclass(frozen=True)
+class CoarseTarget:
+    """粗定位「**出框**」的回答（**模型输入空间**的数值，原样带回，不换算）。
+
+    * ``bbox`` —— 模型给的**外接矩形** ``(x1, y1, x2, y2)``；没有就是 ``None``；
+    * ``point`` —— 模型自己报的**中心点**；没有就是 ``None``。
+
+    ⚠️ **落点取框中心**（官方通用 API 协议的做法）：论文 ScreenSpot-Pro
+    Table 3 题注逐字 "For models inferencing boxes, we consider the center
+    point of the generated box as the prediction"；官方仓 ``models/gpt4x.py``
+    的解析也是 ``click_point = [(bbox[0]+bbox[2])/2, (bbox[1]+bbox[3])/2]``。
+    **框 → 点的换算只在通道里做一处**（:mod:`minicode.ground.channel`）。
+
+    ⚠️ **框可以退化成点**：模型只给得出点时（``bbox`` 为 ``None``），
+    那个点就是中心点 —— 落点不变，只是「目标占比」判不了。
+    """
+
+    bbox: tuple[float, float, float, float] | None = None
+    point: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,18 +113,28 @@ def _size_line(image_size: tuple[int, int]) -> str:
 
 
 def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
-    """整屏粗定位的提示词（工单 M6 的 L0 / A-2）。
+    """整屏粗定位的提示词（工单 M6 的 L0 / A-2）—— **出框**。
 
+    * 问的是 **bounding box**（官方通用 API 协议的做法）。官方仓
+      ``models/gpt4x.py`` 的措辞逐字："You are asked to find the bounding box
+      of an UI element in the given screenshot corresponding to a given
+      instruction."；官方解析取框中心，落点 = 框中心
+      （论文 ScreenSpot-Pro Table 3 题注："For models inferencing boxes, we
+      consider the center point of the generated box as the prediction"）。
     * ``image_size`` —— **送模型的那张整屏图**的尺寸（**必填**）。
       提示词里声明它，模型报的坐标就知道对应哪一张图。
-    * **不许提量纲**（不写「0~1000」「归一化」），也不许提别的空间 ——
-      模型报的是**整屏**位置。
+    * **不许提量纲**（不写「0~1000」「归一化」「分母」），也不许提别的空间 ——
+      模型报的是**整屏**位置。**尺寸声明照旧**（A-2）。
     """
     return (
         "这是一张 Windows 桌面截图。\n"
         f"{_size_line(image_size)}\n"
-        f"请给出界面上名为「{target_description}」的元素【中心】的位置。\n"
-        f"{_answer_format()}\n"
+        "请在图里找到与下面这个指令对应的界面元素，"
+        "并给出它的外接矩形（bounding box）。\n"
+        f"指令：{target_description}\n"
+        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}\n'
+        "bbox 是这个元素在图里的外接矩形的左上角与右下角，point 是它的中心点。\n"
+        "不要输出分析。"
         "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
@@ -138,13 +175,20 @@ def whole_screen_prompt(
 
     ⚠️ **不是逐字重发**：逐字重发同一条请求，确定性模型会给出同一个答案
     （工单 M7 AC 3：不得静默重试）。带上失败原因后它是**另一次问**。
+
+    ⚠️ **问的量与 :func:`coarse_prompt` 一样**（**框 + 点**）：它是粗定位那一级的
+    重试 —— 契约不同的话，两遍的结果就没法比。
     """
     return (
         "这是一张 Windows 桌面截图。\n"
         f"{_size_line(image_size)}\n"
-        f"请给出界面上名为「{target_description}」的元素【中心】的位置。\n"
+        "请在图里找到与下面这个指令对应的界面元素，"
+        "并给出它的外接矩形（bounding box）。\n"
+        f"指令：{target_description}\n"
         f"（上一次没能给出可用的位置：{retry_reason}。请再看一遍这张图。）\n"
-        f"{_answer_format()}\n"
+        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}\n'
+        "bbox 是这个元素在图里的外接矩形的左上角与右下角，point 是它的中心点。\n"
+        "不要输出分析。"
         "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
@@ -322,36 +366,6 @@ def normalize_target_prompt(description: str, names: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
-def zoom_prompt(
-    target_description: str,
-    *,
-    origin_in_model_space: tuple[float, float],
-) -> str:
-    """放大动作的提示词（工单 M6）。
-
-    放大是**回源重抓**后送模型看清楚，模型回答的仍是**整屏坐标** ——
-    因此提示词要告诉模型这块区域在整屏的哪儿（``origin_in_model_space``
-    是换算到**模型坐标系**后的区域左上角，与整屏坐标同一套口径）。
-
-    ⚠️ 这里出现了一个坐标数字，**但它不是量纲暗示**：它是模型**自己那个坐标系**
-    里的一个点（模型的整屏坐标就是这套），模型要靠它把区域位置与自己给的
-    整屏坐标对上。提示词**不写**「0~1000」「归一化」这类答案单位 ——
-    量纲只由标定判定。
-
-    与 :func:`refine_prompt` 的契约区别：那里模型报 **crop 内坐标**、
-    系统加偏移；这里模型**直接报整屏坐标**、系统不加任何偏移。
-    """
-    origin_x, origin_y = origin_in_model_space
-    return (
-        "这是从整屏回源重抓的一块区域（未缩放，1 像素 = 1 屏幕像素）。\n"
-        f"这块区域的左上角在整屏坐标里是 ({origin_x:.1f}, {origin_y:.1f})。\n"
-        f"请给出名为「{target_description}」的元素【中心】在**整屏**上的位置。\n"
-        f"{_answer_format()}\n"
-        "下面所有坐标都按你惯用的那种坐标系给出即可"
-        "（回答里不要解释你的坐标范围）。"
-    )
-
-
 def _edit_distance(left: str, right: str) -> int:
     """两个字符串的编辑距离（Levenshtein）。"""
     if left == right:
@@ -379,6 +393,18 @@ def _json_payload(text: str) -> Any:
     """从回答里取出 JSON（允许前后有话）。"""
     start = text.find("{")
     end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
+def _json_array(text: str) -> Any:
+    """从回答里取出**顶层方括号**数组（官方协议那种 ``[[x1,y1,x2,y2]]``）。"""
+    start = text.find("[")
+    end = text.rfind("]")
     if start < 0 or end <= start:
         return None
     try:
@@ -423,3 +449,83 @@ def parse_point(text: str) -> tuple[float, float]:
     if match is not None:
         return float(match.group(1)), float(match.group(2))
     raise GroundingParseError(f"模型回答里取不出坐标：{text[:160]!r}")
+
+
+def _numbers(value: Any) -> list[float] | None:
+    """一串数字（``[1, 2, 3]``）；不是数字列表就是 ``None``。"""
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    numbers: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        numbers.append(float(item))
+    return numbers
+
+
+def _pair_of(value: Any) -> tuple[float, float] | None:
+    """读成一对坐标 ``(x, y)``。"""
+    numbers = _numbers(value)
+    if numbers is None or len(numbers) != 2:
+        return None
+    return (numbers[0], numbers[1])
+
+
+def _box_of(value: Any) -> tuple[float, float, float, float] | None:
+    """读成一个外接矩形 ``(x1, y1, x2, y2)``（**自动摆正**左上/右下）。
+
+    ⚠️ **允许退化**：四个数相同时它就是一个点（框 → 点的换算取它的中心）。
+    """
+    numbers = _numbers(value)
+    if numbers is None or len(numbers) != 4:
+        return None
+    x1, y1, x2, y2 = numbers
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
+def parse_coarse_target(text: str) -> CoarseTarget:
+    """把粗定位的回答读成**框 + 点**（**模型输入空间**的数值，原样带回）。
+
+    认得的几种形状：
+
+    * ``{"bbox": [x1, y1, x2, y2], "point": [x, y]}`` —— 框与点都有（**要的就是这个**）；
+    * ``{"bbox": [x1, y1, x2, y2]}`` —— 只有框（**落点取框中心**）；
+    * ``{"bbox": [x, y, x, y]}`` —— **退化成点**的框（中心即该点）；
+    * ``{"point": [x, y]}`` / ``{"x": .., "y": ..}`` / ``[x, y]`` —— 只有点；
+    * ``[[x1, y1, x2, y2]]`` —— 官方协议那种顶层数组。
+
+    读不出来 → :class:`GroundingParseError`（**显式失败**，不猜、不按数值大小猜量纲）。
+    """
+    payload = _json_payload(text)
+    if isinstance(payload, dict):
+        bbox = _box_of(payload.get("bbox"))
+        point = _pair_of(payload.get("point"))
+        if point is None:
+            point = _pair_of([payload.get("x"), payload.get("y")])
+        if bbox is not None or point is not None:
+            return CoarseTarget(bbox=bbox, point=point)
+    if isinstance(payload, list):
+        # 官方协议：``[[x1, y1, x2, y2]]``（外面多一层数组）。
+        inner = payload[0] if len(payload) == 1 and isinstance(payload[0], list) else payload
+        bbox = _box_of(inner)
+        if bbox is not None:
+            return CoarseTarget(bbox=bbox)
+        point = _pair_of(inner)
+        if point is not None:
+            return CoarseTarget(point=point)
+    # 顶层的方括号数组（前面可能还有一句话）。
+    array = _json_array(text)
+    if array is not None:
+        inner = array[0] if len(array) == 1 and isinstance(array[0], list) else array
+        bbox = _box_of(inner)
+        if bbox is not None:
+            return CoarseTarget(bbox=bbox)
+        point = _pair_of(inner)
+        if point is not None:
+            return CoarseTarget(point=point)
+    # 老读法：``x: .., y: ..`` / ``(x, y)``（只有点）。
+    try:
+        return CoarseTarget(point=parse_point(text))
+    except GroundingParseError as exc:
+        raise GroundingParseError(f"模型回答里取不出框或坐标：{text[:160]!r}") from exc
+
