@@ -215,7 +215,6 @@ def main(argv=None) -> int:
         model_input_by_size=model_input_by_size,
         effort=args.effort,
         max_tokens=args.max_tokens,
-        second_opinion=None,
         progress=lambda line: print(line, flush=True),
         workers=args.workers,
         gate_params=gate_params,
