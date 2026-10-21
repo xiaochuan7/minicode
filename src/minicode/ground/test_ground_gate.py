@@ -192,18 +192,41 @@ class GateParamsTests(unittest.TestCase):
 
 
 class GatePipelineTests(unittest.TestCase):
-    """AC 1 / AC 3 · 门控在通道里的行为：不开就不开、开就开、失败必回落。"""
+    """AC 1 / AC 3 · 门控在通道里的行为：**只落盘**，不再决定开不开。"""
 
-    def test_gate_miss_skips_the_refinement_and_saves_the_model_call(self):
-        model = _StubModel(_reply(390.625, 500.0))
+    def test_gate_miss_still_runs_the_refinement(self):
+        """门控**没命中**也照样精定位 —— 门控降级为**记录器**。
+
+        ⚠️ 这是 2026-10-21 的拍板（门控降级）：实测门控开 38.1% / 2.381 次调用，
+        门控关 **57.1%** / 2.000 次调用 —— 触发条件恰好是精定位前提条件的反面。
+        """
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         grounder = _grounder(model)
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
         self.assertTrue(result.ok)
-        self.assertEqual(len(model.calls), 1)
+        # 粗定位 + 精定位（**门控没命中也精定位**）。
+        self.assertEqual(len(model.calls), 2)
+        # 门控**自己的判定**照旧落盘（看得见「本来会不会开」）。
         self.assertFalse(result.gate_hit)
-        self.assertFalse(result.refine_enabled)
-        self.assertIsNone(result.crop_plan)
-        self.assertIsNotNone(result.landing_point)
+        self.assertTrue(result.refine_enabled)
+        self.assertIsNotNone(result.crop_plan)
+
+    def test_gate_hit_and_gate_miss_behave_the_same(self):
+        """**两个 mode 的行为完全相同** —— 门控只落盘，不改行为。
+
+        （评测台拿这一条当体检项：门控记录器臂与无条件两段式臂的落点应当逐条相同。）
+        """
+        miss = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
+        hit = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
+        on_demand = _grounder(miss, gate_mode=GateMode.ON_DEMAND).locate(
+            _request(_detail_frame(2560, 1600))
+        )
+        always = _grounder(hit, gate_mode=GateMode.ALWAYS).locate(
+            _request(_detail_frame(2560, 1600))
+        )
+        self.assertEqual(on_demand.landing_point, always.landing_point)
+        self.assertEqual(on_demand.model_calls, always.model_calls)
+        self.assertEqual(len(miss.calls), len(hit.calls))
 
     def test_gate_hit_runs_the_refinement(self):
         """门控命中 → 开启 crop 精定位（裁剪窗口 + crop 内精定位）。"""
@@ -312,50 +335,45 @@ class GatePipelineTests(unittest.TestCase):
 
 
 class SecondOpinionTests(unittest.TestCase):
-    """C-16 的「两次粗定位不一致」条件：**给了端口才判得了**。
+    """C-16 的「两次粗定位不一致」条件：**门控降级之后永远不可判定**。
 
-    工单 M7 记下的现状是「生产接线拿不到第二个粗定位结果 → 该条件判不了」；
-    工单 M8 的评测需要一个**可判定**的一致性条件，于是给通道加了一个
-    **可选的第二次独立粗定位**端口（工单 M8）。
+    门控降级为**记录器**之后，「第二次独立粗定位」那一次调用被删掉了 ——
+    实测它正是 −19.0 pp 的来源（触发条件恰好是精定位前提条件的反面）。
+    端口**留着但不再被调用**（接线方正在删那一行），判据**留着当记录器**：
+    一致性这条**永远不可判定**，如实记进 ``undecidable``。
     """
 
     def test_without_the_hook_the_condition_is_undecidable(self):
-        model = _StubModel(_reply(390.625, 500.0))
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
         self.assertIn("consistency", result.gate_undecidable)
         self.assertNotIn("coarse_inconsistent", result.gate_reasons)
 
-    def test_the_second_opinion_counts_as_a_model_call(self):
-        """第二次独立粗定位**本身就是一次模型调用** —— 必须记进 ``model_calls``。
+    def test_the_port_is_not_called_anymore(self):
+        """**给了端口也不调用它** —— 那一次模型调用被删掉了。
 
-        ⚠️ 不记它 →「平均模型调用数/目标」这条验收线**少算一次**
-        （同一份报告里两个「模型调用数」对不上 → 两个数没法比）。
+        ⚠️ 不删它 →「平均模型调用数/目标」那条验收线会**多算一次**
+        （报告里的两个「模型调用数」对不上 → 两个数没法比）。
         """
-        model = _StubModel(_reply(390.625, 500.0))
+        seen: list[tuple] = []
+
+        def _hook(frame, target):
+            seen.append((frame.width, frame.height, target))
+            return (700.0, 500.0)
+
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         grounder = _grounder(
-            model,
-            gate_mode=GateMode.ON_DEMAND,
-            second_opinion=lambda frame, target: (390.625, 500.0),
+            model, gate_mode=GateMode.ON_DEMAND, second_opinion=_hook
         )
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        # 粗定位 1 次 + 第二次独立粗定位 1 次（门控没命中 → 没有精定位）。
+        self.assertEqual(seen, [])
+        # 粗定位 1 次 + 精定位 1 次（**没有**第三次）。
         self.assertEqual(result.model_calls, 2)
+        self.assertEqual(len(model.calls), 2)
 
-    def test_without_the_hook_no_extra_model_call_is_counted(self):
-        """没给端口 → **没有**第二次粗定位 → 不多记调用数。"""
-        model = _StubModel(_reply(390.625, 500.0))
-        grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
-        result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertEqual(result.model_calls, 1)
-
-    def test_disagreeing_second_opinion_hits_the_gate(self):
-        """第二次粗定位与第一次差得远 → 门控命中（开精定位）。
-
-        第一次粗定位给的是 0~1000 量纲下的 390.625（= 1000 物理 px），
-        第二次给 700（= 1792 物理 px）→ 相距 **792 物理 px** > 容差 128 px
-        → 命中。**距离是通道换算出来的**（端口给的是模型自己的量纲）。
-        """
+    def test_the_condition_stays_undecidable_with_the_port(self):
+        """给了端口 → 一致性**仍然不可判定**（端口不再被调用）。"""
         model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         grounder = _grounder(
             model,
@@ -363,70 +381,21 @@ class SecondOpinionTests(unittest.TestCase):
             second_opinion=lambda frame, target: (700.0, 500.0),
         )
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertIn("coarse_inconsistent", result.gate_reasons)
-        self.assertNotIn("consistency", result.gate_undecidable)
-        self.assertTrue(result.refine_enabled)
-
-    def test_disagreement_just_under_the_tolerance_does_not_hit(self):
-        """相距刚好在容差以内 → 不命中（**换算归通道**这条契约被钉住）。"""
-        model = _StubModel(_reply(390.625, 500.0))
-        # 390.625 + 50（0~1000 量纲）= 440.625 → 相距 50/1000×2560 = 128 物理 px
-        # = 容差 → 不大于容差 → 不命中。
-        grounder = _grounder(
-            model,
-            gate_mode=GateMode.ON_DEMAND,
-            second_opinion=lambda frame, target: (440.625, 500.0),
-        )
-        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertIn("consistency", result.gate_undecidable)
         self.assertNotIn("coarse_inconsistent", result.gate_reasons)
-        self.assertNotIn("consistency", result.gate_undecidable)
 
-    def test_agreeing_second_opinion_closes_the_gate(self):
-        """两次一致 → 这条条件不触发（门控仍可由别的条件命中）。"""
-        model = _StubModel(_reply(390.625, 500.0))
-        grounder = _grounder(
-            model,
-            gate_mode=GateMode.ON_DEMAND,
-            second_opinion=lambda frame, target: (390.625, 500.0),
-        )
-        result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertNotIn("coarse_inconsistent", result.gate_reasons)
-        self.assertNotIn("consistency", result.gate_undecidable)
-        self.assertFalse(result.refine_enabled)
-
-    def test_failing_second_opinion_leaves_it_undecidable(self):
-        """第二次粗定位失败 → 照旧记「不可判定」（不静默当成一致）。"""
+    def test_a_failing_port_leaves_it_undecidable(self):
+        """端口炸了也一样（它压根不会被调用）→ 照旧记「不可判定」。"""
 
         def _boom(frame, target):
             raise RuntimeError("第二次粗定位炸了")
 
-        model = _StubModel(_reply(390.625, 500.0))
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         grounder = _grounder(
             model, gate_mode=GateMode.ON_DEMAND, second_opinion=_boom
         )
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
         self.assertIn("consistency", result.gate_undecidable)
-
-    def test_hook_returns_raw_model_coordinates(self):
-        """端口给的是**模型自己那个坐标系**里的原始坐标 → 换算由通道做。
-
-        端口收到的是**那一帧画面**与**目标描述**；它给的数值不被端口自己换算
-        （换算在通道的适配器里做，**坐标换算链路只有一个真值来源**）。
-        """
-        seen: list[tuple] = []
-
-        def _hook(frame, target):
-            seen.append((frame.width, frame.height, target))
-            return (500.0, 500.0)
-
-        model = _StubModel(_reply(390.625, 500.0))
-        grounder = _grounder(
-            model, gate_mode=GateMode.ON_DEMAND, second_opinion=_hook
-        )
-        grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(seen[0][:2], (2560, 1600))
-        self.assertEqual(seen[0][2], "开始")
 
 
 class ModelCallAccountingTests(unittest.TestCase):
@@ -459,9 +428,8 @@ class ModelCallAccountingTests(unittest.TestCase):
     def test_second_opinion_sees_the_same_image_as_the_coarse_level(self):
         """第二次粗定位必须看到**同一张图**（整屏那一级送模型的那张）。
 
-        ⚠️ 否则两次的数在**不同的空间**里：第一次问的是**缩到声明尺寸**那张图，
-        第二次问的是**整屏原图**，而换算用的是同一套几何 → 「两次是否一致」
-        比的是**两个没法比的数**（这条门控条件就成了空判）。
+        ⚠️ 门控降级之后**那个端口不再被调用** —— 这条契约留着是为了
+        「哪天要把它接回来」时不被忘掉（比的是两个没法比的数）。
         """
         seen: list[tuple[int, int]] = []
 
@@ -469,7 +437,7 @@ class ModelCallAccountingTests(unittest.TestCase):
             seen.append((frame.width, frame.height))
             return (390.625, 500.0)
 
-        model = _StubModel(_reply(390.625, 500.0))
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         grounder = _grounder(
             model,
             gate_mode=GateMode.ON_DEMAND,
@@ -477,10 +445,9 @@ class ModelCallAccountingTests(unittest.TestCase):
             model_input_size=(1280, 800),
         )
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen, [])
         coarse = next(echo for echo in result.echoes if echo.stage == "coarse")
-        self.assertEqual(seen[0], (coarse.sent_width, coarse.sent_height))
-        self.assertEqual(seen[0], (1280, 800))
+        self.assertEqual((coarse.sent_width, coarse.sent_height), (1280, 800))
 
     def test_second_opinion_prompt_asks_for_the_same_quantity(self):
         """两次粗定位必须问**同一个量**（这张图的像素坐标），否则没法比。"""
@@ -540,7 +507,7 @@ class GateInstrumentationTests(unittest.TestCase):
             def admit(self):
                 return VisualAdmission(available=True, reason="测试替身：放行")
 
-        model = _StubModel(_reply(390.625, 500.0))
+        model = _StubModel(_reply(390.625, 500.0), _reply(500.0, 500.0))
         sink = ListTraceSink()
         seam = ActionExecutionSeam(
             capture_sources=[FakeCaptureSource(2560, 1600)],
@@ -573,7 +540,8 @@ class GateInstrumentationTests(unittest.TestCase):
             "fallback_cause",
         ):
             self.assertIn(key, payload)
-        self.assertFalse(payload["refine_enabled"])
+        # 门控降级为**记录器**之后：门控没命中也**照做精定位**。
+        self.assertTrue(payload["refine_enabled"])
 
     def test_gate_report_uses_the_same_sample_set_as_the_score(self):
         from minicode.ground.bench import gate_report

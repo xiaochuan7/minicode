@@ -462,6 +462,208 @@ class EchoTests(unittest.TestCase):
         )
 
 
+class CoarseBoxTests(unittest.TestCase):
+    """**粗定位出框**：问框、落点取**框中心**（官方通用 API 协议）。"""
+
+    def _grounder(self, model, **kwargs):
+        params = {
+            "scale": ModelScale.RELATIVE_0_1000,
+            "model_input_size": (2560, 1600),
+            "full_screen_size": (2560, 1600),
+            "effort": Effort.LOW,
+        }
+        params.update(kwargs)
+        return TwoStageGrounder(model, **params)
+
+    def _locate(self, model, **kwargs):
+        grounder = self._grounder(model, **kwargs)
+        return grounder.locate(
+            VisualLocateRequest(
+                target_description="开始",
+                frame=_detail_frame(2560, 1600),
+                surface=(0, 0, 2560, 1600),
+            )
+        )
+
+    def test_the_prompt_asks_for_a_box(self):
+        """提示词问 **bounding box**（官方协议的措辞），**不许有量纲暗示**。"""
+        from minicode.ground.prompt import coarse_prompt
+
+        prompt = coarse_prompt("开始", (1280, 800))
+        self.assertIn("bbox", prompt)
+        self.assertIn("point", prompt)
+        self.assertIn("1280×800", prompt)
+        for forbidden in ("归一化", "0~1000", "分母", "1000"):
+            self.assertNotIn(forbidden, prompt)
+
+    def test_a_box_is_parsed(self):
+        from minicode.ground.prompt import parse_coarse_target
+
+        target = parse_coarse_target(
+            '{"bbox": [10, 20, 30, 40], "point": [20, 30]}'
+        )
+        self.assertEqual(target.bbox, (10.0, 20.0, 30.0, 40.0))
+        self.assertEqual(target.point, (20.0, 30.0))
+
+    def test_a_degenerate_box_is_a_point(self):
+        """**框可以退化成点**（模型只给得出点时）—— 中心即该点。"""
+        from minicode.ground.prompt import parse_coarse_target
+
+        target = parse_coarse_target('{"bbox": [12, 34, 12, 34]}')
+        self.assertEqual(target.bbox, (12.0, 34.0, 12.0, 34.0))
+        self.assertIsNone(target.point)
+
+    def test_a_point_only_answer_is_accepted(self):
+        from minicode.ground.prompt import parse_coarse_target
+
+        target = parse_coarse_target('{"x": 12, "y": 34}')
+        self.assertIsNone(target.bbox)
+        self.assertEqual(target.point, (12.0, 34.0))
+
+    def test_the_official_array_form_is_accepted(self):
+        """官方协议那种顶层数组 ``[[x0, y0, x1, y1]]``。"""
+        from minicode.ground.prompt import parse_coarse_target
+
+        target = parse_coarse_target("[[10, 20, 30, 40]]")
+        self.assertEqual(target.bbox, (10.0, 20.0, 30.0, 40.0))
+
+    def test_an_unparsable_answer_fails_explicitly(self):
+        from minicode.ground.prompt import GroundingParseError, parse_coarse_target
+
+        with self.assertRaises(GroundingParseError):
+            parse_coarse_target("我看不清那个按钮")
+
+    def test_the_landing_is_the_box_center(self):
+        """**落点取框中心**（框 → 点的换算在通道里，只做一处）。"""
+        model = _StubModel(
+            _text_reply('{"bbox": [390.625, 480.0, 410.625, 520.0]}'),
+        )
+        result = self._locate(model, coarse_only=True)
+        self.assertTrue(result.ok, msg=result.error_message)
+        # 框中心 (400.625, 500.0)（0~1000 量纲）→ 物理 (1025.6, 800.0)（落点取整）。
+        self.assertEqual(result.landing_point, (1026, 800))
+
+    def test_a_degenerate_box_lands_on_that_point(self):
+        model = _StubModel(_text_reply('{"bbox": [400.0, 500.0, 400.0, 500.0]}'))
+        result = self._locate(model, coarse_only=True)
+        self.assertTrue(result.ok, msg=result.error_message)
+        self.assertEqual(result.landing_point, (1024, 800))
+
+    def test_the_box_makes_the_area_ratio_decidable(self):
+        """**出框之后，目标的「占比」第一次可判定**（原来 42/42 不可判定）。"""
+        model = _StubModel(
+            _text_reply('{"bbox": [390.625, 480.0, 410.625, 520.0]}'),
+        )
+        result = self._locate(model, coarse_only=True)
+        self.assertNotIn("target_area_ratio", result.gate_undecidable)
+
+    def test_a_point_only_answer_leaves_the_area_ratio_undecidable(self):
+        """只给点 → 占比**仍然不可判定**（如实记，不假装）。"""
+        model = _StubModel(_text_reply('{"x": 390.625, "y": 500.0}'))
+        result = self._locate(model, coarse_only=True)
+        self.assertIn("target_area_ratio", result.gate_undecidable)
+
+    def test_the_box_drives_the_target_radius(self):
+        """框 → 目标半径 → 裁剪计划保证**目标框完整包含**。"""
+        model = _StubModel(
+            _text_reply('{"bbox": [390.625, 480.0, 410.625, 520.0]}'),
+            _text_reply('{"x": 500.0, "y": 500.0}'),
+        )
+        result = self._locate(model)
+        plan = result.crop_plan
+        self.assertIsNotNone(plan)
+        # 框的物理边长：宽 51.2 px、高 64 px → 半径 = 32 px（较大边的一半）。
+        self.assertAlmostEqual(plan["target_radius_px"], 32.0, places=3)
+        self.assertTrue(plan["target_fully_contained"])
+
+    def test_the_zoom_consistency_is_recorded(self):
+        """落盘 ``zoom_consistency_px`` 与 ``zoom_consistency_c1000``。"""
+        model = _StubModel(
+            _text_reply('{"bbox": [390.625, 480.0, 410.625, 520.0]}'),
+            _text_reply('{"x": 500.0, "y": 500.0}'),
+        )
+        result = self._locate(model)
+        plan = result.crop_plan
+        self.assertIn("zoom_consistency_px", plan)
+        self.assertIn("zoom_consistency_c1000", plan)
+        self.assertIsNotNone(plan["zoom_consistency_px"])
+        self.assertIsNotNone(plan["zoom_consistency_c1000"])
+
+
+class CoarseOnlyArmTests(unittest.TestCase):
+    """**只用粗定位**那一臂（评测台的基线臂）：1.00 次调用/目标。"""
+
+    def _grounder(self, model, **kwargs):
+        params = {
+            "scale": ModelScale.RELATIVE_0_1000,
+            "model_input_size": (2560, 1600),
+            "full_screen_size": (2560, 1600),
+            "effort": Effort.LOW,
+            "coarse_only": True,
+        }
+        params.update(kwargs)
+        return TwoStageGrounder(model, **params)
+
+    def test_the_arm_asks_the_model_exactly_once(self):
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = self._grounder(model)
+        result = grounder.locate(
+            VisualLocateRequest(
+                target_description="开始",
+                frame=_detail_frame(2560, 1600),
+                surface=(0, 0, 2560, 1600),
+            )
+        )
+        self.assertTrue(result.ok, msg=result.error_message)
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(result.model_calls, 1)
+
+    def test_the_arm_lands_on_the_coarse_point_and_does_not_crop(self):
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = self._grounder(model)
+        result = grounder.locate(
+            VisualLocateRequest(
+                target_description="开始",
+                frame=_detail_frame(2560, 1600),
+                surface=(0, 0, 2560, 1600),
+            )
+        )
+        self.assertAlmostEqual(result.landing_point[0], 1000.0, places=3)
+        self.assertAlmostEqual(result.landing_point[1], 800.0, places=3)
+        # **不裁剪、不做精定位**。
+        self.assertIsNone(result.crop_plan)
+        self.assertFalse(result.refine_enabled)
+
+    def test_the_arm_is_visible_in_the_echo(self):
+        """回显里能看出这一臂走的是「只有粗定位」。"""
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = self._grounder(model)
+        result = grounder.locate(
+            VisualLocateRequest(
+                target_description="开始",
+                frame=_detail_frame(2560, 1600),
+                surface=(0, 0, 2560, 1600),
+            )
+        )
+        stages = [echo.stage for echo in result.echoes]
+        self.assertIn("coarse_only", stages)
+        self.assertNotIn("refine", stages)
+
+    def test_the_arm_still_records_the_gate_decision(self):
+        """门控**只落盘** —— 这一臂也照记（判据不许因为「只做粗定位」就不判）。"""
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = self._grounder(model)
+        result = grounder.locate(
+            VisualLocateRequest(
+                target_description="开始",
+                frame=_detail_frame(2560, 1600),
+                surface=(0, 0, 2560, 1600),
+            )
+        )
+        self.assertIn("consistency", result.gate_undecidable)
+        self.assertFalse(result.gate_hit)
+
+
 class ZoomTests(unittest.TestCase):
     """AC 6 · 放大的坐标契约 = **图内坐标 + 物理原点**（M14 实测后拍板）。"""
 

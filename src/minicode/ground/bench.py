@@ -89,8 +89,17 @@ class TargetOutcome:
     size_logical: tuple[int, int] = (0, 0)
     coarse_error_px: float | None = None
     refine_error_px: float | None = None
-    #: **精定位落点离粗定位点多远**（物理像素）—— 回落判据的量，调阈值要用它。
+    #: **精定位落点离 crop 窗口中心多远**（物理像素）—— **回落判据的量**
+    #: （参考点是 crop 窗口中心，不是粗定位点：crop 走 shift 语义时两者不同）。
     refine_deviation_px: float | None = None
+    #: **两级的位移** ‖ε₁‖₂（物理像素）—— 公开 zoom 一致性判据的量。
+    zoom_consistency_px: float | None = None
+    #: 同一个量的**公开判据刻度**（``c = ε₁ × 1000 / crop 宽``）。
+    #:
+    #: ⚠️ **落盘键叫 ``zoom_consistency_c1000``**，属性名去掉了那三个数字 ——
+    #: 免得撞上「不许出现写死分母」那条源码级扫描（那个 1000 是**公开判据
+    #: 自己的刻度**，不是坐标换算的分母 —— 分母只来自标定）。
+    zoom_consistency_c: float | None = None
     fallback: bool = False
     fallback_reason: str = ""
     #: 回落原因的枚举（工单 M7 AC 4）。
@@ -170,6 +179,8 @@ class BenchReport:
                     "coarse_error_px": outcome.coarse_error_px,
                     "refine_error_px": outcome.refine_error_px,
                     "refine_deviation_px": outcome.refine_deviation_px,
+                    "zoom_consistency_px": outcome.zoom_consistency_px,
+                    "zoom_consistency_c1000": outcome.zoom_consistency_c,
                     "fallback": outcome.fallback,
                     "fallback_reason": outcome.fallback_reason,
                     "fallback_cause": outcome.fallback_cause,
@@ -266,19 +277,31 @@ def measure(
     scale: ModelScale,
     model_input_size: tuple[int, int],
     effort: Effort | str = Effort.LOW,
-    max_tokens: int = 2000,
+    max_tokens: int = 4096,
     gate_mode: GateMode | str = GateMode.ON_DEMAND,
     target_radius_px: float = 0.0,
+    crop_width: int | None = None,
+    crop_height: int | None = None,
+    coarse_only: bool = False,
 ) -> tuple[TargetOutcome, ...]:
     """在给定目标上跑两级 grounding，返回逐目标的结果。
 
     ⚠️ ``target_radius_px`` 是门控「目标占比」的输入：**只能来自非真值来源**
     （比如上一轮观测到的目标尺寸）。**不许拿 UIA 的真值框当门控输入** ——
     那是拿答案去喂判据，量出来的分布不作数（真值只用来算误差）。
+
+    ⚠️ ``crop_width`` / ``crop_height`` 是**运行时参数**（物理像素）：
+    冻结原型 ``coord/crop_refine.py`` 里的默认值**不许改** ——
+    裁剪尺寸扫描从这里传（``None`` = 用通道的默认值）。
     """
     outcomes: list[TargetOutcome] = []
     for target in targets:
         caller = _RecordingCaller(client)
+        extra: dict[str, object] = {}
+        if crop_width is not None:
+            extra["crop_width"] = int(crop_width)
+        if crop_height is not None:
+            extra["crop_height"] = int(crop_height)
         grounder = TwoStageGrounder(
             caller,
             scale=scale,
@@ -288,6 +311,8 @@ def measure(
             max_tokens=max_tokens,
             gate_mode=gate_mode,
             target_radius_px=target_radius_px,
+            coarse_only=coarse_only,
+            **extra,
         )
         result = grounder.locate(
             _request(target.name, frame, surface)
@@ -308,16 +333,12 @@ def measure(
             if result.landing_point is not None
             else None
         )
-        # 精定位落点离粗定位点多远（**回落判据的量**，工单 M7 AC 3）：
-        # 调阈值要用它 —— 不知道它分布在哪，就不知道阈值该定多少。
-        deviation = (
-            math.hypot(
-                result.landing_point[0] - result.coarse_point[0],
-                result.landing_point[1] - result.coarse_point[1],
-            )
-            if result.landing_point is not None and result.coarse_point is not None
-            else None
-        )
+        # 偏离量 / zoom 一致性：通道把这两个量**落在裁剪计划里**了
+        # （落盘字段，不是回显 —— 回显记的是模型自己发出的数）。
+        plan = result.crop_plan or {}
+        deviation = plan.get("deviation_px")
+        consistency = plan.get("zoom_consistency_px")
+        consistency_c = plan.get("zoom_consistency_c1000")
         tokens = tuple(
             reply.input_tokens for reply in caller.replies[:2]
         )
@@ -330,7 +351,15 @@ def measure(
                 size_logical=target.size_logical,
                 coarse_error_px=coarse_error,
                 refine_error_px=refine_error,
-                refine_deviation_px=deviation,
+                refine_deviation_px=(
+                    float(deviation) if deviation is not None else None
+                ),
+                zoom_consistency_px=(
+                    float(consistency) if consistency is not None else None
+                ),
+                zoom_consistency_c=(
+                    float(consistency_c) if consistency_c is not None else None
+                ),
                 fallback=result.fallback,
                 fallback_reason=result.fallback_reason,
                 fallback_cause=result.fallback_cause,

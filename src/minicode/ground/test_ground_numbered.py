@@ -25,8 +25,10 @@ from minicode.ground.candidates import (
     IOU_THRESHOLD_FOR_MERGE,
     GroundingCandidate,
     OcrCandidateSource,
+    UiaCandidateSource,
     dedupe_by_iou,
     iou,
+    merge_candidate_sources,
 )
 from minicode.ground.channel import TwoStageGrounder
 from minicode.ground.gate import GateMode
@@ -186,6 +188,193 @@ class CandidateCoordinateTests(unittest.TestCase):
         words = [OcrWord(text="Other", x=0, y=0, w=40, h=12)]
         source = OcrCandidateSource(lambda frame: words)
         self.assertEqual(source.candidates(_frame(), "click the Save button"), [])
+
+
+class UiaCandidateSourceTests(unittest.TestCase):
+    """**UIA 主表**：控件框是**物理像素**、**无名控件不丢**。
+
+    ⚠️ **无名控件给位置型占位描述** —— 静默丢弃就是「图标召回 0」的成因
+    （图标本来就没有文字，OCR 原理上召不回）。
+    """
+
+    class _Control:
+        def __init__(self, name: str, rect: tuple[int, int, int, int], control_type: str = ""):
+            self.name = name
+            self.rect = rect
+            self.control_type = control_type
+
+    def test_unnamed_controls_are_kept_with_a_positional_placeholder(self):
+        controls = [
+            self._Control("", (10, 10, 40, 40), "Button"),
+            self._Control("", (60, 10, 90, 40), "Custom"),
+        ]
+        source = UiaCandidateSource(controls)
+        candidates = source.candidates(_frame(), "开始")
+        self.assertEqual(len(candidates), 2)
+        self.assertTrue(all(item.text for item in candidates))
+        self.assertIn("自上而下第 1 个", candidates[0].text)
+        self.assertIn("自上而下第 2 个", candidates[1].text)
+
+    def test_the_boxes_are_physical_pixels(self):
+        controls = [self._Control("开始", (100, 200, 140, 240))]
+        source = UiaCandidateSource(controls)
+        candidates = source.candidates(_frame(left=50, top=60), "开始")
+        # UIA 的框**已经是物理屏幕坐标** → **不加任何偏移**。
+        self.assertEqual(candidates[0].box, (100, 200, 140, 240))
+        self.assertEqual(candidates[0].source, "uia")
+
+    def test_matching_names_come_first(self):
+        controls = [
+            self._Control("", (0, 0, 200, 200)),
+            self._Control("开始", (300, 300, 340, 340)),
+            self._Control("", (400, 400, 460, 460)),
+        ]
+        source = UiaCandidateSource(controls)
+        candidates = source.candidates(_frame(), "开始")
+        self.assertEqual(candidates[0].text, "开始")
+
+    def test_the_list_is_capped(self):
+        controls = [
+            self._Control(f"项{index}", (index * 10, 0, index * 10 + 8, 8))
+            for index in range(50)
+        ]
+        source = UiaCandidateSource(controls)
+        candidates = source.candidates(_frame(), "项3")
+        self.assertEqual(len(candidates), 20)
+        self.assertEqual(candidates[0].number, 1)
+        self.assertEqual(candidates[-1].number, 20)
+
+
+class MergeCandidateSourcesTests(unittest.TestCase):
+    """**合并源**（UFO² 的混合检测）：主表全留、附加表按 IoU 0.1 去重。"""
+
+    def _uia(self, number: int, box) -> GroundingCandidate:
+        return GroundingCandidate(number=number, text=f"控件{number}", box=box, source="uia")
+
+    def _ocr(self, number: int, box) -> GroundingCandidate:
+        return GroundingCandidate(number=number, text=f"文字{number}", box=box, source="ocr")
+
+    def test_the_main_table_is_kept_and_the_overlapping_extra_is_dropped(self):
+        """⚠️ **方向不能反**：UIA 框与 OCR 框重叠时**保留 UIA 框**。
+
+        绝不能学 OmniParser 的「图标落在 OCR 框内就删图标」——
+        那正好会**精确复现**「图标召回 0/13」。
+        """
+        merged = merge_candidate_sources(
+            [self._uia(1, (0, 0, 40, 40))],
+            [self._ocr(1, (2, 2, 30, 30))],
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].source, "uia")
+        self.assertEqual(merged[0].text, "控件1")
+
+    def test_a_non_overlapping_extra_is_appended_after_the_main_table(self):
+        merged = merge_candidate_sources(
+            [self._uia(1, (0, 0, 40, 40))],
+            [self._ocr(1, (200, 200, 240, 240))],
+        )
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([item.source for item in merged], ["uia", "ocr"])
+        # 编号**重新连续**（1 起）。
+        self.assertEqual([item.number for item in merged], [1, 2])
+
+    def test_the_iou_threshold_is_strictly_greater_than(self):
+        """IoU **恰好等于 0.1 不算重叠**（UFO² 的口径：严格大于才丢）。"""
+        near = (0, 0, 10, 10)
+        #: 交集 2×10=20，并集 180 → IoU ≈ 0.111 > 0.1 → **丢**。
+        overlapping = (8, 0, 18, 10)
+        #: 交集 1×10=10，并集 190 → IoU ≈ 0.0526 < 0.1 → **留**。
+        separate = (9, 0, 19, 10)
+        merged = merge_candidate_sources(
+            [self._uia(1, near)], [self._ocr(1, overlapping), self._ocr(2, separate)]
+        )
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[1].box, separate)
+
+    def test_the_comparison_is_in_physical_pixels(self):
+        """比较**一律在物理像素空间**（红线①）：两个框坐标相同 → 必然重叠。"""
+        merged = merge_candidate_sources(
+            [self._uia(1, (100, 100, 140, 140))],
+            [self._ocr(1, (100, 100, 140, 140))],
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].source, "uia")
+
+
+class MergedCandidateSourceTests(unittest.TestCase):
+    """通道侧：**单源 → 合并源**（UIA 主表 + OCR 附加表）。"""
+
+    def _grounder(self, model: _StubModel, *, main=None, additional=None):
+        return TwoStageGrounder(
+            model,
+            scale=ModelScale.RELATIVE_0_1000,
+            model_input_size=(_FRAME_WIDTH, _FRAME_HEIGHT),
+            full_screen_size=(_FRAME_WIDTH, _FRAME_HEIGHT),
+            effort=Effort.LOW,
+            gate_mode=GateMode.ALWAYS,
+            candidate_source=main,
+            additional_candidate_source=additional,
+        )
+
+    class _Source:
+        def __init__(self, items):
+            self._items = list(items)
+
+        def candidates(self, frame, description):
+            return list(self._items)
+
+    def test_the_two_sources_are_merged(self):
+        """主表全留；附加表里与主表重叠的**丢弃**，其余追加在后面。"""
+        main = self._Source(
+            [GroundingCandidate(number=1, text="甲", box=(0, 0, 20, 20), source="uia")]
+        )
+        additional = self._Source(
+            [
+                GroundingCandidate(number=1, text="重叠", box=(1, 1, 18, 18), source="ocr"),
+                GroundingCandidate(number=2, text="别处", box=(30, 30, 50, 50), source="ocr"),
+            ]
+        )
+        model = _StubModel(_reply(json.dumps({"chosen": 1})))
+        grounder = self._grounder(model, main=main, additional=additional)
+        result = grounder.locate(_request("甲", _frame()))
+        self.assertTrue(result.ok, msg=result.error_message)
+        # 清单里两项：主表的「甲」+ 附加表里不重叠的「别处」。
+        prompt = model.calls[0]["prompt"]
+        self.assertIn("「甲」", prompt)
+        self.assertIn("「别处」", prompt)
+        self.assertNotIn("「重叠」", prompt)
+
+    def test_a_broken_additional_source_does_not_kill_the_main_one(self):
+        """**判不了 ≠ 没有候选**：附加表报错时，主表照用。"""
+
+        class _Broken:
+            def candidates(self, frame, description):
+                raise OSError("OCR 后端不可用")
+
+        main = self._Source(
+            [GroundingCandidate(number=1, text="甲", box=(0, 0, 20, 20), source="uia")]
+        )
+        model = _StubModel(_reply(json.dumps({"chosen": 1})))
+        grounder = self._grounder(model, main=main, additional=_Broken())
+        result = grounder.locate(_request("甲", _frame()))
+        self.assertTrue(result.ok, msg=result.error_message)
+        self.assertEqual(result.landing_point, (10, 10))
+
+    def test_a_broken_main_source_falls_back_to_the_additional_one(self):
+        """主表不可用 → **退回附加表**（不报错、不假装没有候选）。"""
+
+        class _Broken:
+            def candidates(self, frame, description):
+                raise OSError("UIA 树读不出来")
+
+        additional = self._Source(
+            [GroundingCandidate(number=1, text="甲", box=(0, 0, 20, 20), source="ocr")]
+        )
+        model = _StubModel(_reply(json.dumps({"chosen": 1})))
+        grounder = self._grounder(model, main=_Broken(), additional=additional)
+        result = grounder.locate(_request("甲", _frame()))
+        self.assertTrue(result.ok, msg=result.error_message)
+        self.assertEqual(result.landing_point, (10, 10))
 
 
 class NumberedBranchTests(unittest.TestCase):
