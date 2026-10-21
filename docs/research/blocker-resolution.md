@@ -200,8 +200,8 @@ UIA 候选源接入（UFO² 的 IoU 0.1 合并规则）。前三条**不改一�
 | 主指标 | **同批基线**：**无条件两段式臂 ≥ 只用粗定位臂**（读 `sspro-report.json` 的 `comparison.always.accuracy` vs `comparison.coarse_only.accuracy`，**同一批样本**）—— 与 `docs/spec.md` §6 的硬判据一致 | 门控降级为记录器之后，**「门控关」臂就是被评的那条臂**（无条件两段式 = 生产默认，两臂落点应当**逐条相同**）→ 拿它当基线是**恒真的比较，判不出任何东西**；真正能区分「精定位有没有用」的是**只用粗定位**那一臂。⚠️ 42 条那批的 **57.1%**（门控关那臂）Wilson 95% 区间约 **±15 pp** → **不能当绝对门槛**用；拿它去比 ≥300 条那批 → **两个数没法比** |
 | 调用数 | **≤ 2.05 次/目标**（读 `sspro-report.json` 的 `model_calls_per_target.always`（**无条件两段式**那一臂；`on_demand` 现在与它**逐条相同**）；⚠️ 与同文件的 `model_calls.sent` **不是同一口径**，不能互相换算；⚠️ **别读成 `coarse_only`** 那一臂 —— 那是 1.00，恒过） | 门控关那一臂实测 **2.000**；改动不能靠多问模型换分（现验收线 ≤1.5 是另一条线的事） |
 | crop 消融 | **全集** `{128, 192, 256, 512, 768, 1024, 1280}`（七个尺寸**共用同一次粗定位回答**），**A 半调 / B 半评** | 【实测】M23 已证明「同批调参 + 同批评估 = 作废」；**不预设方向**（论文说越大越好，本机实测是**中间最好**）——逐格数据见 `core-function-plan.md` §C-1 |
-| 落点长尾 | `landing_error_px.p90 ≤ 250 px`（`caliber.json` 的 `landing_error_px.p90`） | 现值 1191.5；公开分桶里 c≥250 档 75.6% 对应的量级 |
-| 精定位产出率 | `refine 产出落点 / refine 触发 ≥ 90%`（`caliber.json`：`refine_enabled` = 触发数、`fallbacks` = 回落数 → 产出率 = **1 − `fallback_rate`**） | 现值 5/10 = 50%（门控关那臂是 32/40 = 80%） |
+| 落点长尾 | `landing_error_px.p90 ≤ 250 px`（`caliber.json` 的 `landing_error_px.p90`，**无条件两段式那一臂**） | 现值 1191.5；公开分桶里 c≥250 档 75.6% 对应的量级 |
+| 精定位产出率 | `refine 产出落点 / refine 触发 ≥ 90%`（`caliber.json`，**无条件两段式那一臂**：`refine_enabled` = 触发数、`fallbacks` = 回落数 → 产出率 = **1 − `fallback_rate`**） | 现值 5/10 = 50%（门控关那臂是 32/40 = 80%） |
 | 门控可判定条件 | `undecidable` 中 `target_area_ratio` 计数从 42 降到 0（`sspro-report.json` 的 `comparison.<臂>.gate.undecidable_distribution.target_area_ratio`） | 出框后第一次可判；现值 42/42 |
 | **禁止引用** | 「无条件 crop 整体 −0.3 pp」 | 至今无一手出处 |
 
