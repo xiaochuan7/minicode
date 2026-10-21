@@ -1,0 +1,196 @@
+"""**决策层 harness** 的单测（工单 D-1 / D-7）。
+
+判据：
+
+* **条件抓帧**（D-1）：只有「本轮程序调过 observe()/screenshot()」、
+  「手里那帧可能过时」或「本轮做过定位/点击动作」才抓新帧 ——
+  **否则沿用上一帧**（省 token，但不换成「看不见」）；
+* **每轮的图像 token 单列一列**（D-7）：拿不到就记 ``None``（**不猜**）；
+* **送模型的帧缩到声明尺寸**（A-2 同一件事）：上下文里留的仍是原始分辨率。
+
+⚠️ 假实现**不碰真桌面、不产生模型调用**（工单 M10 AC 7 的分工）。
+"""
+
+from __future__ import annotations
+
+import base64
+import unittest
+
+from minicode.action.protocol import Action, ActionKind, ActionResult
+from minicode.action.seam import SeamResult
+from minicode.model.client import ModelReply
+from minicode.model.effort import Effort
+from minicode.model.request_log import png_image_size
+from minicode.verification.fakes import make_frame
+
+from .api import ProtocolApi
+from .harness import DecisionHarness
+
+
+class _FakeSeam:
+    """假的动作执行缝：按脚本回结果（**不下发任何动作**）。"""
+
+    def __init__(self, *, frames=()):
+        self._frames = list(frames)
+        #: 抓了几次画面（截图端口被叫了几次）。
+        self.captures = 0
+
+    @property
+    def executor(self):
+        return _FakeExecutor()
+
+    def run(self, request) -> SeamResult:
+        if request.action_kind is ActionKind.SCREENSHOT:
+            self.captures += 1
+            frame = self._frames.pop(0) if self._frames else make_frame()
+            return SeamResult(
+                action=Action(ActionKind.SCREENSHOT, {}, "截一张图"),
+                final_point=None,
+                intent="截一张图",
+                result=ActionResult(ok=True, captured=frame),
+            )
+        return SeamResult(
+            action=Action(request.action_kind, {}, "点击"),
+            final_point=(10, 20),
+            intent="点击",
+            result=ActionResult(ok=True, landing_point=(10, 20)),
+        )
+
+
+class _FakeExecutor:
+    """假的动作执行器（输入文本 / 按键走它）。"""
+
+    def execute(self, action) -> ActionResult:
+        return ActionResult(ok=True)
+
+
+class _FakeCaller:
+    """假的模型调用：按脚本回程序源码（**不发请求**）。"""
+
+    def __init__(self, programs, *, image_tokens: int | None = 1234):
+        self._programs = list(programs)
+        self._image_tokens = image_tokens
+        #: 每次调用记下：提示词与**发过去的那几张图**。
+        self.calls: list[dict] = []
+
+    def complete(
+        self,
+        prompt,
+        *,
+        effort=None,
+        max_tokens=2000,
+        image_base64=None,
+        images_base64=(),
+        thinking_disabled=False,
+    ) -> ModelReply:
+        self.calls.append({"prompt": prompt, "images": tuple(images_base64)})
+        program = self._programs.pop(0) if self._programs else "pass\n"
+        return ModelReply(
+            text=f"```python\n{program}```",
+            model="fake",
+            endpoint="http://local",
+            effort=Effort.HIGH,
+            http_status=200,
+            latency_ms=1.0,
+            input_tokens=100,
+            output_tokens=10,
+            image_tokens=self._image_tokens,
+        )
+
+
+def _harness(programs, *, frames=(), max_rounds=2):
+    """搭一套假 harness（假模型 + 假缝）。"""
+    seam = _FakeSeam(frames=frames)
+    api = ProtocolApi(seam=seam)
+    caller = _FakeCaller(programs)
+    harness = DecisionHarness(caller=caller, api=api, max_rounds=max_rounds)
+    return harness, api, caller, seam
+
+
+class ConditionalCaptureTest(unittest.TestCase):
+    """条件抓帧（D-1）：不抓 → 沿用上一帧；该抓 → 抓。"""
+
+    def test_a_round_without_observe_and_without_actions_captures_nothing(self):
+        """程序没调 observe()、上轮也没有动作 → **不抓新帧**（沿用上一帧）。"""
+        harness, _api, _caller, seam = _harness(["pass\n", "pass\n"])
+        report = harness.run("目标")
+        #: 只有**初始那一帧**（第 1 轮之前抓的）。
+        self.assertEqual(seam.captures, 1)
+        self.assertEqual(report.kept_frames, 1)
+
+    def test_a_round_that_called_observe_captures_a_new_frame(self):
+        """程序调了 observe() → 抓新帧（模型自己要新画面，就得给它）。"""
+        harness, _api, _caller, seam = _harness(
+            ["observe()\n", "observe()\n"], max_rounds=2
+        )
+        report = harness.run("目标")
+        #: 初始 1 帧 + 每轮 2 帧（程序自己 observe 一次、harness 再抓一次）。
+        self.assertEqual(seam.captures, 5)
+        self.assertEqual(report.kept_frames, 3)
+
+    def test_a_clicking_round_captures_a_new_frame(self):
+        """**兜底纪律**：模型忘了调 observe() 就成了盲写 —— 本轮点过东西就抓一帧。"""
+        harness, _api, _caller, seam = _harness(
+            ["click('开始')\n", "click('开始')\n"], max_rounds=2
+        )
+        report = harness.run("目标")
+        #: 初始 1 帧 + 每轮 1 帧（点击本身不抓画面，是 harness 抓的）。
+        self.assertEqual(seam.captures, 3)
+        self.assertEqual(report.kept_frames, 3)
+
+    def test_a_round_after_an_action_catches_up(self):
+        """上一轮动过界面而那一轮末尾没抓到新帧 → 这一轮补抓。"""
+        harness, _api, _caller, seam = _harness(
+            ["type_text('x')\n", "type_text('x')\n"], max_rounds=2
+        )
+        harness.run("目标")
+        #: 初始 1 帧 + 第 2 轮补抓 1 帧（第 1 轮的输入文本没有定位/点击，
+        #: 按兜底纪律不抓 —— 但手里那帧从此可能过时，第 2 轮补上）。
+        self.assertEqual(seam.captures, 2)
+
+
+class ImageTokenAccountingTest(unittest.TestCase):
+    """每轮的图像 token 单列一列（D-7）。"""
+
+    def test_the_image_tokens_are_reported_per_step(self):
+        harness, _api, _caller, _seam = _harness(["pass\n", "pass\n"])
+        report = harness.run("目标")
+        self.assertEqual(report.image_token_growth, ((1, 1234), (2, 1234)))
+        self.assertEqual(
+            report.to_dict()["image_token_growth"], [[1, 1234], [2, 1234]]
+        )
+
+    def test_a_missing_image_token_count_stays_none(self):
+        """拿不到就记 None（**不猜**）。"""
+        seam = _FakeSeam()
+        api = ProtocolApi(seam=seam)
+        caller = _FakeCaller(["pass\n"], image_tokens=None)
+        harness = DecisionHarness(caller=caller, api=api, max_rounds=1)
+        report = harness.run("目标")
+        self.assertEqual(report.image_token_growth, ((1, None),))
+
+
+class ModelFrameSizeTest(unittest.TestCase):
+    """送模型的那几帧缩到**声明尺寸**（上下文里留的仍是原始分辨率）。"""
+
+    def test_the_frames_sent_to_the_model_are_scaled_down(self):
+        frame = make_frame(2560, 1600)
+        harness, _api, caller, _seam = _harness(["pass\n"], frames=[frame])
+        harness.run("目标")
+        sent = caller.calls[0]["images"]
+        self.assertEqual(len(sent), 1)
+        size = png_image_size(base64.b64decode(sent[0]))
+        #: 声明尺寸 = 量出来的表面尺寸经 ``model_input_size_for`` 算出来的那一档
+        #: （2560×1600 → 1280×800）。
+        self.assertEqual(size, (1280, 800))
+
+    def test_the_context_keeps_the_original_resolution(self):
+        """留在上下文里的帧**不缩放**（校验层的 OCR 与差分要全分辨率）。"""
+        frame = make_frame(2560, 1600)
+        harness, _api, _caller, _seam = _harness(["pass\n"], frames=[frame])
+        report = harness.run("目标")
+        self.assertEqual(report.kept_frames, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

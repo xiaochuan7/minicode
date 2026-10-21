@@ -30,8 +30,10 @@ from typing import Any
 
 from minicode.action.errors import FailureType, failure_type_of
 from minicode.action.image import encode_frame_base64
+from minicode.action.ports import CapturedFrame
 from minicode.action.program import ProgramOutcome, run_program
 from minicode.model.effort import Effort
+from minicode.model.image import downscale_frame, model_input_size_for
 from minicode.model.ports import ModelCaller
 from minicode.model.request_log import count_unset_effort, total_input_tokens
 from minicode.reflection.handoff import HandoffArtifact, build_handoff
@@ -85,6 +87,23 @@ _COMPLETION_PHRASES = (
     "complete",
 )
 
+#: **观察型调用**（工单 D-1）：本轮程序**自己要新画面**。
+#:
+#: 程序调了它们 → 这一轮结束时**必须**有一帧新的画面给模型看
+#: （它点名要新画面，却不给它看最新的那一帧，说不过去）。
+_OBSERVING_CALL_KINDS = frozenset({"observe", "screenshot"})
+
+#: **定位/点击**调用（工单 D-1 的**兜底纪律**）。
+#:
+#: 本轮程序做过它们 → **强制抓一帧**：模型忘了调 ``observe()`` 就成了盲写，
+#: 不让「省 token」换来「看不见」。
+_LOCATING_CALL_KINDS = frozenset({"click", "find"})
+
+#: **动界面**的调用（会改画面，因此手里那一帧可能过时）。
+_ACTION_CALL_KINDS = frozenset(
+    {"click", "find", "type_text", "press_key", "wait"}
+)
+
 
 def _completion_claims(text: str) -> int:
     """文本里出现了几处「自称完成」的表述（只统计，不据此停止）。"""
@@ -120,6 +139,11 @@ class StepRecord:
     thinking_tokens: int | None = None
     cache_read_input_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
+    #: **这一步的图像 token 数**（工单 D-7：图像占的输入 token 单列一列）。
+    #:
+    #: 它按 28 px patch 规则对**实际发出的那张图**估计（**估计值，不是服务端
+    #: 报出来的数**）。拿不到就是 ``None``（**不猜**）。
+    image_tokens: int | None = None
     program: str = ""
     stdout: str = ""
     stderr: str = ""
@@ -152,6 +176,7 @@ class StepRecord:
             "cache_read_input_tokens": self.cache_read_input_tokens,
             "cache_creation_input_tokens": self.cache_creation_input_tokens,
             "total_input_tokens": self.total_input_tokens,
+            "image_tokens": self.image_tokens,
             "program": self.program,
             "stdout": self.stdout,
             "stderr": self.stderr,
@@ -174,6 +199,12 @@ class HarnessReport:
     stop_reason: str
     #: 每一步的（步序, 上下文总输入 token）—— 成本曲线。
     token_growth: tuple[tuple[int, int | None], ...]
+    #: 每一步的（步序, **图像 token 数**）—— 工单 D-7：
+    #: 图像占的那部分输入 token **单列一列**，这样「按需观察省了多少」
+    #: 能被**直接读出来**，而不是靠感觉。
+    #:
+    #: ⚠️ 图像 token 是**估计值**（28 px patch 规则，【二手】），拿不到是 ``None``。
+    image_token_growth: tuple[tuple[int, int | None], ...] = ()
     #: 程序接口的每一次调用（动作与观察）。
     calls: tuple[dict[str, Any], ...] = ()
     #: 档位分布（决策层自己发的请求）。
@@ -199,6 +230,7 @@ class HarnessReport:
             "steps": [step.to_dict() for step in self.steps],
             "stop_reason": self.stop_reason,
             "token_growth": [list(item) for item in self.token_growth],
+            "image_token_growth": [list(item) for item in self.image_token_growth],
             "calls": list(self.calls),
             "effort_histogram": dict(self.effort_histogram),
             "unset_effort_calls": self.unset_effort_calls,
@@ -243,6 +275,9 @@ class DecisionHarness:
         #: **停止条件**（工单 M12）：四类卡死检测器 + 熔断 + 轮次上限。
         #: 缺省 = 不做停止判定（那时只有轮次上限兜着）。
         self.stop_policy = stop_policy
+        #: **声明给模型的尺寸**（**算一次**，全任务共用一份；见
+        #: :meth:`_declared_size`）。``None`` = 还没量到表面尺寸。
+        self._model_input_size: tuple[int, int] | None = None
 
     # ------------------------------------------------------------------
     # 主循环
@@ -256,9 +291,12 @@ class DecisionHarness:
         context = ContextWindow(keep_frames=self.keep_frames)
         steps: list[StepRecord] = []
         growth: list[tuple[int, int | None]] = []
+        image_growth: list[tuple[int, int | None]] = []
         all_calls: list[dict[str, Any]] = []
         #: 默认的停止原因是**轮次上限**（下面每一处 break 都会改写它）。
         stop_reason = STOP_ROUND_CAP
+        #: 手里这一帧是不是**可能过时**（动过界面但没抓到新帧）。
+        frame_may_be_stale = False
 
         # **当前观察**：第 1 轮之前先抓一帧 —— 否则模型是**盲写**的程序
         # （模型针对当前观察产出程序，盲写就违背了这条）。
@@ -282,8 +320,25 @@ class DecisionHarness:
             calls = tuple(self.api.calls)
             self.api.calls.clear()
             all_calls.extend(calls)
-            # **新观察**：这一轮结束后的画面（回灌给模型的那一帧）。
-            frame = self.api.capture_frame()
+            # -- **条件抓帧**（工单 D-1）------------------------------------
+            # 原来每轮结束都无条件抓一帧 → 每轮固定多一张完整图进上下文。
+            # 现在**三条判据，缺一不抓**：
+            #   1. **本轮程序调过 observe()/screenshot()** → 它自己要新画面；
+            #   2. **手里这一帧可能过时**（上一轮动过界面，而那一轮末尾
+            #      没抓到新帧）→ 抓（否则模型拿的是动作**之前**的画面）；
+            #   3. **兜底纪律**：本轮程序做过任何**定位/点击**动作 → 强制抓一帧。
+            #      模型忘了调 observe() 就成了盲写 —— **不让「省 token」换来
+            #      「看不见」**。
+            # 抓到新帧时上下文里的旧帧照常按张数上限淘汰；没抓到时
+            # ``ContextWindow.add_round(frame=None)`` **沿用旧帧**（不淘汰）。
+            kinds = {str(call.get("kind")) for call in calls}
+            round_observed = bool(kinds & _OBSERVING_CALL_KINDS)
+            round_located = bool(kinds & _LOCATING_CALL_KINDS)
+            round_acted = bool(kinds & _ACTION_CALL_KINDS)
+            need_frame = round_observed or frame_may_be_stale or round_located
+            frame = self.api.capture_frame() if need_frame else None
+            #: 动了界面却没抓到新帧 → 手里这帧从此**可能过时**。
+            frame_may_be_stale = round_acted and not need_frame
             summary = _summarize(round_index, outcome, calls)
             context.add_round(summary=summary, frame=frame)
 
@@ -297,6 +352,7 @@ class DecisionHarness:
                     thinking_tokens=reply.thinking_tokens,
                     cache_read_input_tokens=reply.cache_read_input_tokens,
                     cache_creation_input_tokens=reply.cache_creation_input_tokens,
+                    image_tokens=reply.image_tokens,
                     program=program,
                     stdout=outcome.stdout,
                     stderr=outcome.stderr,
@@ -313,6 +369,7 @@ class DecisionHarness:
                 )
             )
             growth.append((len(steps), steps[-1].total_input_tokens))
+            image_growth.append((len(steps), steps[-1].image_tokens))
 
             if self.api.asked_human:
                 stop_reason = STOP_ASKED_HUMAN
@@ -356,12 +413,14 @@ class DecisionHarness:
                         thinking_tokens=reflect.thinking_tokens,
                         cache_read_input_tokens=reflect.cache_read_input_tokens,
                         cache_creation_input_tokens=reflect.cache_creation_input_tokens,
+                        image_tokens=reflect.image_tokens,
                         program="",
                         completion_claims=_completion_claims(reflect.text),
                         decision_ms=reflect_ms,
                     )
                 )
                 growth.append((len(steps), steps[-1].total_input_tokens))
+                image_growth.append((len(steps), steps[-1].image_tokens))
 
         handoff = self._build_handoff(stop_reason, all_calls)
         policy = self.stop_policy
@@ -371,6 +430,7 @@ class DecisionHarness:
             steps=tuple(steps),
             stop_reason=stop_reason,
             token_growth=tuple(growth),
+            image_token_growth=tuple(image_growth),
             calls=tuple(all_calls),
             effort_histogram=_effort_histogram(steps),
             unset_effort_calls=self._unset_effort_calls(),
@@ -415,9 +475,45 @@ class DecisionHarness:
     # ------------------------------------------------------------------
 
     def _images(self, context: ContextWindow) -> tuple[str, ...]:
-        """上下文里保留的那几张完整图（base64 PNG）。"""
-        encoded = [encode_frame_base64(frame) for frame in context.frames()]
-        return tuple(data for data in encoded if data)
+        """上下文里保留的那几张完整图（base64 PNG）。
+
+        ⚠️ **送模型的那一份是缩放过的副本**（缩到**声明尺寸**）——
+        留在上下文里的帧**保持原始物理分辨率**（校验层的 OCR 与差分要全分辨率，
+        缩了就判不准）。
+        """
+        encoded: list[str] = []
+        for frame in context.frames():
+            data = encode_frame_base64(self._model_frame(frame))
+            if data:
+                encoded.append(data)
+        return tuple(encoded)
+
+    def _model_frame(self, frame: CapturedFrame) -> CapturedFrame:
+        """送模型的那一帧：缩到**声明尺寸**。
+
+        缩不了（尺寸对不上 / 不是缩小）→ **送原图**（如实，不假装缩过）。
+        """
+        width, height = self._declared_size(frame)
+        try:
+            return downscale_frame(frame, width, height)
+        except ValueError:
+            return frame
+
+    def _declared_size(self, frame: CapturedFrame) -> tuple[int, int]:
+        """**声明给模型的那一帧的尺寸**（**算一次**，全任务共用一份）。
+
+        来源只有一处：**量出来的表面尺寸**（抓到的那一帧的物理像素尺寸）——
+        **不写死常数**（架构备忘 C-05）。缩放规则统一走
+        :func:`minicode.model.image.model_input_size_for`（服务端单侧上限 2048；
+        本机桌面 2560×1600 → **1280×800**）。
+
+        ⚠️ 决策层的模型**不产坐标**（程序只按描述点名目标），
+        所以这里的声明尺寸**不参与任何坐标换算** —— 坐标换算的真值
+        仍然只在动作路径那一侧。
+        """
+        if self._model_input_size is None:
+            self._model_input_size = model_input_size_for(frame.width, frame.height)
+        return self._model_input_size
 
     def _unset_effort_calls(self) -> int:
         """请求日志里「未传档位」的调用数（必须恒为 0）。"""
