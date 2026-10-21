@@ -266,7 +266,7 @@ class TwoStageGrounder:
         # -- 候选（工单 B-1）：有候选走「编号选择」，没有走点式路径 -----------
         candidates, candidate_issue = self._candidates(frame, request.target_description)
         if candidates:
-            return self._numbered(request, frame, geometry, candidates, echoes, model_calls)
+            return self._numbered(request, frame, candidates, echoes, model_calls)
         if self.candidate_source is not None:
             # **接了候选源但没匹配上** → 显式记「无候选」（不猜、不假装）。
             # ⚠️ 这一条的 ``image_source`` 装的是**原因**（`GroundingEcho` 没有
@@ -572,7 +572,6 @@ class TwoStageGrounder:
         self,
         request: VisualLocateRequest,
         frame: CapturedFrame,
-        geometry,
         candidates: list[GroundingCandidate],
         echoes: list[GroundingEcho],
         model_calls: int,
