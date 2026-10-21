@@ -144,6 +144,18 @@ class ErrorCode(StrEnum):
     #: （「无变化 ≠ 失败」—— 对已置位控件再点一次就属于那种）。
     EXPECTATION_FAILED = "expectation_failed"
 
+    # -- 对外形态（工单 M18）--
+    #: **请求本身不合法**（不是一张键值表 / 字段类型不对 / 动作种类没有实现）。
+    #:
+    #: ⚠️ 这是**请求层**的错误：**没有动作下发**（与动作层的失败分开）。
+    #: 归「通道级失败」—— 这一层对这份请求整体不可用（fail-closed）。
+    INVALID_REQUEST = "invalid_request"
+    #: **协议版本号对不上**：请求带的版本不是本实现支持的那个版本。
+    #:
+    #: ⚠️ **不按旧语义猜着执行**（工单 M18 AC4）：版本对不上 → 明确报错、
+    #: **零动作下发**。归「通道级失败」（同上）。
+    PROTOCOL_VERSION_MISMATCH = "protocol_version_mismatch"
+
 
 class ActionError(Exception):
     """带错误码的动作异常。"""
