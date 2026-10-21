@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Sequence
 
 from minicode.calib.admission import CalibrationAdmission
 from minicode.calib.calibrate import (
@@ -21,6 +22,7 @@ from minicode.calib.calibrate import (
     CandidateEvaluation,
 )
 from minicode.coord.coordinates import ModelScale
+from minicode.e2e.real import read_window_controls
 from minicode.e2e.visual import (
     LazyUiaCandidateSource,
     MergedCandidateSource,
@@ -139,3 +141,54 @@ class MergedCandidateSourceTests(unittest.TestCase):
         """两源都**读出来了**、只是没匹配上 → 空列表（不是源报错）。"""
         source = MergedCandidateSource(self._Source([]), self._Source([]))
         self.assertEqual(source.candidates(None, "甲"), [])
+
+
+class _UiaElement:
+    """一个 UIA 元素（只要名字，够用了）。"""
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+class ReadWindowControlsTests(unittest.TestCase):
+    """**UIA 主表的读取口**：「树读不出来」与「树是空的」必须分得开。
+
+    ⚠️ 这一层在**生产接线**上（:func:`minicode.e2e.real.read_window_controls`
+    ← ``WindowsDesktopExecutor._uia_controls`` → 合并候选源）。
+    读树失败若在这里被吞成空列表 → 上层收到的是「**没有候选**」，
+    而真相是「**判不了**」—— 方案原文「接线点」一节明令禁止。
+    """
+
+    class _Port:
+        """按控件类型给读数；``broken`` 里的类型读不出来，``empty`` = 树是空的。"""
+
+        def __init__(self, *, broken: Sequence[str] = (), empty: bool = False):
+            self.broken = set(broken)
+            self.empty = empty
+            self.asked: list[str] = []
+
+        def find(self, request):
+            control_type = request.control_type
+            self.asked.append(control_type)
+            if control_type in self.broken:
+                raise OSError("UIA 查询超时")
+            elements = () if self.empty else (_UiaElement(control_type),)
+            return type("_Result", (), {"elements": elements})()
+
+    def test_a_readable_but_empty_tree_is_no_candidates(self):
+        """树**读出来了**、里面没有控件 → 空列表（不是源报错）。"""
+        port = self._Port(empty=True)
+        self.assertEqual(read_window_controls(port, object(), ("Button",)), [])
+
+    def test_a_tree_that_cannot_be_read_raises(self):
+        """树**读不出来** → 异常往上抛（上层据此记「候选源报错」）。"""
+        port = self._Port(broken=("Button", "Custom"))
+        with self.assertRaises(OSError):
+            read_window_controls(port, object(), ("Button", "Custom"))
+
+    def test_one_broken_control_type_does_not_hide_the_others(self):
+        """局部失败**容忍**：其余类型照读（只是那一类没进来）。"""
+        port = self._Port(broken=("Image",))
+        controls = read_window_controls(port, object(), ("Button", "Image", "Custom"))
+        self.assertEqual([control.name for control in controls], ["Button", "Custom"])
+

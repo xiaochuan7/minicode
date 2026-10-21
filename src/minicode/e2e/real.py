@@ -23,7 +23,7 @@ import ctypes
 import math
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,7 +40,7 @@ from .runner import StepOutcome
 from .tasks import Step
 from .visual import VisualChannel, merged_candidate_source
 
-__all__ = ["WindowsDesktopExecutor", "ChromeExecutor"]
+__all__ = ["WindowsDesktopExecutor", "ChromeExecutor", "read_window_controls"]
 
 #: **候选源要枚举的 UIA 控件类型**（UIA 主表）。
 #:
@@ -153,6 +153,42 @@ def _percent_of(value: str) -> int:
     """从「125%」这样的值里取百分比数（取不到就是 0）。"""
     match = _SCALE_PATTERN.search(value or "")
     return int(match.group(1)) if match else 0
+
+
+def read_window_controls(
+    port: Any,
+    anchor: Any,
+    control_types: Sequence[str],
+) -> list[Any]:
+    """读一个窗口上的 UIA 控件（**UIA 主表**；无名控件也在里面）。
+
+    ⚠️ **「树读不出来」与「树是空的」是两件事**（方案原文「接线点」一节：
+    *判不了 ≠ 没有候选*）：
+
+    * 树**读出来了**、只是没有匹配上的控件 → **空列表**（「界面上没有」）；
+    * 树**读不出来**（查询超时 / 通道级失败）→ **异常往上抛** →
+      上层记「候选源报错」，**不许**被当成「没有候选」。
+
+    局部失败**容忍**：某一类控件读失败不影响其它类；**全部**都失败 →
+    那一棵树就是读不出来 → 抛。
+    """
+    from minicode.uia.ports import UiaFindRequest
+
+    controls: list[Any] = []
+    failures: list[Exception] = []
+    for control_type in control_types:
+        try:
+            result = port.find(
+                UiaFindRequest(anchor=anchor, control_type=control_type)
+            )
+        except Exception as exc:  # 局部失败 → 记下来，不当场抛
+            failures.append(exc)
+            continue
+        controls.extend(result.elements)
+    if failures and len(failures) == len(control_types):
+        # **每一类都读不出来** → 这棵树读不出来（不是「界面上没有」）。
+        raise failures[0]
+    return controls
 
 #: 找窗口时用的可见窗口枚举。
 def find_window_by_title(title: str) -> int:
@@ -617,26 +653,15 @@ class WindowsDesktopExecutor:
 
         * ⚠️ **无名控件也要**（给位置型占位描述）—— 静默丢弃就是「图标召回 0」的成因；
         * ⚠️ **UIA 的框不加任何偏移**：`BoundingRectangle` 已经是物理屏幕坐标；
-        * 读不到（窗口没接线 / 树读失败）→ **返回空列表**，上层据此走「源报错」那条。
+        * ⚠️ **读不出来 → 异常往上抛**（「树是空的」≠「树读不出来」）：
+          上层据此记「候选源报错」或退回 OCR 附加表，**不许**把
+          「读不出来」当成「界面上没有候选」。
         """
-        from minicode.uia.ports import UiaFindRequest
-
         window = self._current_window or "settings"
-        try:
-            wiring = self._ensure_wiring(window)
-        except Exception:
-            return []
-        port = self._query_port()
-        controls: list[Any] = []
-        for control_type in _CANDIDATE_CONTROL_TYPES:
-            try:
-                result = port.find(
-                    UiaFindRequest(anchor=wiring.anchor, control_type=control_type)
-                )
-            except Exception:
-                continue
-            controls.extend(result.elements)
-        return controls
+        wiring = self._ensure_wiring(window)
+        return read_window_controls(
+            self._query_port(), wiring.anchor, _CANDIDATE_CONTROL_TYPES
+        )
 
     def _ensure_wiring(self, window: str) -> _Wiring:
         if window in self._wiring:
