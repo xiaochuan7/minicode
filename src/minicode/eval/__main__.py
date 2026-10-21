@@ -217,13 +217,15 @@ def main(argv=None) -> int:
     #: ⚠️ **口径只有这一处**：逐条累加**那一臂**的 ``model_calls`` ÷ 样本数。
     #: 报告里另有一个 ``model_calls.sent`` —— **那是另一个口径**
     #: （两臂合计、去掉应答记忆复用后真正发出去的请求数）→ **两个数不能互相换算**。
-    samples = len(chosen)
+    sample_count = len(chosen)
     per_target = {
         "on_demand": (
-            comparison["on_demand"]["model_calls"] / samples if samples else 0.0
+            comparison["on_demand"]["model_calls"] / sample_count
+            if sample_count
+            else 0.0
         ),
         "always": (
-            comparison["always"]["model_calls"] / samples if samples else 0.0
+            comparison["always"]["model_calls"] / sample_count if sample_count else 0.0
         ),
     }
     rows = table_rows(
@@ -279,7 +281,7 @@ def main(argv=None) -> int:
         },
         #: **平均模型调用数/目标** —— 验收线「≤ 1.5」**判的就是这一项**。
         "model_calls_per_target": {
-            "samples": samples,
+            "samples": sample_count,
             "on_demand": round(per_target["on_demand"], 4),
             "always": round(per_target["always"], 4),
             "note": (
