@@ -169,7 +169,8 @@ def ocr_candidate_source(language: str = "zh-Hans-CN") -> Any:
     * **只读**：OCR 不注入任何输入；
     * ⚠️ **召回是瓶颈**：图标类目标没有文字可匹配（实测评测集上图标召回 0/13），
       方案原文的「**UIA 控件为主表**」那一半靠 :func:`merged_candidate_source` 补上
-      （真机实测：UIA 主表 **21/21**、落点误差中位 0.0 px；OCR 附加表 13/21）。
+      （真机实测 `runs/b1-live-zh/live-report.json`：UIA 主表命中 **22/22**、
+      落点误差中位 0.0 px；同一批的 OCR 附加表 **15/22** —— 崩掉的都是纯图标控件）。
     """
     from minicode.ground.candidates import OcrCandidateSource
     from minicode.verification.ocr_windows import WindowsOcrPort
