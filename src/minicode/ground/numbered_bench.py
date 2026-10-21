@@ -32,12 +32,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from minicode.action.ports import CapturedFrame, VisualLocateRequest
+from minicode.action.ports import CapturedFrame, PixelFormat, VisualLocateRequest
 from minicode.coord.coordinates import ModelScale
 from minicode.eval.png_read import read_png_frame
 from minicode.eval.sspro import SsproSample, load_samples, stratified_subset
 from minicode.ground.caliber import CaliberSample, summarize_samples
-from minicode.ground.candidates import OcrCandidateSource
+from minicode.ground.candidates import GroundingCandidate, OcrCandidateSource
 from minicode.ground.channel import TwoStageGrounder
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
@@ -297,6 +297,295 @@ def _error_distribution(outcomes: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return summarize_errors(values).to_dict()
 
 
+class _UiaCandidateSource:
+    """**UIA 控件**当候选源（方案原文的「UIA 控件为主表」那一半）。
+
+    候选 = 树里那些**已脱敏**的控件（名字 + 框，物理像素）。
+    """
+
+    def __init__(self, controls: Sequence[Any]):
+        self._controls = list(controls)
+
+    def candidates(self, frame: CapturedFrame, description: str) -> list[Any]:
+        return [
+            GroundingCandidate(
+                number=index + 1,
+                text=control.name,
+                box=tuple(int(value) for value in control.rect),
+                source="uia",
+            )
+            for index, control in enumerate(self._controls)
+            if control.name
+        ]
+
+
+def _live_summary(outcomes: Sequence[dict[str, Any]], variant: str) -> dict[str, Any]:
+    """真机测量的一条汇总（两个口径：落点误差 / 框中心取整误差）。"""
+    from minicode.ground.stats import summarize_errors
+
+    errors = [
+        outcome[variant]["landing_error_px"]
+        for outcome in outcomes
+        if outcome[variant]["landing_error_px"] is not None
+    ]
+    rounding = [
+        outcome[variant]["rounding_error_px"]
+        for outcome in outcomes
+        if outcome[variant]["rounding_error_px"] is not None
+    ]
+    return {
+        "samples": len(outcomes),
+        "with_landing": len(errors),
+        "hits": sum(1 for outcome in outcomes if outcome[variant]["hit"]),
+        "landing_error_px": summarize_errors(errors).to_dict() if errors else {},
+        "rounding_error_px": summarize_errors(rounding).to_dict() if rounding else {},
+    }
+
+
+def _run_live(args) -> int:
+    """**真机**上的编号分支测量（UIA 树给真值）。
+
+    * 目标窗口用 **UIA 树**枚举带名字的元素（真值 = 控件框中心，物理像素）；
+    * 送进模型的控件名**先过脱敏**（红线④：``minicode.redact``）；
+    * 只抓**目标窗口那块**画面（别的窗口的内容不进模型上下文）；
+    * 跑两遍候选源：
+      - **UIA 控件**当候选（方案原文的「UIA 控件为主表」那一半）；
+      - **OCR 词级框**当候选（视觉通道这一半）。
+
+    量三个数：落点 vs **真值**（控件框中心）、落点 vs **选中候选框的物理中心**
+    （这一支的精度）、以及**命中**（落点落在目标控件里没）。
+
+    ⚠️ **只读**：抓屏 + OCR + 问模型，**不注入任何输入**。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    from minicode.action.ports import ControlCandidate
+    from minicode.exec import (
+        capture,
+        dpi,  # noqa: F401  (导入即声明 PMv2)
+    )
+    from minicode.redact.config import load_model_context_config
+    from minicode.redact.redactor import TreeRedactor
+    from minicode.uia.ports import UiaFindRequest
+    from minicode.uia.windows import WindowsUiaQueryPort, describe_window
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    wanted: list[int] = []
+
+    def _collect(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        buffer = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buffer, 256)
+        length = user32.GetWindowTextLengthW(hwnd)
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, length + 1)
+        if buffer.value == args.live_window or title.value == args.live_window:
+            wanted.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(enum_proc(_collect), 0)
+    if not wanted:
+        print(f"没找到窗口 {args.live_window!r}（按类名或标题找）")
+        return 1
+    print(f"=== 窗口句柄：{wanted} ===")
+    anchor = describe_window(wanted[0])
+
+    port = WindowsUiaQueryPort()
+    elements = []
+    for control_type in ("Text", "Button", "Hyperlink", "Edit", "ListItem"):
+        result = port.find(UiaFindRequest(anchor, control_type=control_type))
+        print(f"    UIA {control_type}: {len(result.elements)} 个")
+        elements.extend(result.elements)
+    screen_left, screen_top = dpi.virtual_desktop_origin()
+    screen_width, screen_height = dpi.virtual_desktop_size()
+    targets = []
+    for element in elements:
+        if not element.name.strip():
+            continue
+        # UIA 的框是 **(left, top, right, bottom)**（物理像素）。
+        left, top, right, bottom = element.rect
+        if right <= left or bottom <= top:
+            continue
+        if right - left > screen_width or bottom - top > screen_height:
+            # 框比整屏还大（浏览器文档的 extent 之类）→ 不是可见元素。
+            continue
+        if (
+            left < screen_left
+            or top < screen_top
+            or right > screen_left + screen_width
+            or bottom > screen_top + screen_height
+        ):
+            continue
+        targets.append(element)
+    print(f"=== 目标窗口 {args.live_window!r}：{len(targets)} 个带名字的元素 ===")
+    if not targets:
+        print("没有带名字的元素（UIA 树是空的）")
+        return 1
+
+    # 送进模型的控件名**先过脱敏**（红线④）。
+    redactor = TreeRedactor(load_model_context_config())
+    view = redactor.render(
+        [
+            ControlCandidate(
+                name=element.name,
+                control_type=element.control_type,
+                rect=(
+                    element.rect[0],
+                    element.rect[1],
+                    element.rect[2],
+                    element.rect[3],
+                ),
+            )
+            for element in targets
+        ]
+    )
+    redacted_names = [control.name for control in view.controls]
+    print(f"=== 脱敏后仍可用的名字：{sum(1 for name in redacted_names if name)} 个 ===")
+
+    # 只抓**目标元素那块**画面（别的窗口的内容不进模型上下文）。
+    left = int(min(element.rect[0] for element in targets))
+    top = int(min(element.rect[1] for element in targets))
+    right = int(max(element.rect[2] for element in targets))
+    bottom = int(max(element.rect[3] for element in targets))
+    left = max(left, screen_left)
+    top = max(top, screen_top)
+    right = min(right, screen_left + screen_width)
+    bottom = min(bottom, screen_top + screen_height)
+    raw, meta = capture.grab_frame((left, top, max(1, right - left), max(1, bottom - top)))
+    if hasattr(raw, "tobytes"):
+        # 有 numpy 时抓屏给的是 **BGR**（3 字节/像素），没有时是 BGRA。
+        payload = raw.tobytes()
+        pixel_format = PixelFormat.BGR
+    else:
+        payload = raw.bgra
+        pixel_format = PixelFormat.BGRA
+    frame = CapturedFrame(
+        width=meta.width,
+        height=meta.height,
+        left=meta.left,
+        top=meta.top,
+        payload=payload,
+        backend=meta.backend,
+        source=meta.source,
+        pixel_format=pixel_format,
+    )
+    print(f"=== 抓帧：{frame.width}×{frame.height} @ ({frame.left},{frame.top}) ===")
+
+    ocr_port = WindowsOcrPort(language=args.ocr_language)
+    words = ocr_port.read_words(frame)
+    print(f"=== OCR 词：{len(words)} 个 ===")
+
+    config = load_config()
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    client = ModelClient(config, JsonlRequestLog(out_dir / "model-requests.jsonl"))
+    model_input = model_input_size_for(frame.width, frame.height)
+    surface = (
+        frame.left,
+        frame.top,
+        frame.left + frame.width,
+        frame.top + frame.height,
+    )
+
+    def _locate(description: str, source) -> dict[str, Any]:
+        grounder = TwoStageGrounder(
+            client,
+            scale=ModelScale.ABSOLUTE_MODEL_INPUT,
+            model_input_size=model_input,
+            full_screen_size=(frame.width, frame.height),
+            effort=args.effort,
+            max_tokens=args.max_tokens,
+            candidate_source=source,
+        )
+        result = grounder.locate(
+            VisualLocateRequest(
+                target_description=description,
+                frame=frame,
+                surface=surface,
+            )
+        )
+        center = next(
+            (echo for echo in result.echoes if echo.stage == "numbered"), None
+        )
+        return {
+            "landing_point": list(result.landing_point) if result.landing_point else None,
+            "candidate_center": (
+                [center.raw_x, center.raw_y]
+                if (center is not None and center.raw_x is not None)
+                else None
+            ),
+            "error": result.error_message,
+        }
+
+    outcomes: list[dict[str, Any]] = []
+    for index, (element, name) in enumerate(
+        zip(targets, redacted_names, strict=True), start=1
+    ):
+        if not name:
+            continue
+        truth = (
+            (element.rect[0] + element.rect[2]) / 2.0,
+            (element.rect[1] + element.rect[3]) / 2.0,
+        )
+        record: dict[str, Any] = {
+            "name": name,
+            "control_type": element.control_type,
+            "truth": [truth[0], truth[1]],
+        }
+        for variant, source in (
+            ("uia", _UiaCandidateSource(view.controls)),
+            ("ocr", OcrCandidateSource(lambda _frame: words)),
+        ):
+            outcome = _locate(name, source)
+            landing = outcome["landing_point"]
+            center = outcome["candidate_center"]
+            record[variant] = {
+                "landing_point": landing,
+                "candidate_count": len(source.candidates(frame, name)),
+                "landing_error_px": (
+                    math.hypot(landing[0] - truth[0], landing[1] - truth[1])
+                    if landing
+                    else None
+                ),
+                "rounding_error_px": (
+                    math.hypot(landing[0] - center[0], landing[1] - center[1])
+                    if (landing and center)
+                    else None
+                ),
+                "hit": bool(
+                    landing
+                    and element.rect[0] <= landing[0] <= element.rect[2]
+                    and element.rect[1] <= landing[1] <= element.rect[3]
+                ),
+                "error": outcome["error"],
+            }
+        outcomes.append(record)
+        print(
+            f"[{index}/{len(targets)}] {name[:36]!r} "
+            f"UIA 误差 {record['uia']['landing_error_px']} "
+            f"OCR 误差 {record['ocr']['landing_error_px']}"
+        )
+
+    payload = {
+        "source": "live/uia",
+        "window": args.live_window,
+        "frame": [frame.width, frame.height, frame.left, frame.top],
+        "samples": len(outcomes),
+        "uia_candidates": _live_summary(outcomes, "uia"),
+        "ocr_candidates": _live_summary(outcomes, "ocr"),
+        "outcomes": outcomes,
+    }
+    (out_dir / "live-report.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(json.dumps({k: v for k, v in payload.items() if k != "outcomes"}, ensure_ascii=False, indent=2))
+    print(f"记录已写入：{out_dir / 'live-report.json'}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="minicode.ground.numbered_bench",
@@ -311,7 +600,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ocr-language", default="en-US", help="Windows OCR 的语言")
     parser.add_argument("--workers", type=int, default=4, help="按样本并行的线程数")
     parser.add_argument("--limit", type=int, default=0, help="最多跑多少条（调试用）")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="**真机**测量（UIA 树给真值；只读，不注入输入）",
+    )
+    parser.add_argument(
+        "--live-window",
+        default="Shell_TrayWnd",
+        help="真机测量的目标窗口标题（--live 用）",
+    )
     args = parser.parse_args(argv)
+
+    if args.live:
+        return _run_live(args)
 
     started = time.time()
     dataset = Path(args.dataset)
