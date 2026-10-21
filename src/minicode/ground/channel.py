@@ -630,9 +630,8 @@ class TwoStageGrounder:
                 fallback=True,
                 fallback_cause=FallbackCause.DEVIATION.value,
                 fallback_reason=(
-                    f"精定位结果偏离粗定位 {deviation:.1f} px"
-                    f"（阈值 {self.gate_params.deviation_tolerance_px:.1f} px，"
-                    f"参考点 = crop 窗口中心）"
+                    f"精定位结果偏离参考点（crop 窗口中心）{deviation:.1f} px"
+                    f"（阈值 {self.gate_params.deviation_tolerance_px:.1f} px）"
                 ),
                 echoes=echoes,
                 model_calls=model_calls,

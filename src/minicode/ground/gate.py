@@ -361,9 +361,12 @@ class GateReport:
     """**门控埋点报告**（口径写死，工单 M7 AC 4）。
 
     * ``samples`` —— 样本数 N；
-    * ``hit_rate`` —— **门控命中率**（工单口径）= 开启精定位的样本数 ÷ 总样本数；
-    * ``gate_decision_rate`` —— **门控自己判中**的比例（策略强制开启时与
-      ``hit_rate`` 不同）；
+    * ``hit_rate`` —— **开启精定位的样本数** ÷ 总样本数。
+      ⚠️ **门控降级为记录器之后，这个数恒为 1（只要粗定位可用）** ——
+      它现在量的是「有多少样本做了精定位」，**不再**是「门控命中了多少」；
+    * ``gate_decision_rate`` —— **门控自己判中**的比例。
+      ⚠️ **降级之后这个才是「本来会开多少」的那个数**（门控判据照判、照落盘，
+      只是不再决定开不开）；
     * ``fallback_rate`` —— **回落率** = 回落次数 ÷ 开启精定位的样本数；
     * ``reason_distribution`` —— 命中原因分布。
 
@@ -380,14 +383,14 @@ class GateReport:
 
     @property
     def hit_rate(self) -> float:
-        """门控命中率（开启精定位的样本数 ÷ 总样本数）。"""
+        """**开启精定位的样本数** ÷ 总样本数（门控降级后恒为 1）。"""
         if self.samples <= 0:
             return 0.0
         return self.refine_enabled / self.samples
 
     @property
     def gate_decision_rate(self) -> float:
-        """门控**自己判中**的比例（门控关时与 ``hit_rate`` 不同）。"""
+        """**门控自己判中**的比例（降级之后：这就是「本来会开多少」）。"""
         if self.samples <= 0:
             return 0.0
         return self.gate_hits / self.samples
