@@ -30,6 +30,7 @@ from minicode.coord.coordinates import ModelScale
 from minicode.model.effort import Effort
 from minicode.uia.ports import UiaFindRequest
 
+from .candidates import CandidateSource, candidate_coverage
 from .channel import TwoStageGrounder
 from .gate import GateMode, GateReport, GateSample, build_gate_report
 from .stats import ErrorDistribution, not_worse_than, summarize_errors
@@ -100,6 +101,13 @@ class TargetOutcome:
     #: 免得撞上「不许出现写死分母」那条源码级扫描（那个 1000 是**公开判据
     #: 自己的刻度**，不是坐标换算的分母 —— 分母只来自标定）。
     zoom_consistency_c: float | None = None
+    #: **候选覆盖率**三列（方案：图标能不能救要**单独报覆盖率**，
+    #: 不能只看最终命中率）。没有候选源时**全是 None**（不是 0 —— 「没量」
+    #: 与「量出来是 0」不是一回事）。
+    candidate_iou_max: float | None = None
+    candidate_iou_at_0_3: bool | None = None
+    candidate_iou_at_0_5: bool | None = None
+    candidate_center_inside: bool | None = None
     fallback: bool = False
     fallback_reason: str = ""
     #: 回落原因的枚举（工单 M7 AC 4）。
@@ -181,6 +189,10 @@ class BenchReport:
                     "refine_deviation_px": outcome.refine_deviation_px,
                     "zoom_consistency_px": outcome.zoom_consistency_px,
                     "zoom_consistency_c1000": outcome.zoom_consistency_c,
+                    "candidate_iou_max": outcome.candidate_iou_max,
+                    "candidate_iou_at_0_3": outcome.candidate_iou_at_0_3,
+                    "candidate_iou_at_0_5": outcome.candidate_iou_at_0_5,
+                    "candidate_center_inside": outcome.candidate_center_inside,
                     "fallback": outcome.fallback,
                     "fallback_reason": outcome.fallback_reason,
                     "fallback_cause": outcome.fallback_cause,
@@ -283,6 +295,7 @@ def measure(
     crop_width: int | None = None,
     crop_height: int | None = None,
     coarse_only: bool = False,
+    candidate_source: CandidateSource | None = None,
 ) -> tuple[TargetOutcome, ...]:
     """在给定目标上跑两级 grounding，返回逐目标的结果。
 
@@ -293,6 +306,11 @@ def measure(
     ⚠️ ``crop_width`` / ``crop_height`` 是**运行时参数**（物理像素）：
     冻结原型 ``coord/crop_refine.py`` 里的默认值**不许改** ——
     裁剪尺寸扫描从这里传（``None`` = 用通道的默认值）。
+
+    ⚠️ ``candidate_source`` 给了它 → **候选覆盖率三列**照实量
+    （IoU@0.3 / IoU@0.5 / 「框中心是否落在真目标内」）。
+    ⚠️ **候选框不许拿真值框去造**（那是拿答案当判据）；这里量的是
+    「真目标**是不是**被候选覆盖到了」。
     """
     outcomes: list[TargetOutcome] = []
     for target in targets:
@@ -344,6 +362,17 @@ def measure(
         )
         if len(tokens) < 2:
             tokens = (tokens[0] if tokens else None, None)
+        # **候选覆盖率三列**（有候选源才量；没有 → 全是 None）。
+        coverage: dict[str, Any] = {
+            "candidate_iou_max": None,
+            "candidate_iou_at_0_3": None,
+            "candidate_iou_at_0_5": None,
+            "candidate_center_inside": None,
+        }
+        if candidate_source is not None:
+            coverage = candidate_coverage(
+                list(candidate_source.candidates(frame, target.name)), target.rect
+            )
         outcomes.append(
             TargetOutcome(
                 name=target.name,
@@ -360,6 +389,7 @@ def measure(
                 zoom_consistency_c=(
                     float(consistency_c) if consistency_c is not None else None
                 ),
+                **coverage,
                 fallback=result.fallback,
                 fallback_reason=result.fallback_reason,
                 fallback_cause=result.fallback_cause,

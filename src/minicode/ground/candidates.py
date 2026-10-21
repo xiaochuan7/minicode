@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, replace
+from typing import Any, Protocol
 
 from minicode.action.ports import CapturedFrame
 from minicode.verification.ocr import normalize_ocr_text
@@ -49,6 +49,7 @@ __all__ = [
     "UiaCandidateSource",
     "UiaControlLike",
     "WordReader",
+    "candidate_coverage",
     "dedupe_by_iou",
     "iou",
     "merge_candidate_sources",
@@ -301,12 +302,31 @@ def merge_candidate_sources(
     绝不能学 OmniParser 的「图标框落在 OCR 框内就删图标」
     （官方 ``util/utils.py::remove_overlap_new()``）—— 那正好会**精确复现**
     「图标召回 0/13」。
+
+    ⚠️ **被丢掉的 OCR 项，它的文字挂到保留下来的 UIA 项上**
+    （方案原文：「OCR 文字可挂成它的 ``text``」）—— 框留 UIA 的、字取 OCR 的，
+    两边都不浪费：图标控件（UIA 无名）因此**有了可指认的名字**。
     """
-    kept = list(main)
+    kept: list[GroundingCandidate] = list(main)
     for candidate in additional:
-        if any(iou(candidate.box, other.box) > iou_threshold for other in main):
+        overlap_index = next(
+            (
+                index
+                for index, other in enumerate(main)
+                if iou(candidate.box, other.box) > iou_threshold
+            ),
+            None,
+        )
+        if overlap_index is None:
+            kept.append(candidate)
             continue
-        kept.append(candidate)
+        # 与主表项重叠 → **丢附加项，但把它的文字挂到主表项上**
+        # （``kept`` 的前 ``len(main)`` 项与 ``main`` 一一对应）。
+        other = kept[overlap_index]
+        text = other.text
+        if candidate.text and candidate.text not in text:
+            text = f"{text}｜{candidate.text}" if text else candidate.text
+        kept[overlap_index] = replace(other, text=text)
     return [
         GroundingCandidate(
             number=index + 1,
@@ -316,6 +336,33 @@ def merge_candidate_sources(
         )
         for index, candidate in enumerate(kept)
     ]
+
+
+def candidate_coverage(
+    candidates: Sequence[GroundingCandidate], truth_box: tuple[int, int, int, int]
+) -> dict[str, Any]:
+    """**候选覆盖率**三列：IoU@0.3 / IoU@0.5 / 「框中心是否落在真目标内」。
+
+    ⚠️ **为什么必须单列**：公开纯 CV 方案在 IoU>0.9 口径下 F1 只有
+    **0.154~0.201**（REMAUI 0.201 / Xianyu 0.154）→ 「图标能不能救」要
+    **单独报覆盖率**，不能只看最终命中率。
+
+    ⚠️ **比较在物理像素空间**（候选框与真值框同一空间）。
+    """
+    best = 0.0
+    center_inside = False
+    left, top, right, bottom = truth_box
+    for candidate in candidates:
+        best = max(best, iou(candidate.box, truth_box))
+        center_x, center_y = candidate.center
+        if left <= center_x <= right and top <= center_y <= bottom:
+            center_inside = True
+    return {
+        "candidate_iou_max": best,
+        "candidate_iou_at_0_3": best >= 0.3,
+        "candidate_iou_at_0_5": best >= 0.5,
+        "candidate_center_inside": center_inside,
+    }
 
 
 class OcrCandidateSource:

@@ -41,7 +41,7 @@ from minicode.ground.candidates import (
     GroundingCandidate,
     OcrCandidateSource,
     UiaCandidateSource,
-    iou,
+    candidate_coverage,
 )
 from minicode.ground.channel import TwoStageGrounder
 from minicode.model.client import ModelClient
@@ -69,28 +69,12 @@ def _inside(point: tuple[float, float], sample: SsproSample) -> bool:
 def _candidate_coverage(
     candidates: Sequence[GroundingCandidate], truth_box: tuple[int, int, int, int]
 ) -> dict[str, Any]:
-    """**候选覆盖率**三列：IoU@0.3 / IoU@0.5 / 「框中心是否落在真目标内」。
+    """**候选覆盖率**三列（IoU@0.3 / IoU@0.5 / 「框中心是否落在真目标内」）。
 
-    ⚠️ **为什么必须单列**：公开纯 CV 方案在 IoU>0.9 口径下 F1 只有
-    **0.154~0.201**（REMAUI 0.201 / Xianyu 0.154）→ 「图标能不能救」要
-    **单独报覆盖率**，不能只看最终命中率。
-
-    ⚠️ **比较在物理像素空间**（候选框与真值框同一空间）。
+    ⚠️ 实现只有一份（:func:`minicode.ground.candidates.candidate_coverage`）——
+    真机那台（:mod:`minicode.ground.bench`）与本台报的是**同一套口径**。
     """
-    best = 0.0
-    center_inside = False
-    left, top, right, bottom = truth_box
-    for candidate in candidates:
-        best = max(best, iou(candidate.box, truth_box))
-        center_x, center_y = candidate.center
-        if left <= center_x <= right and top <= center_y <= bottom:
-            center_inside = True
-    return {
-        "candidate_iou_max": best,
-        "candidate_iou_at_0_3": best >= 0.3,
-        "candidate_iou_at_0_5": best >= 0.5,
-        "candidate_center_inside": center_inside,
-    }
+    return candidate_coverage(candidates, truth_box)
 
 
 class _FixedCandidates:

@@ -266,7 +266,10 @@ class MergeCandidateSourcesTests(unittest.TestCase):
         )
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].source, "uia")
-        self.assertEqual(merged[0].text, "控件1")
+        # **框留 UIA 的，字取 OCR 的**（方案：OCR 文字挂成它的 text）。
+        self.assertEqual(merged[0].box, (0, 0, 40, 40))
+        self.assertIn("控件1", merged[0].text)
+        self.assertIn("文字1", merged[0].text)
 
     def test_a_non_overlapping_extra_is_appended_after_the_main_table(self):
         merged = merge_candidate_sources(
@@ -338,11 +341,11 @@ class MergedCandidateSourceTests(unittest.TestCase):
         grounder = self._grounder(model, main=main, additional=additional)
         result = grounder.locate(_request("甲", _frame()))
         self.assertTrue(result.ok, msg=result.error_message)
-        # 清单里两项：主表的「甲」+ 附加表里不重叠的「别处」。
+        # 清单里两项：主表的「甲」（**OCR 的重叠文字挂上去了**）+ 附加表里不重叠的「别处」。
         prompt = model.calls[0]["prompt"]
-        self.assertIn("「甲」", prompt)
+        self.assertIn("「甲", prompt)
+        self.assertIn("重叠", prompt)
         self.assertIn("「别处」", prompt)
-        self.assertNotIn("「重叠」", prompt)
 
     def test_a_broken_additional_source_does_not_kill_the_main_one(self):
         """**判不了 ≠ 没有候选**：附加表报错时，主表照用。"""
