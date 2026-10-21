@@ -1,5 +1,8 @@
 """M13 真机验证：真实页面上的结构定位 / 操作 / 引用时效 / 键盘退化 / 剪贴板。
 
+**M28 追加**：落点取**可见文本的实际区域** —— 量「落点 vs 文字实际区域中心」
+的偏差（两遍：页面自己报的文本区域 / 从画面量的墨迹包围盒）。
+
 用法（**必须先拿真机占用锁**，AGENTS.md）::
 
     python scripts/desktop_lock.py acquire --ticket M13
@@ -26,6 +29,102 @@ from minicode.browser.channel import BrowserChannel  # noqa: E402
 from minicode.browser.typing import BrowserTyping  # noqa: E402
 from minicode.exec import dpi  # noqa: E402
 from minicode.lock import acquire, release  # noqa: E402
+
+
+def _ink_bbox(image, threshold: int = 200):
+    """画面里「有墨」的像素的包围盒（图片自身的像素坐标，左上角原点）。
+
+    真值**从画面量**（不采信 DOM 的几何读数）：只看渲染出来的像素。
+    找不到墨迹 → ``None``。
+    """
+    import numpy as np
+
+    array = np.asarray(image.convert("RGB"))
+    ink = array.min(axis=2) < threshold
+    ys, xs = np.nonzero(ink)
+    if len(xs) == 0:
+        return None
+    return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+
+def _text_landing_deviation(page, source, element_id: str, landing) -> dict:
+    """量「落点 vs 文字实际区域中心」的偏差（工单 M28 AC 2）。
+
+    量两遍：
+
+    1. **页面自己报的**可见文本区域（``Range.getClientRects`` 那一层）——
+       换算到物理表面空间后与落点比；
+    2. **从画面量**的：把元素那块画面截下来，找「有墨的像素」的包围盒
+       —— 这是**独立**的一条核对（不采信 DOM 的几何读数）。
+    """
+    viewport = source.viewport()
+    css_text = source._css_text_rects.get(element_id)
+    css_box = source._css_rects.get(element_id)
+    report: dict = {
+        "scale": viewport.scale,
+        "origin": viewport.origin_physical,
+        "css_text_rect": css_text,
+        "css_box_rect": css_box,
+    }
+    if css_text is None:
+        report["error"] = "没有可见文本的区域（判不了）"
+        return report
+    text_center_css = (css_text[0] + css_text[2] / 2.0, css_text[1] + css_text[3] / 2.0)
+    text_center_physical = (
+        viewport.origin_physical[0] + text_center_css[0] * viewport.scale,
+        viewport.origin_physical[1] + text_center_css[1] * viewport.scale,
+    )
+    report["text_center_physical"] = text_center_physical
+    report["deviation_page_reported"] = (
+        abs(landing[0] - text_center_physical[0]),
+        abs(landing[1] - text_center_physical[1]),
+    )
+    if css_box is None:
+        return report
+    # -- 独立的那一遍：从画面量 ------------------------------------------
+    try:
+        import io
+
+        from PIL import Image
+
+        scroll = page.evaluate("() => [window.scrollX, window.scrollY]")
+        clip = {
+            "x": css_box[0] + float(scroll[0]),
+            "y": css_box[1] + float(scroll[1]),
+            "width": css_box[2],
+            "height": css_box[3],
+        }
+        shot = page.screenshot(clip=clip)
+        image = Image.open(io.BytesIO(shot))
+        ink = _ink_bbox(image)
+        if ink is None:
+            report["error"] = "截下来的画面里没有墨迹（量不到文字）"
+            return report
+        pixels_per_css = image.width / css_box[2] if css_box[2] else 1.0
+        ink_center_css = (
+            css_box[0] + (ink[0] + ink[2]) / 2.0 / pixels_per_css,
+            css_box[1] + (ink[1] + ink[3]) / 2.0 / pixels_per_css,
+        )
+        ink_center_physical = (
+            viewport.origin_physical[0] + ink_center_css[0] * viewport.scale,
+            viewport.origin_physical[1] + ink_center_css[1] * viewport.scale,
+        )
+        report["ink_bbox_pixels"] = ink
+        report["pixels_per_css"] = pixels_per_css
+        report["ink_bbox_css"] = (
+            ink[0] / pixels_per_css,
+            ink[1] / pixels_per_css,
+            ink[2] / pixels_per_css,
+            ink[3] / pixels_per_css,
+        )
+        report["ink_center_physical"] = ink_center_physical
+        report["deviation_from_picture"] = (
+            abs(landing[0] - ink_center_physical[0]),
+            abs(landing[1] - ink_center_physical[1]),
+        )
+    except Exception as exc:  # noqa: BLE001 —— 量不到就如实说量不到
+        report["error"] = f"画面核对失败：{type(exc).__name__}: {exc}"
+    return report
 
 
 def main() -> None:
@@ -82,6 +181,34 @@ def _run() -> None:
         page.wait_for_timeout(300)
         status = page.inner_text("#status")
         print(f"[AC1] 浏览器自己的输入通道点击={clicked} 页面状态={status!r}")
+
+        # ---- AC 2（工单 M28）：落点与文字实际区域中心的偏差 ----------------
+        deviation = _text_landing_deviation(
+            page, source, result.selected.element_id, result.landing_point
+        )
+        print(f"[AC2] 落点={result.landing_point}｜比例={deviation.get('scale')} "
+              f"｜原点={deviation.get('origin')}")
+        print(f"[AC2] 可见文本区域(CSS)={deviation.get('css_text_rect')} "
+              f"｜元素盒子(CSS)={deviation.get('css_box_rect')}")
+        print(f"[AC2] 文字实际区域中心(物理)={deviation.get('text_center_physical')} "
+              f"｜偏差={deviation.get('deviation_page_reported')} 物理像素")
+        print(f"[AC2] 从画面量的墨迹包围盒(截图像素)={deviation.get('ink_bbox_pixels')} "
+              f"｜(CSS 像素)={deviation.get('ink_bbox_css')} "
+              f"｜墨迹中心(物理)={deviation.get('ink_center_physical')} "
+              f"｜偏差={deviation.get('deviation_from_picture')} 物理像素")
+        if deviation.get("error"):
+            print(f"[AC2] 画面核对：{deviation['error']}")
+
+        # ---- AC 5（工单 M28）：文本度量拿不到 → 判不了（不回落）------------
+        # 夹具里的输入框「姓名」：可访问性名来自 **placeholder**，它**不是文本节点**
+        # → 可见文本的实际区域量不出来 → 判不了（不许落元素框中心）。
+        undecidable = channel.locate(
+            LocateRequest(target_description="姓名", anchor=anchor)
+        )
+        print(f"[AC5] 「姓名」错误码={undecidable.error_code} "
+              f"失败类型={undecidable.failure_type} "
+              f"落点={undecidable.landing_point} "
+              f"原因={undecidable.error_message}")
 
         # ---- 落点精度交叉核对（浏览器通道 vs UIA 树的真值）--------------
         from minicode.action.ports import WindowAnchor as WA

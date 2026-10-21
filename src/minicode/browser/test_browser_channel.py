@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from minicode.action.errors import ErrorCode
 from minicode.action.executor import ActionExecutor
@@ -17,9 +18,11 @@ from minicode.action.protocol import ActionKind
 from minicode.action.seam import ActionExecutionSeam, SeamRequest
 from minicode.browser.capability import BrowserCapabilityTable
 from minicode.browser.channel import BrowserChannel
-from minicode.browser.elements import BrowserElement
+from minicode.browser.elements import BrowserElement, TextMeasurement
 from minicode.browser.fakes import FakeBrowserInput, FakePageProbe, FakePageStructure
+from minicode.browser.geometry import PageViewport
 from minicode.browser.ports import PageSnapshot
+from minicode.browser.textmetrics import measure_visible_text
 from minicode.browser.typing import BrowserTyping
 from minicode.capability import Availability
 from minicode.uia.capability import CapabilityTable
@@ -38,7 +41,17 @@ def _element(name: str = "提交订单", **kwargs) -> BrowserElement:
         "element_id": "s1#0",
     }
     payload.update(kwargs)
-    return BrowserElement(**payload)
+    element = BrowserElement(**payload)
+    if "text" not in kwargs:
+        # 默认：可见文本铺满整个控件框（文本区域 = 控件框）。
+        # 真实页面里两者**不一样**（扁平 DOM 的 div 是整行宽、文字只有几个字）。
+        element = replace(element, text=TextMeasurement(rect=element.rect))
+    return element
+
+
+def _text(rect=None, reason: str = "") -> TextMeasurement:
+    """一次**文本度量**的结果（``rect`` 为 ``None`` = 判不了）。"""
+    return TextMeasurement(rect=rect, reason=reason)
 
 
 def _snapshot(*elements: BrowserElement, **kwargs) -> PageSnapshot:
@@ -79,12 +92,22 @@ class StructureLocateTest(unittest.TestCase):
         self.assertEqual(result.selected.name, "提交订单")
         self.assertEqual(result.selected.control_type, "button")
 
-    def test_the_landing_point_is_the_element_rect_center_in_physical_space(self):
-        channel = _channel([_snapshot(_element(rect=(300, 200, 400, 240)))])
+    def test_the_landing_point_is_the_visible_text_box_center_in_physical_space(self):
+        """工单 M28：落点取**可见文本的实际包围盒**的中心。"""
+        channel = _channel(
+            [
+                _snapshot(
+                    _element(
+                        rect=(300, 200, 400, 240),
+                        text=_text((310, 210, 350, 230)),
+                    )
+                )
+            ]
+        )
         result = channel.locate(
             LocateRequest(target_description="提交订单", anchor=_ANCHOR)
         )
-        self.assertEqual(result.landing_point, (350, 220))
+        self.assertEqual(result.landing_point, (330, 220))
 
     def test_the_basis_is_the_page_structure_not_a_picture(self):
         """定位依据是结构快照里**有**这个元素 —— 没有就是没有（覆盖失败）。"""
@@ -103,6 +126,137 @@ class StructureLocateTest(unittest.TestCase):
             LocateRequest(target_description="提交订单", anchor=_ANCHOR)
         )
         self.assertEqual(result.model_calls, 0)
+
+
+class LandingOnVisibleTextTest(unittest.TestCase):
+    """工单 M28：落点取**可见文本的实际区域**，不是元素矩形中心。
+
+    * 元素**没有**可见文本（文本被裁 / 字体未加载 / 压根没有文本）→
+      **判不了**，并记下原因；
+    * **不许**静默回落到元素矩形中心。
+    """
+
+    def _locate(self, element: BrowserElement):
+        channel = _channel([_snapshot(element)])
+        return channel.locate(
+            LocateRequest(target_description="提交订单", anchor=_ANCHOR)
+        )
+
+    def test_the_landing_point_is_the_text_box_center_not_the_element_rect_center(self):
+        """扁平 DOM 上元素框是整行宽、文字只有几个字 → 落点必须落在文字上。"""
+        result = self._locate(
+            _element(rect=(300, 200, 400, 240), text=_text((310, 210, 350, 230)))
+        )
+        self.assertIsNone(result.error_code)
+        self.assertEqual(result.landing_point, (330, 220))
+        # 元素矩形的中心是 (350, 220) —— **不是**落点。
+        self.assertNotEqual(result.landing_point, (350, 220))
+
+    def test_an_element_without_visible_text_is_undecidable(self):
+        result = self._locate(
+            _element(text=_text(None, "元素没有可见文本"))
+        )
+        self.assertIsNotNone(result.error_code)
+        self.assertIsNone(result.landing_point)
+        # 候选在那儿，只是定不下落点 → **选择失败**（禁止切视觉）。
+        self.assertEqual(result.failure_type, "selection")
+        self.assertFalse(result.allows_visual_fallback)
+
+    def test_the_reason_is_recorded(self):
+        result = self._locate(
+            _element(text=_text(None, "可见文本被裁掉了（可见部分为空）"))
+        )
+        self.assertIn("可见文本被裁掉了", result.error_message)
+        self.assertIn("判不了", result.error_message)
+
+    def test_it_does_not_fall_back_to_the_element_rect_center(self):
+        """判不了时**不许**拿元素矩形中心凑一个落点。"""
+        result = self._locate(_element(text=_text(None, "元素没有可见文本")))
+        self.assertIsNone(result.landing_point)
+        self.assertNotEqual(result.landing_point, (350, 220))
+
+    def test_the_error_code_is_one_of_the_existing_ones(self):
+        """不新增错误码（动作协议 v1 的错误码集合不变）。"""
+        result = self._locate(_element(text=_text(None, "元素没有可见文本")))
+        self.assertEqual(result.error_code, ErrorCode.INVALID_GEOMETRY)
+
+    def test_the_landing_point_comes_from_the_second_read(self):
+        """重取快照后再定位 → 落点取**新快照**里的文本区域。"""
+        channel = _channel(
+            [
+                _snapshot(
+                    _element(
+                        element_id="s1#0",
+                        rect=(300, 200, 400, 240),
+                        text=_text((310, 210, 350, 230)),
+                    )
+                ),
+                _snapshot(
+                    _element(
+                        element_id="s2#0",
+                        rect=(320, 220, 420, 260),
+                        text=_text((330, 230, 370, 250)),
+                    )
+                ),
+            ]
+        )
+        result = channel.locate(
+            LocateRequest(target_description="提交订单", anchor=_ANCHOR)
+        )
+        self.assertEqual(result.landing_point, (350, 240))
+
+
+class TextMeasurementTest(unittest.TestCase):
+    """文本度量这一层：CDP 的读数 → **物理表面空间**的可见文本区域。"""
+
+    _VIEWPORT = PageViewport(origin_physical=(100, 200), scale=1.5, css_size=(1280, 800))
+
+    def test_the_css_rect_is_converted_to_the_physical_surface_space(self):
+        measurement = measure_visible_text(
+            {"status": "ok", "text": {"x": 10, "y": 20, "w": 40, "h": 10}},
+            self._VIEWPORT,
+        )
+        self.assertTrue(measurement.ok)
+        self.assertEqual(measurement.rect, (115, 230, 175, 245))
+
+    def test_no_text_is_undecidable_with_a_reason(self):
+        measurement = measure_visible_text({"status": "no-text"}, self._VIEWPORT)
+        self.assertFalse(measurement.ok)
+        self.assertIsNone(measurement.rect)
+        self.assertIn("可见文本", measurement.reason)
+
+    def test_a_clipped_text_is_undecidable_with_a_reason(self):
+        measurement = measure_visible_text({"status": "clipped"}, self._VIEWPORT)
+        self.assertFalse(measurement.ok)
+        self.assertIn("裁", measurement.reason)
+
+    def test_an_unloaded_font_is_undecidable_with_a_reason(self):
+        measurement = measure_visible_text({"status": "font-loading"}, self._VIEWPORT)
+        self.assertFalse(measurement.ok)
+        self.assertIn("字体", measurement.reason)
+
+    def test_the_desktop_channel_does_not_use_this_layer(self):
+        """AC 3：文本度量是**浏览器通道独有**的一层 —— 桌面通道的落点仍取控件框中心。"""
+        from minicode.uia.capability import CapabilityTable
+        from minicode.uia.channel import UiaChannel
+        from minicode.uia.elements import UiaElement
+        from minicode.uia.fakes import FakeCapabilityProbe, FakeUiaQueryPort, ScriptedRead
+
+        table = CapabilityTable(FakeCapabilityProbe(), sleeper=lambda seconds: None)
+        channel = UiaChannel(
+            query=FakeUiaQueryPort(
+                [
+                    ScriptedRead(
+                        elements=(UiaElement(name="提交订单", rect=(300, 200, 400, 240)),)
+                    )
+                ]
+            ),
+            capability=table,
+        )
+        result = channel.locate(
+            LocateRequest(target_description="提交订单", anchor=_ANCHOR)
+        )
+        self.assertEqual(result.landing_point, (350, 220))
 
 
 class SameSemanticsAsDesktopTest(unittest.TestCase):

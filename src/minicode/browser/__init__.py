@@ -7,6 +7,8 @@
 
 * :mod:`minicode.browser.geometry` —— **页面坐标 → 物理表面空间**的换算（只有一处）；
 * :mod:`minicode.browser.elements` —— 页面元素 → **控件候选**（两条通道共用的那一种）；
+* :mod:`minicode.browser.textmetrics` —— **文本度量**这一层（可见文本的实际区域；
+  **浏览器通道独有**，工单 M28）；
 * :mod:`minicode.browser.ports` —— 页面结构快照 / 浏览器自己的输入通道；
 * :mod:`minicode.browser.channel` —— 通道本体（定位 → 重取快照再定位 → 落点）；
 * :mod:`minicode.browser.capability` —— 能力表（按「应用 + 版本」，按实测填）；
@@ -23,9 +25,10 @@ from .capability import (
     PageProbePort,
 )
 from .channel import CHANNEL_NAME, QUERY_SCOPE_PAGE_STRUCTURE, BrowserChannel
-from .elements import BrowserElement, element_identity, to_candidate
+from .elements import BrowserElement, TextMeasurement, element_identity, to_candidate
 from .geometry import PageViewport, css_rect_to_physical, viewport_from_window
 from .ports import BrowserInputPort, PageSnapshot, PageStructurePort
+from .textmetrics import measure_visible_text
 from .typing import BrowserTyping
 
 __all__ = [
@@ -42,8 +45,10 @@ __all__ = [
     "PageStructurePort",
     "PageViewport",
     "QUERY_SCOPE_PAGE_STRUCTURE",
+    "TextMeasurement",
     "css_rect_to_physical",
     "element_identity",
+    "measure_visible_text",
     "to_candidate",
     "viewport_from_window",
 ]
