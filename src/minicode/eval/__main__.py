@@ -223,7 +223,7 @@ def main(argv=None) -> int:
 
     comparison = compare_arms(on_demand, always, coarse_only=coarse_only)
     crop_size = _crop_size()
-    #: **平均模型调用数/目标**（验收线「≤ 1.5」判的就是这个数）。
+    #: **平均模型调用数/目标**（两条验收线判的都是这个数）。
     #:
     #: ⚠️ **口径只有这一处**：逐条累加**那一臂**的 ``model_calls`` ÷ 样本数。
     #: 报告里另有一个 ``model_calls.sent`` —— **那是另一个口径**
@@ -287,12 +287,12 @@ def main(argv=None) -> int:
                 "`model_calls_per_target`"
             ),
         },
-        #: **平均模型调用数/目标** —— 验收线「≤ 1.5」**判的就是这一项**。
+        #: **平均模型调用数/目标** —— 两条验收线**判的都是这一项**。
         "model_calls_per_target": {
             "samples": sample_count,
             **{mode: round(value, 4) for mode, value in per_target.items()},
             "note": (
-                "验收线「平均模型调用数/目标 ≤ 1.5」判的是**这一项**"
+                "两条验收线判的都是**这一项**：「平均模型调用数/目标 ≤ 2.05」（本轮方案：同批无条件两段式基线）与「≤ 1.5」（上一轮的线）"
                 "（逐条累加的 `model_calls` ÷ 样本数，每一臂各一个数）。"
                 "⚠️ 与上面 `model_calls.sent` **不是一个口径**，两者不能互相换算"
                 "（`sent` = 三臂合计、去掉应答记忆复用后真正发出去的请求数）"
@@ -474,12 +474,14 @@ def _print_summary(report: dict, comparison: dict) -> None:
     print(f"防掩盖：{'通过' if comparison['anti_masking_met'] else '未通过'}")
     gate = comparison["on_demand"]["gate"]
     print(
-        f"=== 门控埋点（与分数同一批样本 N={gate['samples']}）==="
+        f"=== 门控埋点（与分数同一批样本 N={gate['samples']}；"
+        f"**门控已降级为记录器**，不再决定开不开）==="
     )
     print(
         f"记录器这一臂：开启精定位 {gate['refine_enabled']} 次"
         f"｜门控判中 {gate['gate_hits']} 次"
         f"｜**门控关闭率** {1 - gate['hit_rate']:.1%}"
+        f"（⚠️ 门控不再决定开不开 → 这一列只是记录）"
     )
     print(f"命中原因：{gate['reason_distribution']}")
     print(f"判不了的条件：{gate['undecidable_distribution']}")
@@ -494,7 +496,7 @@ def _print_summary(report: dict, comparison: dict) -> None:
     )
     per_target = report["model_calls_per_target"]
     print(
-        "平均模型调用数/目标（验收线「≤ 1.5」判的是这个数）："
+        "平均模型调用数/目标（验收线「≤ 2.05」/「≤ 1.5」判的都是这个数）："
         + "｜".join(
             f"{name} {per_target[name]:.2f}"
             for name in ("on_demand", "always", "coarse_only")

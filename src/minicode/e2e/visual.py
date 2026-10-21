@@ -35,7 +35,10 @@ __all__ = [
     "VisualChannel",
     "PromptCapturingCaller",
     "RecordingSink",
+    "LazyUiaCandidateSource",
+    "MergedCandidateSource",
     "measure_text_tokens",
+    "merged_candidate_source",
     "ocr_candidate_source",
     "reverse_lookup_model_input",
     "reverse_lookup_from_log",
@@ -165,14 +168,76 @@ def ocr_candidate_source(language: str = "zh-Hans-CN") -> Any:
     * 候选框在**物理像素**（帧像素 + 帧原点），落点直接取框中心 → **零换算**；
     * **只读**：OCR 不注入任何输入；
     * ⚠️ **召回是瓶颈**：图标类目标没有文字可匹配（实测评测集上图标召回 0/13），
-      方案原文的「**UIA 控件为主表**」那一半还没接（那是 P1）。
-      → **缺省不接**（见 :class:`VisualChannel` 的 ``candidate_source``）。
+      方案原文的「**UIA 控件为主表**」那一半靠 :func:`merged_candidate_source` 补上
+      （真机实测：UIA 主表 **21/21**、落点误差中位 0.0 px；OCR 附加表 13/21）。
     """
     from minicode.ground.candidates import OcrCandidateSource
     from minicode.verification.ocr_windows import WindowsOcrPort
 
     port = WindowsOcrPort(language)
     return OcrCandidateSource(port.read_words)
+
+
+class LazyUiaCandidateSource:
+    """**UIA 控件**当候选源（UFO² 的「UIA 主表」那一半）——**每次调用现读树**。
+
+    * ``controls_provider`` —— 一个**无参可调用**，返回一批 UIA 控件
+      （名字 + **物理像素**矩形；形状见 :class:`minicode.ground.candidates.UiaControlLike`）；
+    * ⚠️ **UIA 的框不要加任何偏移**：`BoundingRectangle` 已经是物理屏幕坐标；
+    * ⚠️ **无名控件不丢**（给位置型占位描述）—— 静默丢弃就是「图标召回 0」的成因；
+    * 读树失败 → **返回空列表**（不抛）→ 上层据此走「源报错」那条（**判不了 ≠ 没有候选**）。
+    """
+
+    def __init__(self, controls_provider: Any, *, max_candidates: int = 20):
+        self._provider = controls_provider
+        self.max_candidates = int(max_candidates)
+
+    def candidates(self, frame: Any, description: str) -> list[Any]:
+        from minicode.ground.candidates import UiaCandidateSource
+
+        try:
+            controls = list(self._provider())
+        except Exception:
+            return []
+        return UiaCandidateSource(
+            controls, max_candidates=self.max_candidates
+        ).candidates(frame, description)
+
+
+class MergedCandidateSource:
+    """**UIA 主表 + OCR 附加表**的合并源（UFO² 的 IoU 0.1 规则）。
+
+    * **主表（UIA）全留**；附加表（OCR）中与**任一**主表项 IoU **> 0.1** 的**丢弃**；
+    * **比较一律在物理像素空间**（红线①）；
+    * ⚠️ **方向不能反**：UIA 框与 OCR 框重叠时**保留 UIA 框**。
+    """
+
+    def __init__(self, main: Any, additional: Any):
+        self._main = main
+        self._additional = additional
+
+    def candidates(self, frame: Any, description: str) -> list[Any]:
+        from minicode.ground.candidates import merge_candidate_sources
+
+        try:
+            main_rows = list(self._main.candidates(frame, description))
+        except Exception:
+            main_rows = []
+        try:
+            additional_rows = list(self._additional.candidates(frame, description))
+        except Exception:
+            additional_rows = []
+        return merge_candidate_sources(main_rows, additional_rows)
+
+
+def merged_candidate_source(
+    controls_provider: Any, *, language: str = "zh-Hans-CN"
+) -> Any:
+    """生产接线用的**合并候选源**（UIA 主表 + OCR 附加表）。"""
+    return MergedCandidateSource(
+        LazyUiaCandidateSource(controls_provider),
+        ocr_candidate_source(language),
+    )
 
 
 class VisualChannel:

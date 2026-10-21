@@ -63,7 +63,7 @@ python scripts/desktop_lock.py release --owner human   # 人类用完：释放
 
 minicode = Windows 桌面 computer-use agent。架构定稿见 `docs/research/01-架构决策备忘.md`，本机实测事实见 `docs/01-现状.md`，现状总览见 `docs/00-现状.md`。
 
-- 坐标契约：模型端 0~1000 归一化，工程端全程物理像素；**视觉通道内**最终落点只在 crop 上产生（**例外**：门控未命中时直接取整屏粗定位点，见 `docs/00-现状.md` §3），**UIA 通道的落点直接取控件框的物理像素中心**（`docs/00-现状.md` §3）。
+- 坐标契约：模型端 0~1000 归一化，工程端全程物理像素；**视觉通道内**最终落点默认在 crop 上产生（**例外**：精定位失败时**回落**到整屏粗定位点，见 `docs/00-现状.md` §3），**UIA 通道的落点直接取控件框的物理像素中心**（`docs/00-现状.md` §3）。**crop 精定位默认无条件执行**；门控已于 2026-10-22 降级为**记录器 + 回落判据**（不再决定开不开）。
 - **评测脚本的坐标口径**：内部一律原图像素，出口按目标脚本转一次；口径表与出处见 `docs/adr/0008-eval-script-coordinate-formats.md`（转换的唯一一处是 `src/minicode/eval/formats.py`）。
 - 三个原型已验证、冻结不改：`src/minicode/coord`、`src/minicode/exec`、`src/minicode/verify`。
 - 业务代码在 `src/minicode/action`（M0 新增）：动作协议 v1、动作执行缝、动作记录。

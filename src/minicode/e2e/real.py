@@ -38,9 +38,31 @@ from minicode.reflection.stop import STOP_EXPECTATION_MET, STOP_REASON_TEXT, Sto
 
 from .runner import StepOutcome
 from .tasks import Step
-from .visual import VisualChannel
+from .visual import VisualChannel, merged_candidate_source
 
 __all__ = ["WindowsDesktopExecutor", "ChromeExecutor"]
+
+#: **候选源要枚举的 UIA 控件类型**（UIA 主表）。
+#:
+#: ⚠️ 少枚举一类 = **那一类控件压根不进候选** —— 真机上无名图标控件
+#: 就在 ``Custom`` / ``Image`` 里（微软官方文档：可点击的图片应当实现
+#: Invoke pattern 并使用 Button 类控件类型；纯装饰性图片可以没有名字）。
+#: ⚠️ **与 `ground/numbered_bench.py` 的那份是同一份口径**（测量台那边是另一处列举）。
+_CANDIDATE_CONTROL_TYPES = (
+    "Text",
+    "Button",
+    "Hyperlink",
+    "Edit",
+    "ListItem",
+    "Custom",
+    "Image",
+    "SplitButton",
+    "ToolBar",
+    "CheckBox",
+    "MenuItem",
+    "TabItem",
+    "Thumb",
+)
 
 #: 端到端评测的**步数上限**（停止条件的轮次上限；**工程阈值·未验证**）。
 #: 第一波的票最多 3 步 —— 这个上限只防「跑飞」，正常跑不到。
@@ -199,9 +221,18 @@ class WindowsDesktopExecutor:
             gate_mode=gate_mode,
             bypass_admission=bypass_admission,
             model_input=model_input,
-            #: **候选源**（B-1 的「模型选编号」分支）；``None`` = 那条分支不存在。
-            candidate_source=candidate_source,
+            #: **候选源**（B-1 的「模型选编号」分支）。
+            #: ⚠️ **缺省是「UIA 主表 + OCR 附加表」的合并源**（UFO² 的 IoU 0.1 规则）——
+            #: UIA 主表解决**图标**（OCR 原理上召不回没有文字的图标），OCR 附加表补
+            #: UIA 树覆盖不到的文字。给了别的源就按给的来（评测台要单独量某一半时用）。
+            candidate_source=(
+                candidate_source
+                if candidate_source is not None
+                else merged_candidate_source(self._uia_controls)
+            ),
         )
+        #: **当前这一步的窗口**（候选源要按窗口读树 —— 控件框是**那个窗口**的）。
+        self._current_window = ""
         #: **停止条件 + 卡死检测器 + 熔断**（工单 M12）：端到端评测的步循环
         #: 也归它管（撞到停止条件就停下来，并交出**交接产物**）。
         self._policy = StopPolicy(max_rounds=MAX_STEPS_BEFORE_STOP)
@@ -264,6 +295,8 @@ class WindowsDesktopExecutor:
 
     def _execute(self, step: Step) -> StepOutcome:
         wiring = self._ensure_wiring(step.window)
+        #: **当前这一步的窗口**（候选源按它读树；控件框是那个窗口的）。
+        self._current_window = step.window
         truth, truth_source = self._resolve_truth(step, wiring)
         if step.use_previous_landing:
             return self._execute_at_previous_landing(step, wiring, truth, truth_source)
@@ -578,6 +611,32 @@ class WindowsDesktopExecutor:
         if not hasattr(self, "_port"):
             self._port = WindowsUiaQueryPort()
         return self._port
+
+    def _uia_controls(self) -> list[Any]:
+        """**当前窗口**的 UIA 控件（名字 + **物理像素**矩形）—— UIA 候选源的主表。
+
+        * ⚠️ **无名控件也要**（给位置型占位描述）—— 静默丢弃就是「图标召回 0」的成因；
+        * ⚠️ **UIA 的框不加任何偏移**：`BoundingRectangle` 已经是物理屏幕坐标；
+        * 读不到（窗口没接线 / 树读失败）→ **返回空列表**，上层据此走「源报错」那条。
+        """
+        from minicode.uia.ports import UiaFindRequest
+
+        window = self._current_window or "settings"
+        try:
+            wiring = self._ensure_wiring(window)
+        except Exception:
+            return []
+        port = self._query_port()
+        controls: list[Any] = []
+        for control_type in _CANDIDATE_CONTROL_TYPES:
+            try:
+                result = port.find(
+                    UiaFindRequest(anchor=wiring.anchor, control_type=control_type)
+                )
+            except Exception:
+                continue
+            controls.extend(result.elements)
+        return controls
 
     def _ensure_wiring(self, window: str) -> _Wiring:
         if window in self._wiring:
