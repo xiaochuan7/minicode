@@ -30,10 +30,21 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+#: **模型输入尺寸的口径**（工单 A-2）—— 生产（``e2e/visual.py``）与评测**共用一处**：
+#: 「声明尺寸怎么算」+「token 数怎么反查服务端实际尺寸」。
+#: ⚠️ 反查的实现住在 :mod:`minicode.calib.calibrate`（calib 包，唯一一处）；
+#: 这里只调用它，**不抄第二份**。
+from minicode.e2e.visual import (
+    PromptCapturingCaller,
+    RecordingSink,
+    measure_text_tokens,
+    reverse_lookup_model_input,
+)
 from minicode.ground.gate import default_gate_params
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.effort import Effort
+from minicode.model.image import model_input_size_for
 from minicode.model.request_log import JsonlRequestLog
 
 from .formats import SCREENSPOT_PRO, self_check_hit_rate
@@ -52,13 +63,6 @@ from .sspro import (
 )
 
 __all__ = ["main"]
-
-#: **候选的「模型输入宽度」**（物理像素）—— 用来量出服务端的缩放规则。
-#:
-#: 取值来源：**2048 宽**是本机实测的服务端上限（MiniMax 端点把本机 2560 宽的图
-#: 缩到约 2048 宽，见 `docs/00-现状.md`）；其余是常见上限值，用来兜住别的档位。
-#: 逐个试，取**误差最小**的那一个 —— **量出来的，不是猜的**。
-MODEL_INPUT_CANDIDATE_WIDTHS = (2048, 1600, 1280, 1024)
 
 
 def _crop_size() -> tuple[int, int]:
@@ -159,7 +163,10 @@ def main(argv=None) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     config = load_config()
-    client = ModelClient(config, _LockedSink(JsonlRequestLog(out_dir / "model-requests.jsonl")))
+    #: 请求日志：落盘 + **记住最后一条**（反查服务端实际尺寸要用）。
+    sink = RecordingSink(_LockedSink(JsonlRequestLog(out_dir / "model-requests.jsonl")))
+    #: 模型调用端口：**记住最后一次用的提示词**（反查时要逐字相同）。
+    client = PromptCapturingCaller(ModelClient(config, sink))
 
     # -- 标定：每个图像尺寸各标一次（真调模型）--------------------------
     sizes = sorted({sample.image_size for sample in chosen})
@@ -167,9 +174,10 @@ def main(argv=None) -> int:
     model_input_by_size: dict[tuple[int, int], tuple[int, int]] = {}
     calibrations: list[dict[str, object]] = []
     for width, height in sizes:
-        record = _calibrate(client, config.model, width, height, args)
+        record = _calibrate(client, sink, config.model, width, height, args)
         scale_by_size[(width, height)] = record["scale"]
-        model_input_by_size[(width, height)] = record["model_input_size"]
+        #: **声明的模型输入尺寸** = 坐标换算的分母（两臂共用同一个）。
+        model_input_by_size[(width, height)] = tuple(record["declared_model_input_size"])
         calibrations.append(record)
 
     # -- 跑两臂 ----------------------------------------------------------
@@ -274,63 +282,57 @@ def main(argv=None) -> int:
     return 0
 
 
-def _calibrate(client, model_id: str, width: int, height: int, args) -> dict[str, object]:
+def _calibrate(
+    client, sink, model_id: str, width: int, height: int, args
+) -> dict[str, object]:
     """给一个图像尺寸跑一次标定（真调模型）。
 
-    「模型实际看到的那张图」的尺寸**量出来**：先用探针尺寸声明一次，
-    若判出的标度是**绝对像素**那一档，就把常见的缩放宽度挨个试一遍，
-    取误差最小的那一个 —— **量出来的，不是猜的**。
+    「模型实际看到的那张图」的尺寸**量出来**，**不猜**（工单 A-2）：
+
+    1. **声明** —— 与生产**同一条口径**：
+       :func:`minicode.model.image.model_input_size_for`（**声明尺寸只有一个来源**）。
+       评测里每张图尺寸不同（ScreenSpot-Pro 的图有各种尺寸），
+       所以**按每张图的尺寸算**，不是一个固定值。
+    2. **反查** —— 用请求日志里的 **token 数**反查服务端实际看到的尺寸
+       （28 px patch 规则，**【二手】未在本机端点验证**）：
+       图像那部分的 token 数 = 服务端报的总输入 token − 纯文字那部分
+       （纯文字那部分**量出来**：同一条提示词不带图再发一次）。
+       **反查不出就如实记 ``unknown``，不许填一个猜的数。**
     """
     from minicode.calib.calibrate import CalibrationProbe
     from minicode.calib.probe import default_probe_spec
 
-    def probe_at(model_input: tuple[int, int]):
-        return CalibrationProbe(
-            client,
-            spec=default_probe_spec(width, height),
-            model_input_size=model_input,
-            call_path="image",
-            model_id=model_id,
-            effort=args.effort,
-            max_tokens=args.max_tokens,
-        ).run()
-
-    outcome = probe_at((width, height))
+    #: **声明的模型输入尺寸**（按**这张图**的尺寸算）。
+    declared = model_input_size_for(width, height)
+    outcome = CalibrationProbe(
+        client,
+        spec=default_probe_spec(width, height),
+        model_input_size=declared,
+        call_path="image",
+        model_id=model_id,
+        effort=args.effort,
+        max_tokens=args.max_tokens,
+    ).run()
     best = outcome.candidate(outcome.detected_scale)
-    model_input = (width, height)
     scale = outcome.detected_scale
-    tried: list[list[int]] = [[width, height]]
-    if outcome.detected_scale.value.startswith("absolute"):
-        # 候选宽度（**取值来源**：服务端把大图缩到 2048 宽 —— 本机实测；
-        # 其余是常见的上限值，逐个试，取**误差最小**的那一个）。
-        # ⚠️ 这张表对**超宽图**不够（3840×1080 那一档就判错了）—— 已知缺陷，
-        # 见 `docs/reviews/M8.md` §3.4。
-        for candidate_width in MODEL_INPUT_CANDIDATE_WIDTHS:
-            if candidate_width >= width:
-                continue
-            candidate_height = round(height * candidate_width / width)
-            trial = probe_at((candidate_width, candidate_height))
-            trial_best = trial.candidate(trial.detected_scale)
-            tried.append([candidate_width, candidate_height])
-            if trial_best.max_error_px < best.max_error_px:
-                best = trial_best
-                outcome = trial
-                model_input = (candidate_width, candidate_height)
-                scale = trial.detected_scale
+    #: **反查服务端实际看到的那张图**（反查不出 → ``None`` → 报告里写 unknown）。
+    server_input = _reverse_lookup(client, sink, declared, args)
     print(
         f"标定 {width}×{height}：标度 {scale.value}（判定 {outcome.scale_verdict}）"
-        f"｜模型输入 {model_input[0]}×{model_input[1]}"
+        f"｜声明的模型输入 {declared[0]}×{declared[1]}"
+        f"｜服务端实际 "
+        f"{f'{server_input[0]}×{server_input[1]}' if server_input else 'unknown'}"
         f"｜最大误差 {best.max_error_px:.2f} px｜标定成功 {outcome.calibration_ok}"
     )
     # 逐目标的误差（**模型输入空间**的像素）：看它是系统偏差还是随机误差。
     truth = {name: (x, y) for name, x, y in outcome.targets}
-    factor = model_input[0] / width if width else 1.0
+    factor = declared[0] / width if width else 1.0
     point_errors = []
     for name, raw_x, raw_y in outcome.raw_points:
         if name not in truth:
             continue
         expected_x = truth[name][0] * factor
-        expected_y = truth[name][1] * (model_input[1] / height if height else 1.0)
+        expected_y = truth[name][1] * (declared[1] / height if height else 1.0)
         point_errors.append(
             {
                 "target": name,
@@ -344,14 +346,43 @@ def _calibrate(client, model_id: str, width: int, height: int, args) -> dict[str
         "scale": scale,
         "scale_verdict": outcome.scale_verdict,
         "landing_equivalence": outcome.landing_equivalence,
-        "model_input_size": list(model_input),
+        #: **声明尺寸**（我们自己缩到一半再送模型的那张图 —— 坐标换算的分母）。
+        "declared_model_input_size": list(declared),
+        #: **反查出来的服务端实际尺寸**（反查不出 → ``"unknown"``，不填猜的数）。
+        "server_model_input_size": (
+            list(server_input) if server_input is not None else "unknown"
+        ),
         "max_error_px": round(best.max_error_px, 3),
         "calibration_ok": outcome.calibration_ok,
-        "model_input_candidates_tried": tried,
         "point_errors_px": point_errors,
         "probe_digest": outcome.probe_digest,
         "probe_size": list(outcome.probe_size),
     }
+
+
+def _reverse_lookup(client, sink, declared: tuple[int, int], args) -> tuple[int, int] | None:
+    """**用 token 数反查**服务端实际看到的那张图（反查不出 → ``None``）。
+
+    * 图像那部分的 token 数 = 服务端报的总输入 token − 纯文字那部分；
+    * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次；
+    * 反查不出（token 数对不上任何尺寸 / 文字那部分量不出来）→ ``None``
+      —— 调用方记 ``unknown``，**不许填一个猜的数**。
+    """
+    record = sink.last
+    prompt = getattr(client, "last_prompt", "")
+    if record is None or not prompt:
+        return None
+    observed = record.total_input_tokens
+    if observed is None:
+        return None
+    text_tokens = measure_text_tokens(
+        client, prompt, effort=args.effort, max_tokens=args.max_tokens
+    )
+    if text_tokens is None:
+        return None
+    return reverse_lookup_model_input(
+        observed, text_tokens, declared[0] / declared[1] if declared[1] else 0.0
+    )
 
 
 def _print_summary(report: dict, comparison: dict) -> None:

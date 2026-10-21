@@ -113,7 +113,7 @@ class WindowsDesktopExecutor:
         out_dir: str | Path,
         gate_mode: str = "on_demand",
         bypass_admission: bool = False,
-        model_input: tuple[int, int] = (2048, 1280),
+        model_input: tuple[int, int] | None = None,
         truth_overrides: Mapping[str, tuple[int, int]] | None = None,
     ):
         self.out_dir = Path(out_dir)

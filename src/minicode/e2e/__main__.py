@@ -35,7 +35,10 @@ WAVES = {
 }
 
 
-def _parse_size(text: str) -> tuple[int, int]:
+def _parse_size(text: str) -> tuple[int, int] | None:
+    """``"2048x1280"`` → ``(2048, 1280)``；**空串** → ``None``（由标定记录决定）。"""
+    if not text.strip():
+        return None
     parts = text.lower().replace("*", "x").split("x")
     if len(parts) != 2:
         raise argparse.ArgumentTypeError(f"尺寸格式应为 WxH，收到 {text!r}")
@@ -83,8 +86,11 @@ def _parse_args(argv):
     )
     parser.add_argument(
         "--model-input",
-        default="2048x1280",
-        help="声明「模型实际看到的那张整屏图」的尺寸（WxH）—— 量出来的，不是猜的",
+        default="",
+        help=(
+            "声明「模型实际看到的那张整屏图」的尺寸（WxH）—— "
+            "**缺省 = 由标定记录决定**（从量出来的物理表面尺寸算，不手填）"
+        ),
     )
     parser.add_argument(
         "--truth",
