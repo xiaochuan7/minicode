@@ -1,4 +1,4 @@
-"""两级 grounding 的提示词与回答解析（工单 M6）。
+"""两级 grounding 的提示词与回答解析（工单 M6 / B-1 / B-4）。
 
 **提示词里不许出现量纲暗示**（不写「归一化」「0~1000」「分母」这类**答案单位**的说法），
 否则测出来的就不是模型自己的量纲，而是我们告诉它的量纲 —— 而**换算链路的分母
@@ -6,31 +6,51 @@
 （:mod:`minicode.calib.prompt`）也是同一个规矩，因此生产链路与标定链路
 **测的是同一个约定**：模型按自己惯用的坐标系作答。
 
-三个提示词对应三条**不同的契约**：
+⚠️ **但「尺寸声明」是允许且要求的**（A-2）：**声明这张图是 W×H**
+（「这张图是 1280×800」），让「模型发的坐标对应哪一张图」不再是猜的。
+声明的是**图本身的大小**，**不是答案单位** —— 不写「0~1000」「归一化」「分母」。
+（标定探针那边是同一个写法，见 :func:`minicode.calib.prompt.image_prompt`。）
+
+四个提示词对应四条**不同的契约**：
 
 * :func:`coarse_prompt` —— 整屏粗定位（L0）：模型报**整屏**位置；
 * :func:`refine_prompt` —— crop 内精定位（L1）：模型报**这张图里**的位置，
   **不许提裁剪原点**（提了模型就会改报整屏坐标，那是另一套契约）；
+* :func:`whole_screen_prompt` —— 整屏第二遍（带上一次失败的原因）；
+* :func:`numbered_candidates_prompt` —— **编号清单**（B-1）：模型**只答编号**，
+  **不产坐标**；
 * :func:`zoom_prompt` —— 放大动作：模型报**整屏**位置（回源重抓的物理画面）。
 
 回答解析只认 JSON（``{"x": .., "y": ..}`` 或 ``[x, y]``）与一行 ``x: .., y: ..``；
 取不出就**显式失败**（不猜、不按数值大小猜量纲）。
+
+**编号的回答解析只有一份**：:func:`parse_chosen_numbers` 直接复用
+:func:`minicode.uia.pointer.parse_chosen_numbers`（UIA 通道已经在用同一个读法）。
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
+from minicode.uia.pointer import parse_chosen_numbers
+from minicode.verification.ocr import normalize_ocr_text
+
 __all__ = [
+    "CandidateLine",
     "GroundingParseError",
     "coarse_prompt",
+    "normalize_target",
+    "numbered_candidates_prompt",
+    "parse_chosen_numbers",
+    "parse_point",
     "refine_prompt",
     "second_opinion_prompt",
     "whole_screen_prompt",
     "zoom_prompt",
-    "parse_point",
 ]
 
 
@@ -38,26 +58,51 @@ class GroundingParseError(Exception):
     """模型回答里取不出坐标。"""
 
 
+@dataclass(frozen=True)
+class CandidateLine:
+    """**编号清单**里的一项（位置是「送模型那张图」的像素）。
+
+    ⚠️ 这里的框是**显示用**的（模型看到的那张图里的位置）；
+    **落点不取它** —— 落点取候选框的**物理中心**（零换算，见
+    :mod:`minicode.ground.candidates`）。
+    """
+
+    #: 编号（1 起）—— **模型只答这个编号**。
+    number: int
+    #: 命中的文字（界面上的原文）。
+    text: str
+    #: 框 ``(left, top, right, bottom)``（送模型那张图的像素）。
+    box: tuple[int, int, int, int]
+
+
 def _answer_format() -> str:
     return '用 JSON 回答，格式：{"x": 数字, "y": 数字}'
 
 
-def coarse_prompt(target_description: str) -> str:
-    """整屏粗定位的提示词（工单 M6 的 L0）。
+def _size_line(image_size: tuple[int, int]) -> str:
+    """**尺寸声明**（A-2）：这张图是 W×H。"""
+    return f"这张图是 {int(image_size[0])}×{int(image_size[1])}。"
 
-    **不许提量纲**（不写「0~1000」「归一化」），也不许提别的空间 ——
-    模型报的是**整屏**位置，按它自己惯用的坐标系给。
+
+def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
+    """整屏粗定位的提示词（工单 M6 的 L0 / A-2）。
+
+    * ``image_size`` —— **送模型的那张整屏图**的尺寸（**必填**）。
+      提示词里声明它，模型报的坐标就知道对应哪一张图。
+    * **不许提量纲**（不写「0~1000」「归一化」），也不许提别的空间 ——
+      模型报的是**整屏**位置。
     """
     return (
         "这是一张 Windows 桌面截图。\n"
+        f"{_size_line(image_size)}\n"
         f"请给出界面上名为「{target_description}」的元素【中心】的位置。\n"
         f"{_answer_format()}\n"
-        "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
+        "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
 
-def refine_prompt(target_description: str) -> str:
-    """crop 内精定位的提示词（工单 M6 的 L1）。
+def refine_prompt(target_description: str, image_size: tuple[int, int]) -> str:
+    """crop 内精定位的提示词（工单 M6 的 L1 / A-2）。
 
     模型报的是**这张 crop 图里**的位置（crop 内坐标）；**系统**负责加裁剪原点偏移
     映射回全屏 —— 所以提示词里**不许出现裁剪原点**（出现了模型就会改报整屏坐标，
@@ -68,13 +113,19 @@ def refine_prompt(target_description: str) -> str:
     """
     return (
         "这是一张从 Windows 桌面截图里裁出的小区域（未缩放，1 像素 = 1 屏幕像素）。\n"
+        f"{_size_line(image_size)}\n"
         f"请给出这张图里名为「{target_description}」的元素【中心】的位置。\n"
         f"{_answer_format()}\n"
-        "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
+        "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
 
-def whole_screen_prompt(target_description: str, *, retry_reason: str) -> str:
+def whole_screen_prompt(
+    target_description: str,
+    image_size: tuple[int, int],
+    *,
+    retry_reason: str,
+) -> str:
     """**整屏第二遍**的提示词（工单 M7：粗定位为空 / 越界时开的那一遍）。
 
     它与 :func:`coarse_prompt` **不是同一条请求**：
@@ -89,10 +140,11 @@ def whole_screen_prompt(target_description: str, *, retry_reason: str) -> str:
     """
     return (
         "这是一张 Windows 桌面截图。\n"
+        f"{_size_line(image_size)}\n"
         f"请给出界面上名为「{target_description}」的元素【中心】的位置。\n"
         f"（上一次没能给出可用的位置：{retry_reason}。请再看一遍这张图。）\n"
         f"{_answer_format()}\n"
-        "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
+        "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
 
@@ -102,6 +154,9 @@ def second_opinion_prompt(target_description: str) -> str:
     **不是逐字重发**（逐字重发同一条请求，确定性模型会给出同一个答案 →
     「两次粗定位是否一致」永远判不出）。措辞与粗定位那条不同，
     但**不含任何量纲暗示**（量纲只由标定判定，架构备忘 §2.6 C-04）。
+
+    ⚠️ 它**没有尺寸声明** —— 调用方（:mod:`minicode.eval.sspro`）按原样调用它，
+    改签名会连带改到别的包的调用点。
     """
     return (
         "这是一张桌面软件的界面截图。\n"
@@ -109,6 +164,104 @@ def second_opinion_prompt(target_description: str) -> str:
         f"{_answer_format()}\n"
         "坐标按你惯用的那种坐标系给出即可（回答里不要解释你的坐标范围）。"
     )
+
+
+def numbered_candidates_prompt(
+    description: str,
+    candidates: Sequence[CandidateLine],
+    *,
+    image_size: tuple[int, int] | None = None,
+) -> str:
+    """**编号清单**的提示词（工单 B-1）：模型**只答编号**，不产坐标。
+
+    这与 UIA 通道的消歧是**同一个范式**（模型只负责「选」，不负责「瞄」）：
+    清单列出候选，模型答一个编号，**落点由候选框的物理中心决定** ——
+    模型的坐标误差从此不进落点。
+
+    * ``candidates`` —— 清单（编号 1 起）。每项带文字与它在画面上的位置；
+    * ``image_size`` —— 送模型的那张图的尺寸（给了就声明它，模型才知道
+      那些位置对应哪一张图）。
+    """
+    lines = [
+        "下面是一份界面候选清单。清单里每一行是一个候选项，按行号从 1 开始编号。",
+        "附上的图片是当前屏幕画面；清单里每项后面的矩形是它在画面上的位置。",
+    ]
+    if image_size is not None:
+        lines.append(
+            f"{_size_line(image_size)}"
+            "下面每个矩形的位置都是这张图的像素坐标。"
+        )
+    lines.append(f"目标描述：{description}")
+    lines.append(
+        f"任务：从清单里选出与目标描述对应的那一项，"
+        f"只回答它的行号（1~{len(candidates)} 之间的一个整数）。"
+    )
+    lines.append('只回答一个 JSON 对象，不要任何解释：{"chosen": <行号>}')
+    for item in candidates:
+        left, top, right, bottom = item.box
+        lines.append(
+            f"{item.number}. 「{item.text}」 位于 ({left}, {top}) - ({right}, {bottom})"
+        )
+    return "\n".join(lines)
+
+
+def normalize_target(
+    description: str, screen_names: Sequence[str]
+) -> tuple[str, bool]:
+    """**目标描述规范化**（工单 B-4）：先对齐名字，再定位。
+
+    背景（本机实测，工单 M14 §4.2/§4.6）：工单写「显示」，本机设置里的卡片
+    实际叫「屏幕」→ 树里没有 → 覆盖失败 → 切视觉；而模型按「显示」点到副标题
+    「显示器、亮度、夜间模式…」→ **落点偏 27~30 px**。
+    **那不是坐标精度问题，是描述与界面不一致。**
+
+    规则（**保守**，不发明同义词表）：
+
+    1. **同名** —— 描述就是界面上的名字 → 不改；
+    2. 描述里**已经含有**界面上的名字（原名就一致）→ 不改；
+    3. **近名**（错字级：编辑距离 ≤ 1；名字长（≥5 字）时 ≤ 2），
+       且**只有一个**最优匹配 → 换成界面上的原名；
+    4. 找不到 / 分不清 → **如实说不改**。
+
+    ⚠️ **红线④**：``screen_names`` 必须是**已脱敏**的名字
+    （脱敏是调用方的活儿，见 :mod:`minicode.redact`）——
+    本模块不脱敏，也不该收到未脱敏的名字。
+
+    ⚠️ 规则 3 只认**错字级**的近名：「显示」→「屏幕」那种**同义不同名**
+    改不了（那需要一张同义词表 —— 明确不发明）。**找不到就如实说不改。**
+
+    返回 ``(规范化后的描述, 是否发生了替换)``。
+    """
+    target = normalize_ocr_text(description)
+    names = [
+        (name, normalize_ocr_text(name))
+        for name in screen_names
+        if normalize_ocr_text(name)
+    ]
+    if len(target) < 2 or not names:
+        return (description, False)
+    # ① 同名
+    for _name, normalized in names:
+        if normalized == target:
+            return (description, False)
+    # ② 描述里已经含有界面上的名字（原名就一致）
+    for _name, normalized in names:
+        if len(normalized) >= 2 and normalized in target:
+            return (description, False)
+    # ③ 近名（错字级）：唯一的最优匹配 → 换成界面上的原名
+    scored: list[tuple[int, str]] = []
+    for name, normalized in names:
+        limit = 1 if len(normalized) <= 4 else 2
+        distance = _edit_distance(target, normalized)
+        if distance <= limit:
+            scored.append((distance, name))
+    if not scored:
+        return (description, False)
+    scored.sort(key=lambda item: (item[0], len(item[1])))
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        # 分不清 → 不改（**不猜**）
+        return (description, False)
+    return (scored[0][1], True)
 
 
 def zoom_prompt(
@@ -139,6 +292,29 @@ def zoom_prompt(
         "下面所有坐标都按你惯用的那种坐标系给出即可"
         "（回答里不要解释你的坐标范围）。"
     )
+
+
+def _edit_distance(left: str, right: str) -> int:
+    """两个字符串的编辑距离（Levenshtein）。"""
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+    previous = list(range(len(right) + 1))
+    for index, left_char in enumerate(left, start=1):
+        current = [index]
+        for offset, right_char in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[offset - 1] + 1,
+                    previous[offset] + 1,
+                    previous[offset - 1] + (0 if left_char == right_char else 1),
+                )
+            )
+        previous = current
+    return previous[-1]
 
 
 def _json_payload(text: str) -> Any:
