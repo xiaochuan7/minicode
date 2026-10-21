@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .config import ModelConfig
@@ -80,6 +80,12 @@ class ModelReply:
     input_tokens: int | None = None
     output_tokens: int | None = None
     thinking_tokens: int | None = None
+    #: **图像占的输入 token 数**（按 28 px patch 规则对**实际发出的那张图**的估计）。
+    #:
+    #: ⚠️ 这是**估计**，不是服务端报出来的数 —— 服务端若把图缩小过，实际占用会小于它。
+    #: 它与 :attr:`input_tokens` **分开记**，就是为了让「每轮图像 token」能被单独读出来
+    #: （上下文预算记账：改完按需观察之后到底省了多少，要从这个数直接读）。
+    image_tokens: int | None = None
     #: **命中提示词缓存**的那部分输入 token（服务端把它与 ``input_tokens`` 分开报）。
     #: 上下文总大小 = ``input_tokens`` + ``cache_read_input_tokens``
     #: + ``cache_creation_input_tokens``（工单 M10 的成本曲线按这个口径看）。
@@ -414,7 +420,8 @@ class ModelClient:
             image_tokens=image_tokens,
             error=None,
         )
-        return reply
+        # 图像 token 数回灌进回复（调用方要能直接读到，不必去翻日志）。
+        return replace(reply, image_tokens=image_tokens)
 
     # ------------------------------------------------------------------
     # 内部
