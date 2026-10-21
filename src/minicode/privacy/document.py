@@ -97,6 +97,10 @@ def render_policy_document(policy: PrivacyPolicy | None = None) -> str:
         "* 被拉黑的窗口**根本不许拍、不许发**：抓帧之前就被拦下，"
         "画面不进模型上下文，动作记录里记一笔「该窗口被跳过」。",
         "",
+        "### 4.1 两层闸门：黑名单先行、审批二次确认",
+        "",
+        _clause_table(current.gate_layers),
+        "",
         "## 5. 剪贴板",
         "",
         _clause_table(current.clipboard),

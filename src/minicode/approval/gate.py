@@ -93,6 +93,10 @@ class ApprovalGate:
     * :meth:`check` —— 这个动作要不要审批、批不批（附 dry-run 的呈现）；
     * :meth:`check_capture` —— 抓帧（送模型观察）前问一次：
       **敏感窗口**的画面不许进上下文。
+
+    ✅ **工单 M24**：``check_capture`` 这一层是**二次确认** ——
+    M20 的黑名单（**硬闸门**）在它**之前**跑，命中就**根本走不到**这里；
+    本层兜住黑名单没盖到的那个窗口。
     """
 
     def __init__(
@@ -105,6 +109,16 @@ class ApprovalGate:
         self._approver = approver
         self._window_inspector = window_inspector
         self._sensitive_policy = sensitive_policy
+
+    @property
+    def sensitive_policy(self) -> SensitiveWindowPolicy | None:
+        """接进来的**敏感窗口策略**（M16 的那个端口）。
+
+        ✅ 工单 M24：生产路径上它由 **M20 的黑名单**提供
+        （``minicode.privacy.policy:SensitiveWindowBlacklist``）——
+        **词表只有一份**，两层拿到的是同一个对象。
+        """
+        return self._sensitive_policy
 
     # ------------------------------------------------------------------
     # 判定
@@ -210,12 +224,22 @@ class ApprovalGate:
 
         ⚠️ 这一问在**抓帧之前**（不是动作下发之前）：敏感窗口的画面一旦被抓走
         送进模型，审批就已经晚了 —— 那时要紧的**不是**动作，是**画面**。
+
+        ✅ **工单 M24：这一层退成「二次确认」**。两层，更严的一侧胜出：
+
+        1. **黑名单先行**（M20 的硬闸门）：这一帧里**看得见的全部窗口**命中黑名单
+           → **抓帧之前**就拒绝，零抓帧、零像素（错误码 ``sensitive_window_blocked``）。
+           它在**本层之前**跑 —— 命中就**根本走不到**这里。
+        2. **本层**（审批二次确认）：**当前前台窗口**命中同一份黑名单
+           → 产生审批请求；**没批则零动作下发**（错误码 ``approval_denied``）。
+
+        ① 没盖到的那个窗口（可见窗口的扫描没扫到），由本层**兜底再问一次人**。
         """
         if not self._foreground_is_sensitive():
             return ApprovalOutcome(
                 required=False,
                 approved=True,
-                reason="前台窗口不敏感（不需要审批）",
+                reason="黑名单没拦下、当前前台窗口也不敏感（不需要审批）",
             )
         return self.check(
             intent=intent,

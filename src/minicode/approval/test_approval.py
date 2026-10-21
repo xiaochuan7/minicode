@@ -9,6 +9,7 @@
 * :class:`ConfidenceTest` —— AC5 置信度不作放行条件
 * :class:`ClipboardApprovalTest` —— AC6 读剪贴板需审批
 * :class:`GateOnTheChainTest` —— 闸门在**真实链路**上生效（缝 / 决策层）
+* :class:`M24SecondConfirmationTest` —— M24 十一类不变 + 端口接线 + 二次确认
 
 全部用**假注入 / 假审批人 / 假窗口**：毫秒级跑完，不碰真桌面、不花钱。
 """
@@ -48,7 +49,7 @@ from .catalog import (
     DangerCategory,
     classify,
 )
-from .console import ConsoleApprover
+from .console import ConsoleApprover, console_gate
 from .fakes import (
     AutoApprover,
     DenyApprover,
@@ -57,7 +58,7 @@ from .fakes import (
     ScriptedApprover,
 )
 from .gate import APPROVAL_HANDOFF_NOTE, ApprovalGate
-from .ports import WindowInfo
+from .ports import SensitiveWindowPolicy, WindowInfo
 from .request import ApprovalDecision, TargetPreview
 
 _DESKTOP = VirtualDesktop(0, 0, 2560, 1600)
@@ -663,6 +664,205 @@ class ConsoleApproverTest(unittest.TestCase):
             gate.check(intent="发送消息", target_description="发送")
         self.assertIn("发送消息", original.getvalue())
         self.assertEqual(redirected.getvalue(), "")
+
+
+# ---------------------------------------------------------------------------
+# M24 · 十一类不变 + 端口接线 + 审批退成二次确认
+# ---------------------------------------------------------------------------
+
+
+class M24SecondConfirmationTest(unittest.TestCase):
+    """M24：黑名单接进本单闸门；「截含敏感窗口的屏」退成**二次确认**。
+
+    本单**只改接线与触发路径**：十一类**一条都不许少**（AC5），
+    关键词表**一个字都不许动**（AC5）。
+    """
+
+    #: 十一类**逐类点名**（工单 M16 AC 1 点名的十一类 / M24 AC5）。
+    ELEVEN = (
+        "delete",
+        "payment",
+        "send_message",
+        "register",
+        "system_settings",
+        "command_line",
+        "install_software",
+        "registry",
+        "elevation",
+        "clipboard_read",
+        "sensitive_screenshot",
+    )
+
+    #: 关键词表**逐条钉住**（本单只改接线与触发路径，词表一个字都不动）。
+    #: 「截含敏感窗口的屏」是**由状态触发**的，不在关键词表里。
+    KEYWORDS = {
+        DangerCategory.REGISTRY: (
+            "注册表",
+            "registry",
+            "regedit",
+            "reg add",
+            "reg delete",
+            "hkey_",
+        ),
+        DangerCategory.INSTALL_SOFTWARE: (
+            "安装",
+            "卸载",
+            "install",
+            "uninstall",
+            "installer",
+            "setup.exe",
+            "msiexec",
+            "安装包",
+        ),
+        DangerCategory.COMMAND_LINE: (
+            "命令行",
+            "命令提示符",
+            "运行命令",
+            "执行命令",
+            "command line",
+            "powershell",
+            "cmd.exe",
+            "cmd /",
+            "shell",
+        ),
+        DangerCategory.SYSTEM_SETTINGS: (
+            "系统设置",
+            "控制面板",
+            "系统属性",
+            "system settings",
+            "control panel",
+            "防火墙",
+            "默认浏览器",
+            "开机启动",
+            "开机自启",
+            "系统更新",
+            "缩放",
+        ),
+        DangerCategory.PAYMENT: (
+            "支付",
+            "付款",
+            "购买",
+            "下单",
+            "转账",
+            "充值",
+            "扣款",
+            "结账",
+            "pay",
+            "payment",
+            "purchase",
+            "checkout",
+        ),
+        DangerCategory.SEND_MESSAGE: (
+            "发送",
+            "发消息",
+            "发表",
+            "投递",
+            "send",
+            "post message",
+        ),
+        DangerCategory.DELETE: (
+            "删除",
+            "删掉",
+            "移除",
+            "清空",
+            "格式化",
+            "delete",
+            "remove",
+            "erase",
+            "format disk",
+        ),
+        DangerCategory.REGISTER: (
+            "注册",
+            "报名",
+            "开通账号",
+            "创建账号",
+            "开户",
+            "sign up",
+            "signup",
+            "register",
+        ),
+        DangerCategory.ELEVATION: (
+            "提权",
+            "管理员权限",
+            "以管理员身份",
+            "管理员运行",
+            "uac",
+            "runas",
+            "elevate",
+            "admin",
+        ),
+        DangerCategory.CLIPBOARD_READ: ("剪贴板", "clipboard"),
+    }
+
+    def test_the_eleven_categories_are_all_still_there(self):
+        """AC5：十一类**逐类点名** —— 清单不许少一类。"""
+        self.assertEqual(len(self.ELEVEN), 11)
+        self.assertEqual({category.value for category in DangerCategory}, set(self.ELEVEN))
+        for name in self.ELEVEN:
+            with self.subTest(category=name):
+                category = DangerCategory(name)
+                self.assertIn(category, CATEGORY_TITLES)
+                self.assertTrue(CATEGORY_TITLES[category])
+
+    def test_every_named_category_still_produces_an_approval_request(self):
+        """AC5 + M16 AC1：不存在静默执行的类别（十一类逐类点名）。"""
+        for name in self.ELEVEN:
+            with self.subTest(category=name):
+                gate = ApprovalGate(approver=DenyApprover())
+                outcome = gate.check(
+                    intent="做一件事",
+                    target_description="某个目标",
+                    category=name,
+                )
+                self.assertTrue(outcome.required)
+                assert outcome.request is not None
+                self.assertEqual(outcome.request.category.value, name)
+                self.assertFalse(outcome.approved)
+
+    def test_the_keyword_table_is_unchanged(self):
+        """AC5：本单只改接线与触发路径 —— 关键词表一个字都不动。"""
+        self.assertEqual(
+            {rule.category: rule.keywords for rule in DANGER_RULES}, self.KEYWORDS
+        )
+
+    def test_the_sensitive_window_port_is_provided_by_the_privacy_blacklist(self):
+        """接线：M16 的端口由 **M20 的黑名单**提供（词表只有一份）。"""
+        from minicode.privacy.policy import DEFAULT_BLACKLIST
+
+        gate = console_gate(read_foreground_window=False)
+        self.assertIs(gate.sensitive_policy, DEFAULT_BLACKLIST)
+        # 端口的**形状**没变（换掉替身不改变它）。
+        self.assertIsInstance(DEFAULT_BLACKLIST, SensitiveWindowPolicy)
+
+    def test_the_capture_check_produces_a_request_with_intent_and_target(self):
+        """AC2：黑名单没命中这一帧，但前台窗口敏感 → **仍然**产生审批请求。"""
+        from minicode.privacy.policy import DEFAULT_BLACKLIST
+
+        gate = ApprovalGate(
+            approver=DenyApprover(),
+            window_inspector=FakeWindowInspector(WindowInfo(title="招商银行")),
+            sensitive_policy=DEFAULT_BLACKLIST,
+        )
+        outcome = gate.check_capture(intent="截一张图", target_description="整屏")
+        self.assertTrue(outcome.required)
+        assert outcome.request is not None
+        self.assertEqual(outcome.request.category, DangerCategory.SENSITIVE_SCREENSHOT)
+        self.assertEqual(outcome.request.intent, "截一张图")
+        self.assertEqual(outcome.request.target_description, "整屏")
+        self.assertFalse(outcome.approved)
+
+    def test_an_ordinary_foreground_window_needs_no_capture_approval(self):
+        """普通窗口不受影响（闸门不许变成「什么都不许做」）。"""
+        from minicode.privacy.policy import DEFAULT_BLACKLIST
+
+        gate = ApprovalGate(
+            approver=DenyApprover(),
+            window_inspector=FakeWindowInspector(WindowInfo(title="记事本")),
+            sensitive_policy=DEFAULT_BLACKLIST,
+        )
+        outcome = gate.check_capture()
+        self.assertFalse(outcome.required)
+        self.assertTrue(outcome.approved)
 
 
 if __name__ == "__main__":  # pragma: no cover

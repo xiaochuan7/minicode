@@ -14,18 +14,28 @@
 谁定义规则，谁描述规则）——
 文档里写的边界就是脱敏器的实际行为，不是另抄一份。
 
-⚠️ **这一层与 M16 的分工**：M16 只给**判据的位置**
+⚠️ **这一层与 M16 的分工**（工单 M24 接上）：M16 只给**判据的位置**
 （``minicode.approval.ports.SensitiveWindowPolicy`` 端口）与**审批请求的生成**）；
-**哪些窗口算敏感由本单的黑名单决定**（``docs/tickets/README.md`` 的口径）。
-本单的黑名单是**硬闸门**（根本不许拍），M16 的机制是**人工放行**（批了就拍）——
-两者互斥，因此本单的黑名单**故意不接**进 M16 的闸门
-（接上会出现「人点了头就能拍敏感窗口」的路）。见 ``docs/reviews/M20.md`` §5 ①。
+**哪些窗口算敏感由本单的黑名单决定** —— 本单的黑名单**就是**那个端口的实现
+（:meth:`SensitiveWindowBlacklist.is_sensitive`），**词表只有这一份**。
+
+两层，**更严的一侧胜出**：
+
+1. **黑名单先行**（本单，**硬闸门**）：这一帧里**看得见的全部窗口**命中词表
+   → **抓帧之前**就拒绝，零抓帧、零像素（错误码 ``sensitive_window_blocked``）。
+2. **审批二次确认**（M16）：**当前前台窗口**命中同一份词表 → 产生审批请求
+   （带意图 + 目标）；**没批则零动作下发**（错误码 ``approval_denied``）。
+
+① 在 ② 之前（隐私闸门在审批与抓帧之前）—— ① 命中就**根本走不到**②
+（不会出现「人点了头就能拍敏感窗口」的路）。① 没盖到的那个窗口
+（可见窗口的扫描没扫到），由 ② **兜底再问一次人**。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from minicode.action.errors import ErrorCode
 from minicode.approval.ports import WindowInfo
 from minicode.redact.redactor import redaction_boundary
 
@@ -35,6 +45,7 @@ __all__ = [
     "SENSITIVE_WINDOW_SOURCE",
     "SensitiveWindowMatch",
     "SensitiveWindowBlacklist",
+    "DEFAULT_BLACKLIST",
     "PolicyClause",
     "PrivacyPolicy",
     "default_policy",
@@ -148,9 +159,11 @@ class SensitiveWindowBlacklist:
     * **标题命中敏感词表**（:data:`SENSITIVE_TITLE_KEYWORDS`）；
     * **窗口类名命中对话框类名**（:data:`SENSITIVE_WINDOW_CLASSES`，精确匹配）。
 
-    ⚠️ **不接** M16 的 ``SensitiveWindowPolicy`` 端口 —— 本单是**硬闸门**
-    （根本不许拍），M16 是**人工放行**（批了就拍）；接上会出现
-    「人点了头就能拍敏感窗口」的路，与工单 M20 AC 1 互斥。见模块说明。
+    ⚠️ **它同时是 M16 ``SensitiveWindowPolicy`` 端口的实现**（工单 M24）：
+    端口只规定**形状**，词表**就是**这一份 —— 两处各写一份就会各说各话。
+    但两层**不是**一回事：第一层（硬闸门）判的是「这一帧里看得见的**全部**窗口」，
+    第二层（审批二次确认）判的是「**当前前台窗口**」——
+    第一层命中就**根本走不到**第二层，第一层没盖到的由第二层兜底再问一次人。
     """
 
     title_keywords: tuple[str, ...] = SENSITIVE_TITLE_KEYWORDS
@@ -182,9 +195,23 @@ class SensitiveWindowBlacklist:
                 )
         return None
 
+    def is_sensitive(self, window: WindowInfo) -> bool:
+        """这个窗口敏感吗（M16 ``SensitiveWindowPolicy`` 端口的那个方法）。
+
+        判据**就是**上面那份黑名单 —— 端口只规定形状，**词表只有这一份**。
+        """
+        return self.match(window) is not None
+
     def source(self) -> str:
         """词表的取值来源（随判定落盘，仓库规矩：词表要能说清词是哪来的）。"""
         return self.word_list_source
+
+
+#: **仓库那一份黑名单**（单例）。
+#:
+#: 两层（硬闸门 / 审批二次确认）拿到的是**同一个对象** —— 两处各建一份，
+#: 就会有两处可能不一样的东西（工单 M24）。
+DEFAULT_BLACKLIST = SensitiveWindowBlacklist()
 
 
 @dataclass(frozen=True)
@@ -221,6 +248,8 @@ class PrivacyPolicy:
     persisted: tuple[PolicyClause, ...] = ()
     #: **剪贴板**的规则。
     clipboard: tuple[PolicyClause, ...] = ()
+    #: **两层闸门**：黑名单先行、审批二次确认（工单 M24）。
+    gate_layers: tuple[PolicyClause, ...] = ()
 
 
 def _sent_clauses() -> tuple[PolicyClause, ...]:
@@ -305,8 +334,38 @@ def _withheld_clauses() -> tuple[PolicyClause, ...]:
                 "黑名单窗口（标题命中敏感词表或对话框类名）**根本不许拍**："
                 "抓帧之前就被拦下，画面不进模型上下文，"
                 "动作记录里只记「这个窗口被跳过了」。"
+                "这一层在**审批之前**跑 —— 命中就**根本走不到**审批那一层。"
             ),
             implementation="minicode.privacy.guard:SensitiveWindowGuard.check",
+        ),
+    )
+
+
+def _gate_clauses() -> tuple[PolicyClause, ...]:
+    """**两层闸门**：黑名单先行、审批二次确认（工单 M24）。"""
+    return (
+        PolicyClause(
+            key="gate_blacklist_first",
+            title="第一层：黑名单先行（硬闸门）",
+            detail=(
+                "敏感窗口黑名单命中 → **在抓帧之前**就拒绝：零抓帧、零像素产生，"
+                "动作记录里如实记「被敏感窗口策略拦下」"
+                f"（错误码 `{ErrorCode.SENSITIVE_WINDOW_BLOCKED.value}`）。"
+                "判的是**这一帧里看得见的全部窗口**。"
+            ),
+            implementation="minicode.privacy.guard:SensitiveWindowGuard.check",
+        ),
+        PolicyClause(
+            key="gate_approval_second",
+            title="第二层：审批二次确认（M16）",
+            detail=(
+                "黑名单**没**命中、但请求属于十一类里的「截含敏感窗口的屏」→ "
+                "仍然产生审批请求（带意图 + 目标）；**没批则零动作下发**"
+                f"（错误码 `{ErrorCode.APPROVAL_DENIED.value}`）。"
+                "判的是**当前前台窗口**，判据来源就是第一层那份黑名单"
+                "（M16 的 `SensitiveWindowPolicy` 端口由它提供）—— **词表只有一份**。"
+            ),
+            implementation="minicode.approval.gate:ApprovalGate.check_capture",
         ),
     )
 
@@ -390,4 +449,5 @@ def default_policy() -> PrivacyPolicy:
         withheld=_withheld_clauses(),
         persisted=_persisted_clauses(),
         clipboard=_clipboard_clauses(),
+        gate_layers=_gate_clauses(),
     )
