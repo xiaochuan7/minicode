@@ -196,14 +196,21 @@ UIA 候选源接入（UFO² 的 IoU 0.1 合并规则）。前三条**不改一�
 
 | 验收项 | 门槛 | 为什么这么定 |
 |---|---|---|
-| 样本量 | **≥300 条分层抽样**（或全量 1581），固定 seed | 42 条 Wilson 区间 ±15 pp，分不开 38.1 与 57.1，更分不开与公开基线的差距。【一手】官方榜口径 |
-| 主指标 | **同批基线**：`click_accuracy` ≥ **同一批**上「门控关 + crop 512」那一臂的数（42 条那批是 **57.1%**，Wilson 95% 区间约 **±15 pp** → **不能当绝对门槛**用） | 改动 1~4 之后必须**至少打平**这条基线；打平即证明 crop 不是净负。⚠️ 基线**必须重量**（生产默认 crop 已按实测改成 192 → 「门控关 + crop 192」那一臂才是同批基线）；拿 42 条那批的 57.1% 去比 ≥300 条那批 → **两个数没法比** |
-| 调用数 | **≤ 2.05 次/目标**（读 `sspro-report.json` 的 `model_calls_per_target.<臂>`；⚠️ 与同文件的 `model_calls.sent` **不是同一口径**，不能互相换算） | 门控关那一臂实测 **2.000**；改动不能靠多问模型换分（现验收线 ≤1.5 是另一条线的事） |
+| 样本量 | **≥300 条分层抽样**（或全量 1581），固定 seed | 42 条 Wilson 区间 ±15 pp，分不开 38.1 与 57.1，更分不开与公开基线的差距。【一手】官方榜口径。⚠️ **两个评测台的默认批次都达不到这条线**（评测台 `--per-stratum 10` → 6 层 × 10 = **60 条**；编号台 `--per-stratum 7` → **42 条**）→ 要判这条线必须**显式给足条数**：评测台 `--per-stratum 50` → 6 层 × 50 = **300 条**（层数 = 3 个平台 × 文本/图标 2 类）。**这一批的真实条数读 `sspro-report.json` 的 `dataset.evaluated_samples`** |
+| 主指标 | **同批基线**：**无条件两段式臂 ≥ 只用粗定位臂**（读 `sspro-report.json` 的 `comparison.always.accuracy` vs `comparison.coarse_only.accuracy`，**同一批样本**）—— 与 `docs/spec.md` §6 的硬判据一致 | 门控降级为记录器之后，**「门控关」臂就是被评的那条臂**（无条件两段式 = 生产默认，两臂落点应当**逐条相同**）→ 拿它当基线是**恒真的比较，判不出任何东西**；真正能区分「精定位有没有用」的是**只用粗定位**那一臂。⚠️ 42 条那批的 **57.1%**（门控关那臂）Wilson 95% 区间约 **±15 pp** → **不能当绝对门槛**用；拿它去比 ≥300 条那批 → **两个数没法比** |
+| 调用数 | **≤ 2.05 次/目标**（读 `sspro-report.json` 的 `model_calls_per_target.always`（**无条件两段式**那一臂；`on_demand` 现在与它**逐条相同**）；⚠️ 与同文件的 `model_calls.sent` **不是同一口径**，不能互相换算；⚠️ **别读成 `coarse_only`** 那一臂 —— 那是 1.00，恒过） | 门控关那一臂实测 **2.000**；改动不能靠多问模型换分（现验收线 ≤1.5 是另一条线的事） |
 | crop 消融 | **全集** `{128, 192, 256, 512, 768, 1024, 1280}`（七个尺寸**共用同一次粗定位回答**），**A 半调 / B 半评** | 【实测】M23 已证明「同批调参 + 同批评估 = 作废」；**不预设方向**（论文说越大越好，本机实测是**中间最好**）——逐格数据见 `core-function-plan.md` §C-1 |
 | 落点长尾 | `landing_error_px.p90 ≤ 250 px`（`caliber.json` 的 `landing_error_px.p90`） | 现值 1191.5；公开分桶里 c≥250 档 75.6% 对应的量级 |
 | 精定位产出率 | `refine 产出落点 / refine 触发 ≥ 90%`（`caliber.json`：`refine_enabled` = 触发数、`fallbacks` = 回落数 → 产出率 = **1 − `fallback_rate`**） | 现值 5/10 = 50%（门控关那臂是 32/40 = 80%） |
 | 门控可判定条件 | `undecidable` 中 `target_area_ratio` 计数从 42 降到 0（`sspro-report.json` 的 `comparison.<臂>.gate.undecidable_distribution.target_area_ratio`） | 出框后第一次可判；现值 42/42 |
 | **禁止引用** | 「无条件 crop 整体 −0.3 pp」 | 至今无一手出处 |
+
+> ⚠️ **「同批不同 crop」只有扫描台跑得出**：评测台 `python -m minicode.eval` **没有 crop 尺寸开关**
+> （`eval/__main__.py::_crop_size()` 恒取生产默认 **192**）→ 想在同一批上比较「门控关 + crop 512」
+> 与「门控关 + crop 192」，**在评测台上跑不出来**（跑出来的是同一臂的同一个数）。
+> crop 尺寸那一层（192 vs 512 vs 其余五个）由上面的 **crop 消融**那一条判：
+> `python -m minicode.ground.numbered_bench --crop-scan`（七个尺寸**共用同一次粗定位回答**、
+> **同批**、**A 半调 / B 半评**；逐格曲线 `runs/g1-crop-scan/crop-scan.json`）。
 
 ---
 
@@ -442,7 +449,7 @@ OCR 15/22、median **18.4 px** / p90 60.0 / **max 219.0**，**崩掉的 7 条全
 | **1** | `src/minicode/ground/channel.py`（门控分支 L424~460）+ `src/minicode/ground/gate.py` | **门控降级为记录器**：`refine_enabled` 恒真，decision 只落盘；删掉「第二次独立粗定位」这次调用（`second_opinion` 端口不再注入） | **落点误差口径**读 `caliber.json`：`click_accuracy` **38.1% → 57.1%`。⚠️ **调用数与门控埋点不在 `caliber.json` 里**（那个产物只有误差与精定位开关）→ 读 `sspro-report.json`：`model_calls_per_target.on_demand` **2.381 → 2.000**、`comparison.<臂>.gate.hit_rate` 变成纯记录（它现在量的是「做了精定位的比例」，**不是**「门控命中了多少」——后者看 `comparison.<臂>.gate.gate_decision_rate`） |
 | **2** | `src/minicode/ground/channel.py`（`DEFAULT_CROP_WIDTH_PX/HEIGHT_PX`，**冻结的 `coord/crop_refine.py` 一个字没动**）+ `src/minicode/ground/numbered_bench.py`（`--crop-scan`） | **crop 尺寸按实测定**：扫描**全集** `{128,192,256,512,768,1024,1280}`（**A 半调 / B 半评**，七个尺寸**共用同一次粗定位回答**）→ **默认 192 px**（**不是**本文原写的 1024：论文 Table 5 与本机实测冲突，实测赢）；同步改 `docs/research/core-function-plan.md` §C-1 的方向 | `caliber.json`：`click_accuracy` 再往上走；`refine_error_px.p90`（现 516.5）下降；`refine` 产出率 ≥90%；逐格曲线见 `runs/g1-crop-scan/crop-scan.json` |
 | **3** | `src/minicode/ground/gate.py:154` + `src/minicode/ground/channel.py:544` | **偏离阈值 128 → 50 px**（来源串换成 ZoomClick Table 11 出处）；参考点从 `coarse` 改成 **`plan.rect.center`**；落盘 `zoom_consistency_px` 与 `zoom_consistency_c1000` | `caliber.json`：`fallback_rate`（现 0.5 / 0.2）下降；`landing_error_px.p90` ≤ 250。⚠️ **来源串里的单位换算随 crop 宽变**（512 → 1.953；**默认 192 → 5.208**）——阈值不动，但「落在公开分桶的哪一档」变了，留给 §九 |
-| **4** | `src/minicode/ground/prompt.py:88-102`（`coarse_prompt`）+ `src/minicode/model/client.py` | **粗定位改出框**：`{"bbox":[x1,y1,x2,y2],"point":[x,y]}`，落点取框中心（照抄官方 `models/gpt4x.py` 措辞与解析口径）；`max_tokens` **2000 → 4096** | `caliber.json`：`coarse_error_px.count` **36 → 42**；`gate.undecidable.target_area_ratio` **42 → 0**；「HTTP 200 无文本输出」计数归零 |
+| **4** | `src/minicode/ground/prompt.py:88-102`（`coarse_prompt`）+ `src/minicode/model/client.py` | **粗定位改出框**：`{"bbox":[x1,y1,x2,y2],"point":[x,y]}`，落点取框中心（照抄官方 `models/gpt4x.py` 措辞与解析口径）；`max_tokens` **2000 → 4096** | `caliber.json`：`coarse_error_px.count` **36 → 42**（粗定位不再丢样本）。⚠️ **另外两个数不在 `caliber.json` 里**（那个产物只有误差分布 / `refine_enabled` / `fallbacks` / `click_accuracy`，**没有 `gate` 段**）→ 读 `sspro-report.json`：`comparison.<臂>.gate.undecidable_distribution.target_area_ratio` **42 → 0**；「HTTP 200 无文本输出」计数 = `comparison.<臂>.errors` 归零 |
 | **5** | `src/minicode/ground/candidates.py` + `src/minicode/ground/channel.py:635` + `src/minicode/ground/numbered_bench.py:318,398` | **UIA 候选源 + UFO² IoU 0.1 合并**（UIA 主表全留、OCR 附加表 IoU>0.1 丢弃、物理像素空间比较、方向不反）；去掉 `if control.name` 过滤；ControlType 加 `Custom(50025)` / `Image(50006)` 等 | 真机 `runs/b1-live-zh`：图标类控件召回 **0 → 22/22**、落点误差中位 0.0 px；静态：候选覆盖率列 ≥ 目标 |
 | **6** | `src/minicode/e2e/real.py:414-445` | **缩放值改读注册表** `HKCU:\Control Panel\Desktop\LogPixels`（96/120/144→100/125/150%），树读失败时用状态读数兜底 | `runs/d6-wave1/e2e-report.json`：W-1.E 从「没有读到值」变成成立 → wave1 **0/3 → 1/3** |
 | **7** | `src/minicode/e2e/report.py` + `src/minicode/e2e/runner.py` + `src/minicode/e2e/real.py` | **口径对齐公开基准**：infeasible 进分母 + 只有 agent 声明 FAIL 才算成功；「人工代跑完成」与「合规停手」拆成两个计数；模态弹窗不许计成自动通过 | `e2e-report.json`：`auto.denominator` 与 `human_confirm` 口径写进报告抬头，**对外可比** |

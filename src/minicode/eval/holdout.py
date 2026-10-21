@@ -779,9 +779,17 @@ def tune_gate_params(
 
     ⚠️ **B 的样本一条都不进这里** —— 调参只看 A（工单 M23 AC 2）。
 
-    「目标占比」与「置信度」两条条件**不在网格里**：它们在本评测台上
-    **不可判定**（粗定位只给点不给框；模型不报置信度），门控根本不会因为
-    它们触发 → 无从调（见 :data:`minicode.eval.sspro.GATE_INPUT_SOURCES`）。
+    「目标占比」与「置信度」两条条件**不在网格里**：在**本模块重放的那批
+    历史记录**里它们**不可判定**（那一轮粗定位只给点不给框；模型不报置信度），
+    门控根本不会因为它们触发 → 无从调。
+
+    ⚠️ **这是对「那一批记录」成立的，不是对「现行口径」成立的**：
+    粗定位**出框**之后，「目标占比」已经**可判定**了
+    （现行口径见 :data:`minicode.eval.sspro.GATE_INPUT_SOURCES` ——
+    它随门控降级 / 粗定位出框改写过，别照旧读）。
+    拿**新的**记录跑本模块时，「占比」这条要自己判断：
+    本模块的门控重放**只建模一致性那一条**，不一致会被
+    :func:`replay_check` 报出来（``consistent`` 变 false）。
     """
     scored: list[ParameterCandidate] = []
     for tolerance in tolerance_candidates:
@@ -1065,7 +1073,11 @@ def _area_stats(samples: Sequence[HoldoutSample]) -> dict[str, Any]:
             * 100
         ),
         "default_threshold_pct": default_gate_params().area_ratio_threshold * 100,
-        "note": "GT 框占图面积比（数据集统计；门控的占比条件本身仍判不了 —— 粗定位只给点不给框）",
+        "note": (
+            "GT 框占图面积比（数据集统计；门控的占比条件在**那一轮记录**里判不了"
+            "—— 粗定位只给点不给框；现行口径见 "
+            "minicode.eval.sspro.GATE_INPUT_SOURCES）"
+        ),
     }
 
 
