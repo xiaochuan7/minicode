@@ -789,7 +789,6 @@ def _run_crop_scan(args) -> int:
     half_b = [sample for index, sample in enumerate(chosen) if index % 2 == 1]
 
     curve: list[dict[str, Any]] = []
-    per_size: dict[int, list[dict[str, Any]]] = {}
     for size in sizes:
         def _run(sample: SsproSample, size: int = size) -> dict[str, Any]:
             try:
@@ -826,7 +825,6 @@ def _run_crop_scan(args) -> int:
                 records.append(record)
                 if index % 20 == 0 or index == len(chosen):
                     print(f"  [{size}px] {index}/{len(chosen)}", flush=True)
-        per_size[size] = records
         entry = {
             "crop_size": size,
             "all": _scan_summary(records),
@@ -843,10 +841,37 @@ def _run_crop_scan(args) -> int:
             f"（{entry['all']['click_accuracy']:.1%}）"
             f"｜A 半 {entry['a_half']['click_accuracy']:.1%}"
             f"｜B 半 {entry['b_half']['click_accuracy']:.1%}"
-            f"｜中位误差 {entry['all']['landing_error_px'].get('median')}"
+            f"｜中位误差 {entry['all']['landing_error_px'].get('median')}",
+            flush=True,
         )
+        # **每个尺寸落一次盘**（跑挂了也留着已跑的那几格）。
+        _write_scan(out_dir, curve, half_a, half_b, memoized, started, args, sizes)
 
     # -- **按 A 半的数据定**最终尺寸；B 半只用来评 --------------------------
+    payload = _write_scan(
+        out_dir, curve, half_a, half_b, memoized, started, args, sizes
+    )
+    print(
+        f"按 A 半定下的尺寸：{payload['chosen_by_a_half']} px"
+        f"（A 半 {payload['chosen_a_half']['click_accuracy']:.1%}"
+        f"｜B 半 {payload['chosen_b_half']['click_accuracy']:.1%}）"
+    )
+    print(f"记录已写入：{out_dir / 'crop-scan.json'}")
+    return 0
+
+
+def _write_scan(
+    out_dir: Path,
+    curve: list[dict[str, Any]],
+    half_a: Sequence[SsproSample],
+    half_b: Sequence[SsproSample],
+    memoized,
+    started: float,
+    args,
+    sizes: Sequence[int],
+) -> dict[str, Any]:
+    """把扫描结果落盘（**每跑完一个尺寸就落一次**）并返回那份 payload。"""
+
     def _key(entry: dict[str, Any]) -> tuple:
         stats = entry["a_half"]
         error = stats["landing_error_px"].get("median")
@@ -861,8 +886,8 @@ def _run_crop_scan(args) -> int:
         "source": "sspro/crop-scan",
         "seed": args.seed,
         "per_stratum": args.per_stratum,
-        "samples": len(chosen),
-        "crop_sizes": sizes,
+        "samples": len(half_a) + len(half_b),
+        "crop_sizes": list(sizes),
         "split": "A 半调 / B 半评（交错取样，两半分层构成相同）",
         "curve": curve,
         "chosen_by_a_half": chosen_entry["crop_size"],
@@ -872,15 +897,10 @@ def _run_crop_scan(args) -> int:
         "model_calls_replayed": memoized.replays,
         "elapsed_seconds": round(time.time() - started, 1),
     }
-    path = out_dir / "crop-scan.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(
-        f"按 A 半定下的尺寸：{chosen_entry['crop_size']} px"
-        f"（A 半 {chosen_entry['a_half']['click_accuracy']:.1%}"
-        f"｜B 半 {chosen_entry['b_half']['click_accuracy']:.1%}）"
+    (out_dir / "crop-scan.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(f"记录已写入：{path}")
-    return 0
+    return payload
 
 
 def main(argv: Sequence[str] | None = None) -> int:
