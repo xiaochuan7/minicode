@@ -268,8 +268,26 @@ class TableTests(unittest.TestCase):
         )
         table = render_table(rows)
         self.assertEqual(len(table.splitlines()), 9)  # 表头 + 分隔线 + 7 行
-        self.assertIn("门控开", table)
-        self.assertIn("门控关", table)
+        # ⚠️ 门控降级为**记录器**之后，两臂的名字改了（用户 2026-10-21 拍板）：
+        # 「门控开 / 门控关」→「门控记录器 / 无条件两段式」。
+        self.assertIn("门控记录器", table)
+        self.assertIn("无条件两段式", table)
+
+    def test_the_table_has_the_coarse_only_baseline_arm(self):
+        """**只用粗定位**那一臂（1.00 次/目标）要在表里 —— 我们从来没量过这个基线。"""
+        on_demand = [_sample("a", hit=True)]
+        always = [_sample("a", hit=True)]
+        coarse_only = [_sample("a", hit=False)]
+        comparison = compare_arms(on_demand, always, coarse_only=coarse_only)
+        rows = table_rows(
+            comparison=comparison,
+            official=OFFICIAL_ROWS,
+            model_id="test-model",
+            crop_size=(512, 512),
+        )
+        table = render_table(rows)
+        self.assertIn("只用粗定位", table)
+        self.assertEqual(len(table.splitlines()), 10)  # 多了一行基线臂
 
 
 if __name__ == "__main__":

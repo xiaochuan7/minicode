@@ -345,19 +345,31 @@ def run_arms(
     progress: Callable[[str], None] | None = None,
     workers: int = 1,
     gate_params: Any = None,
-) -> tuple[list[ArmOutcome], list[ArmOutcome]]:
-    """跑两臂（门控开 / 门控关），返回 ``(门控开, 门控关)`` 两组结果。
+) -> tuple[list[ArmOutcome], list[ArmOutcome], list[ArmOutcome]]:
+    """跑**三臂**，返回 ``(门控记录器, 无条件两段式, 只用粗定位)`` 三组结果。
 
-    **同一条样本的两臂共用同一帧画面**（同一批样本、同一张图 —— 两臂可比）。
+    **同一条样本的三臂共用同一帧画面**（同一批样本、同一张图 —— 三臂可比）。
 
-    ``workers > 1`` 时**按样本并行**（每条样本自己 decode、自己跑两臂）——
+    * ``on_demand`` —— **门控记录器**：门控**只落盘**，不再决定开不开精定位
+      （用户 2026-10-21 拍板：门控降级为记录器，生产默认无条件精定位）。
+    * ``always`` —— **无条件两段式**：粗定位 + crop 精定位（**生产默认**）。
+    * ``coarse_only`` —— **只用粗定位**：落点取粗点，**1.00 次/目标**。
+      这是**从来没量过的基线** —— 没有它就说不清「精定位到底有没有用、
+      值不值那多出来的那一次调用」。
+
+    ⚠️ 改完门控降级之后，``on_demand`` 与 ``always`` 的**行为应当完全相同**
+    （差别只在落盘的 decision）→ 两者落点**应当逐条相同**，这是体检项。
+
+    ``workers > 1`` 时**按样本并行**（每条样本自己 decode、自己跑三臂）——
     模型调用是网络往返，并行只缩短墙钟时间，不改变任何判定。
 
     ``gate_params`` 是**门控参数**（运行时参数，工单 M7 的口径）：评测里
     调它就是「调门控」，不改编码。
     """
 
-    def run_sample(sample: SsproSample) -> tuple[ArmOutcome, ArmOutcome]:
+    def run_sample(
+        sample: SsproSample,
+    ) -> tuple[ArmOutcome, ArmOutcome, ArmOutcome]:
         frame = read_png_frame(sample.image_path)
         surface = (0, 0, frame.width, frame.height)
         scale = scale_by_size[sample.image_size]
@@ -388,30 +400,49 @@ def run_arms(
             None,
             gate_params,
         )
-        return on_demand, always
+        coarse_only = _run_one(
+            sample,
+            frame,
+            surface,
+            scale,
+            model_input,
+            GateMode.ALWAYS,
+            effort,
+            max_tokens,
+            client,
+            None,
+            gate_params,
+            coarse_only=True,
+        )
+        return on_demand, always, coarse_only
 
-    pairs: list[tuple[ArmOutcome, ArmOutcome]] = []
+    triples: list[tuple[ArmOutcome, ArmOutcome, ArmOutcome]] = []
     if workers <= 1:
         for index, sample in enumerate(samples, start=1):
-            pair = run_sample(sample)
-            pairs.append(pair)
+            triple = run_sample(sample)
+            triples.append(triple)
             if progress is not None:
                 progress(
                     f"[{index}/{len(samples)}] {sample.sample_id} "
-                    f"开={pair[0].hit} 关={pair[1].hit}"
+                    f"记录器={triple[0].hit} 两段式={triple[1].hit} 只有粗={triple[2].hit}"
                 )
     else:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for index, pair in enumerate(pool.map(run_sample, samples), start=1):
-                pairs.append(pair)
+            for index, triple in enumerate(pool.map(run_sample, samples), start=1):
+                triples.append(triple)
                 if progress is not None:
                     progress(
-                        f"[{index}/{len(samples)}] {pairs[-1][0].sample_id} "
-                        f"开={pair[0].hit} 关={pair[1].hit}"
+                        f"[{index}/{len(samples)}] {triples[-1][0].sample_id} "
+                        f"记录器={triples[-1][0].hit} 两段式={triples[-1][1].hit} "
+                        f"只有粗={triples[-1][2].hit}"
                     )
-    return [pair[0] for pair in pairs], [pair[1] for pair in pairs]
+    return (
+        [triple[0] for triple in triples],
+        [triple[1] for triple in triples],
+        [triple[2] for triple in triples],
+    )
 
 
 def _run_one(
@@ -426,6 +457,7 @@ def _run_one(
     client: ModelCaller,
     second_opinion,
     gate_params: Any = None,
+    coarse_only: bool = False,
 ) -> ArmOutcome:
     """跑一条样本的一个臂，判命中（**按官方脚本的判定口径**）。"""
     from minicode.action.ports import VisualLocateRequest
@@ -441,6 +473,7 @@ def _run_one(
         gate_mode=gate_mode,
         second_opinion=second_opinion,
         gate_params=gate_params,
+        coarse_only=coarse_only,
     )
     result = grounder.locate(
         VisualLocateRequest(
@@ -526,13 +559,19 @@ def compare_arms(
     on_demand: Sequence[ArmOutcome],
     always: Sequence[ArmOutcome],
     *,
+    coarse_only: Sequence[ArmOutcome] = (),
     tolerance_pp: float = SUBSET_TOLERANCE_PP,
 ) -> dict[str, Any]:
     """两臂的对比：**硬判据** + **防掩盖**的逐子集对比。
 
-    * 硬判据：**门控开的整体分 ≥ 门控关的整体分**；
+    * 硬判据：**门控记录器的整体分 ≥ 无条件两段式的整体分**；
     * 防掩盖：按 (平台 × 文本/图标) 分层逐项对比，任何单一子集不得比门控关
       低超过 ``tolerance_pp`` 个百分点。
+
+    ⚠️ 门控降级之后，``on_demand``（记录器）与 ``always``（无条件两段式）
+    的**行为应当完全相同** —— 两臂落点**应当逐条相同**（``coarse_shared``
+    这一项就是体检；也顺带比一下两臂的**落点**是否逐条相同）。
+    ``coarse_only``（只用粗定位，1.00 次/目标）是**基线臂**。
     """
     on_demand_summary = summarize(on_demand)
     always_summary = summarize(always)
@@ -544,6 +583,12 @@ def compare_arms(
         for outcome in on_demand
         if outcome.sample_id in always_by_id
         and outcome.coarse_point == always_by_id[outcome.sample_id].coarse_point
+    ]
+    landing_same = [
+        outcome
+        for outcome in on_demand
+        if outcome.sample_id in always_by_id
+        and outcome.landing_point == always_by_id[outcome.sample_id].landing_point
     ]
     strata: list[dict[str, Any]] = []
     for key in sorted({outcome.stratum for outcome in on_demand}):
@@ -580,8 +625,22 @@ def compare_arms(
                 "应当是 100%（唯一差异只能是门控）"
             ),
         },
+        #: **门控降级后的体检**：记录器与无条件两段式的**落点**应当逐条相同
+        #: （门控不再决定开不开精定位 → 行为必须一致）。
+        "landing_same": {
+            "samples": len(on_demand),
+            "identical": len(landing_same),
+            "fraction": len(landing_same) / len(on_demand) if on_demand else 0.0,
+            "note": (
+                "两臂的**最终落点**完全相同的条数 —— "
+                "门控降级为记录器之后应当是 100%（不一致 = 门控还在影响行为）"
+            ),
+        },
         "on_demand": on_demand_summary,
         "always": always_summary,
+        **(
+            {"coarse_only": summarize(coarse_only)} if coarse_only else {}
+        ),
     }
 
 
@@ -598,14 +657,24 @@ def table_rows(
     **未在同模型下重跑的必须标「官方自报，仅供观感，不作硬对比」**。
     """
     rows = [dict(row) for row in official]
-    for mode, label in (("on_demand", "本方案 · 门控开"), ("always", "本方案 · 门控关")):
-        summary = comparison[mode]
+    for mode, label in (
+        ("on_demand", "本方案 · 门控记录器"),
+        ("always", "本方案 · 无条件两段式"),
+        ("coarse_only", "本方案 · 只用粗定位（基线）"),
+    ):
+        summary = comparison.get(mode)
+        if not summary:
+            continue
         rows.append(
             {
                 "method": label,
                 "model": f"{model_id}（本次实测）",
                 "dataset": "ScreenSpot-Pro（本轮抽样，见报告 N）",
-                "crop": f"crop {crop_size[0]}×{crop_size[1]}",
+                "crop": (
+                    f"crop {crop_size[0]}×{crop_size[1]}"
+                    if mode != "coarse_only"
+                    else "无 crop（只有整屏粗定位）"
+                ),
                 "score": f"{summary['accuracy'] * 100:.1f}",
                 "source": (
                     "本仓实测（同一批样本、同一模型、同一裁剪参数、同一判定口径）"

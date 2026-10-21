@@ -55,7 +55,6 @@ from .sspro import (
     compare_arms,
     gate_params_snapshot,
     load_samples,
-    make_second_opinion,
     render_table,
     run_arms,
     stratified_subset,
@@ -184,9 +183,10 @@ def main(argv=None) -> int:
     # ⚠️ **两臂共用同一次粗定位回答**（应答记忆端口）：模型端不确定，
     # 两臂各自重问会把随机性混进「唯一差异是门控」这个对比里。
     memoized = MemoizingModelCaller(client)
-    second_opinion = make_second_opinion(
-        memoized, effort=args.effort, max_tokens=args.max_tokens
-    )
+    #: ⚠️ **不再注入 `second_opinion`**（用户 2026-10-21 拍板）：
+    #: 门控降级为**记录器**，「第二次独立粗定位」那一次调用被删掉了 ——
+    #: 实测它正是 −19.0 pp 的来源（触发条件恰好是精定位前提条件的反面）。
+    #: 一致性那条条件从此**永远不可判定**，如实记进 `undecidable`。
     gate_params = default_gate_params()
     if args.consistency_tolerance:
         gate_params = replace(
@@ -196,37 +196,36 @@ def main(argv=None) -> int:
             f"门控参数覆盖：一致性容差 {args.consistency_tolerance} px"
             f"（自带值 {default_gate_params().consistency_tolerance_px} px）"
         )
-    print(f"=== 跑两臂（门控开 / 门控关），N={len(chosen)} ===")
-    on_demand, always = run_arms(
+    print(
+        f"=== 跑三臂（门控记录器 / 无条件两段式 / 只用粗定位），N={len(chosen)} ==="
+    )
+    on_demand, always, coarse_only = run_arms(
         chosen,
         memoized,
         scale_by_size=scale_by_size,
         model_input_by_size=model_input_by_size,
         effort=args.effort,
         max_tokens=args.max_tokens,
-        second_opinion=second_opinion,
+        second_opinion=None,
         progress=lambda line: print(line, flush=True),
         workers=args.workers,
         gate_params=gate_params,
     )
 
-    comparison = compare_arms(on_demand, always)
+    comparison = compare_arms(on_demand, always, coarse_only=coarse_only)
     crop_size = _crop_size()
     #: **平均模型调用数/目标**（验收线「≤ 1.5」判的就是这个数）。
     #:
     #: ⚠️ **口径只有这一处**：逐条累加**那一臂**的 ``model_calls`` ÷ 样本数。
     #: 报告里另有一个 ``model_calls.sent`` —— **那是另一个口径**
-    #: （两臂合计、去掉应答记忆复用后真正发出去的请求数）→ **两个数不能互相换算**。
+    #: （三臂合计、去掉应答记忆复用后真正发出去的请求数）→ **两个数不能互相换算**。
     sample_count = len(chosen)
     per_target = {
-        "on_demand": (
-            comparison["on_demand"]["model_calls"] / sample_count
-            if sample_count
-            else 0.0
-        ),
-        "always": (
-            comparison["always"]["model_calls"] / sample_count if sample_count else 0.0
-        ),
+        mode: (
+            comparison[mode]["model_calls"] / sample_count if sample_count else 0.0
+        )
+        for mode in ("on_demand", "always", "coarse_only")
+        if mode in comparison
     }
     rows = table_rows(
         comparison=comparison,
@@ -282,12 +281,12 @@ def main(argv=None) -> int:
         #: **平均模型调用数/目标** —— 验收线「≤ 1.5」**判的就是这一项**。
         "model_calls_per_target": {
             "samples": sample_count,
-            "on_demand": round(per_target["on_demand"], 4),
-            "always": round(per_target["always"], 4),
+            **{mode: round(value, 4) for mode, value in per_target.items()},
             "note": (
                 "验收线「平均模型调用数/目标 ≤ 1.5」判的是**这一项**"
-                "（门控开那一臂：逐条累加的 `model_calls` ÷ 样本数）。"
+                "（逐条累加的 `model_calls` ÷ 样本数，每一臂各一个数）。"
                 "⚠️ 与上面 `model_calls.sent` **不是一个口径**，两者不能互相换算"
+                "（`sent` = 三臂合计、去掉应答记忆复用后真正发出去的请求数）"
             ),
         },
         "official_rows": list(OFFICIAL_ROWS),
@@ -295,6 +294,7 @@ def main(argv=None) -> int:
         "outcomes": {
             "on_demand": [outcome.to_dict() for outcome in on_demand],
             "always": [outcome.to_dict() for outcome in always],
+            "coarse_only": [outcome.to_dict() for outcome in coarse_only],
         },
         "environment": {
             "python": platform.python_version(),
@@ -437,17 +437,29 @@ def _reverse_lookup(client, sink, declared: tuple[int, int], args) -> tuple[int,
 
 def _print_summary(report: dict, comparison: dict) -> None:
     overall = comparison["overall"]
-    print("=== 硬判据（门控开 ≥ 门控关）===")
+    print("=== 硬判据（门控记录器 ≥ 无条件两段式）===")
     print(
-        f"门控开 {overall['on_demand'] * 100:.1f}% ｜门控关 {overall['always'] * 100:.1f}%"
+        f"门控记录器 {overall['on_demand'] * 100:.1f}%"
+        f" ｜无条件两段式 {overall['always'] * 100:.1f}%"
         f" ｜差 {overall['delta_pp']:+.1f} pp"
         f" ｜{'成立' if overall['criterion_met'] else '不成立'}"
     )
+    if "coarse_only" in comparison:
+        print(
+            f"只用粗定位（基线，1.00 次/目标）："
+            f"{comparison['coarse_only']['accuracy'] * 100:.1f}%"
+        )
+    landing_same = comparison.get("landing_same")
+    if landing_same:
+        print(
+            f"=== 门控降级体检：记录器与无条件两段式的**最终落点**逐条相同的比例 "
+            f"{landing_same['fraction'] * 100:.1f}%（应当 100%）==="
+        )
     print("=== 防掩盖（逐子集，任何单一子集不得比门控关低 1 pp 以上）===")
     for item in comparison["strata"]:
         print(
-            f"  {item['stratum']:<18} 开 {item['on_demand'] * 100:5.1f}%"
-            f" ｜关 {item['always'] * 100:5.1f}% ｜差 {item['delta_pp']:+.1f} pp"
+            f"  {item['stratum']:<18} 记录器 {item['on_demand'] * 100:5.1f}%"
+            f" ｜两段式 {item['always'] * 100:5.1f}% ｜差 {item['delta_pp']:+.1f} pp"
             f" {'✓' if item['within_tolerance'] else '✗'}"
         )
     print(f"防掩盖：{'通过' if comparison['anti_masking_met'] else '未通过'}")
@@ -456,21 +468,30 @@ def _print_summary(report: dict, comparison: dict) -> None:
         f"=== 门控埋点（与分数同一批样本 N={gate['samples']}）==="
     )
     print(
-        f"门控开这一臂：开启精定位 {gate['refine_enabled']} 次"
+        f"记录器这一臂：开启精定位 {gate['refine_enabled']} 次"
         f"｜门控判中 {gate['gate_hits']} 次"
         f"｜**门控关闭率** {1 - gate['hit_rate']:.1%}"
     )
     print(f"命中原因：{gate['reason_distribution']}")
     print(f"判不了的条件：{gate['undecidable_distribution']}")
     print(
-        f"模型调用次数：门控开 {comparison['on_demand']['model_calls']} 次"
-        f"｜门控关 {comparison['always']['model_calls']} 次"
+        f"模型调用次数：记录器 {comparison['on_demand']['model_calls']} 次"
+        f"｜两段式 {comparison['always']['model_calls']} 次"
+        + (
+            f"｜只用粗定位 {comparison['coarse_only']['model_calls']} 次"
+            if "coarse_only" in comparison
+            else ""
+        )
     )
+    per_target = report["model_calls_per_target"]
     print(
-        f"平均模型调用数/目标（验收线「≤ 1.5」判的是这个数）："
-        f"门控开 {report['model_calls_per_target']['on_demand']:.2f}"
-        f"｜门控关 {report['model_calls_per_target']['always']:.2f}"
-        f"（N={report['model_calls_per_target']['samples']}）"
+        "平均模型调用数/目标（验收线「≤ 1.5」判的是这个数）："
+        + "｜".join(
+            f"{name} {per_target[name]:.2f}"
+            for name in ("on_demand", "always", "coarse_only")
+            if name in per_target
+        )
+        + f"（N={per_target['samples']}）"
     )
     print(f"防假象自检（GT 中心当预测点）：{report['self_check_hit_rate'] * 100:.1f}%")
     print("=== 那张 7 行表 ===")
