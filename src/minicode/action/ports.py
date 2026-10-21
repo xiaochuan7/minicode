@@ -431,7 +431,10 @@ class LocateResult:
     """
 
     selected: ControlCandidate | None = None
-    #: 最终落点（**物理表面空间**）：选中项控件框的中心。
+    #: 最终落点（**物理表面空间**）：选中项**控件框**的中心
+    #: （桌面通道 / UIA）。
+    #: ⚠️ **浏览器通道不是控件框中心** —— 它取**可见文本的实际包围盒中心**
+    #: （工单 M28；文本度量是浏览器通道独有的一层，量不到 → 判不了、没有落点）。
     landing_point: tuple[int, int] | None = None
     error_code: ErrorCode | None = None
     error_message: str = ""

@@ -1,4 +1,13 @@
-M25 | 决策层程序的输入类动作补动作记录（type_text / press_key 不再绕过动作执行缝） | Blocked by: M10, M17, M19 | Status: ready-for-agent
+> ⚠️⚠️ **本单已被 [`M25-text-keys-through-the-seam.md`](M25-text-keys-through-the-seam.md) 取代（2026-10-21）。**
+> **文件保留**（工单是历史记录，不删）。
+>
+> **取代关系**：新单在「`type_text` / `press_key` 不再绕过动作执行缝」之外，
+> 还多带两条本单没有的验收项 —— **对外形态完整暴露 M21 锁死的那 12 个动作种类**
+> （D-38 的落点）与**未实现的种类返回明确错误码**；新单也是 M26 新单的阻塞者。
+> 两单在「输入类动作走缝、必有动作记录」这条上**不冲突**，但**编号只能有一张工单**——
+> 以**新单**为准。
+
+M25 | 决策层程序的输入类动作补动作记录（type_text / press_key 不再绕过动作执行缝） | Blocked by: M10, M17, M19 | Status: **已被 M25-text-keys-through-the-seam 取代**
 
 ## Parent
 

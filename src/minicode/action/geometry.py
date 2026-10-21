@@ -59,7 +59,7 @@ def rect_center(rect: tuple[int, int, int, int]) -> tuple[float, float]:
     """矩形中心（物理像素，浮点）。
 
     **矩形 → 落点的换算只此一处**：桌面通道（UIA 控件框）与浏览器通道
-    （页面元素在物理表面空间的矩形）都用它 ——
+    （**可见文本的实际包围盒**，工单 M28 起不再是元素矩形）都用它 ——
     同一句目标描述在两个通道里落到同一类控件上（工单 M13 AC 2）。
     """
     left, top, right, bottom = (int(value) for value in rect)
