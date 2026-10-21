@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from minicode.approval.gate import ApprovalGate
+from minicode.privacy.guard import SensitiveWindowGuard
 
 from .errors import ErrorCode
 from .executor import DoubleClickParams, TimingPolicy
@@ -119,6 +120,7 @@ def run_minimal_loop(
     capture_to_physical_scale: float = 1.0,
     secure_desktop: SecureDesktopDetector | None = None,
     approval_gate: ApprovalGate | None = None,
+    privacy_guard: SensitiveWindowGuard | None = None,
 ) -> LoopOutcome:
     """跑一次最小闭环。"""
     startup = StartupSelfCheck(metrics, tuple(capture_sources), expectations).run()
@@ -153,6 +155,7 @@ def run_minimal_loop(
         capture_to_physical_scale=capture_to_physical_scale,
         secure_desktop=secure_desktop,
         approval_gate=approval_gate,
+        privacy_guard=privacy_guard,
     )
     result = seam.run(SeamRequest(target_description=target_description))
 

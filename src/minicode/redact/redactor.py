@@ -20,13 +20,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .config import ModelContextConfig
 from .errors import ChannelUnavailableError
-from .patterns import PASSWORD_PLACEHOLDER, redact_secrets
+from .patterns import (
+    PASSWORD_PLACEHOLDER,
+    SECRET_PATTERNS,
+    SECRET_PLACEHOLDER,
+    redact_secrets,
+)
 from .report import RedactionReport
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不依赖 action 包（避免两个业务包互相咬住）
@@ -37,6 +42,7 @@ __all__ = [
     "BODY_CONTROL_TYPES",
     "ModelTreeView",
     "TreeRedactor",
+    "redaction_boundary",
 ]
 
 #: 模型侧文本的抬头。**全仓只有这一个模块产出模型侧文本**（单点出口）。
@@ -140,6 +146,30 @@ def _is_body_control(control_type: str) -> bool:
     """是不是正文类控件（值不外发）。"""
     lowered = (control_type or "").strip().lower()
     return any(kind in lowered for kind in BODY_CONTROL_TYPES)
+
+
+def redaction_boundary() -> Mapping[str, Any]:
+    """**脱敏的边界**（一份，可被引用）。
+
+    隐私策略文档（工单 M20）要**引用**这份边界，而不是另抄一遍
+    （工单 M20 AC 4：同一处规则，不写两套）——
+    所以它住在**脱敏器这一侧**：**谁定义规则，谁描述规则**。
+
+    字段：
+
+    * ``model_side_header`` —— 模型侧文本的抬头；
+    * ``password_placeholder`` —— 密码框的值在模型侧是什么；
+    * ``secret_placeholder`` —— 正则命中的敏感片段在模型侧是什么；
+    * ``body_control_types`` —— 正文类控件（值不外发）有哪些；
+    * ``secret_pattern_labels`` —— 五类敏感模式的类目。
+    """
+    return {
+        "model_side_header": MODEL_SIDE_HEADER,
+        "password_placeholder": PASSWORD_PLACEHOLDER,
+        "secret_placeholder": SECRET_PLACEHOLDER,
+        "body_control_types": tuple(BODY_CONTROL_TYPES),
+        "secret_pattern_labels": tuple(label for label, _pattern in SECRET_PATTERNS),
+    }
 
 
 def _render_text(controls: Sequence[ControlCandidate]) -> str:

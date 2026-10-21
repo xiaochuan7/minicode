@@ -22,6 +22,7 @@ from minicode.action.seam import ActionExecutionSeam, SeamRequest
 from minicode.action.windows import WindowsCaptureSource
 from minicode.exec import dpi
 from minicode.lock import acquire, release
+from minicode.privacy.guard import windows_guard
 
 from .capability import BrowserCapabilityTable
 from .cdp import ChromiumCapabilityProbe, ChromiumPage, find_browser_window
@@ -140,6 +141,8 @@ def _run(args) -> int:
             invoker=source,
             anchor=anchor,
             trace_sink=_LogSink(log),
+            # **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
+            privacy_guard=windows_guard(),
         )
         seam_result = seam.run(
             SeamRequest(

@@ -101,6 +101,7 @@ def _run_real(args):
     )
     from minicode.approval.console import console_gate
     from minicode.exec import dpi  # noqa: F401  (导入即声明 PMv2)
+    from minicode.privacy.guard import windows_guard
 
     desktop = current_virtual_desktop()
     tree = WindowsControlTree()
@@ -118,6 +119,9 @@ def _run_real(args):
         secure_desktop=WindowsSecureDesktopDetector(),
         # **审批闸门**（工单 M16）：危险动作要人点头，没批就**零动作下发**。
         approval_gate=console_gate(),
+        # **隐私闸门**（工单 M20）：敏感窗口（标题命中敏感词表或对话框类名）
+        # **根本不许拍** —— 抓帧之前就拦下，画面不进模型上下文。
+        privacy_guard=windows_guard(),
     )
     return outcome
 

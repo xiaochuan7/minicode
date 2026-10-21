@@ -155,6 +155,7 @@ def _run(args) -> int:
     from minicode.model.client import ModelClient
     from minicode.model.config import load_config
     from minicode.model.request_log import JsonlRequestLog
+    from minicode.privacy.guard import windows_guard
     from minicode.uia.capability import CapabilityTable
     from minicode.uia.channel import UiaChannel
     from minicode.uia.windows import (
@@ -236,6 +237,8 @@ def _run(args) -> int:
         secure_desktop=WindowsSecureDesktopDetector(),
         # **审批闸门**（工单 M16）：危险动作要人点头，没批就**零动作下发**。
         approval_gate=console_gate(),
+        # **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
+        privacy_guard=windows_guard(),
     )
     request = SeamRequest(
         target_description=args.target,

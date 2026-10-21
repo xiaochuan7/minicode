@@ -34,17 +34,38 @@ class Approver(Protocol):
 
 @dataclass(frozen=True)
 class WindowInfo:
-    """一个窗口的**身份**：句柄 + 标题。"""
+    """一个窗口的**身份**：句柄 + 标题 + 类名。"""
 
     hwnd: int = 0
     title: str = ""
+    #: 窗口**类名**（如 ``#32770`` = Win32 标准对话框）。
+    #:
+    #: 工单 M20 的「对话框类名」判据要用它（敏感窗口黑名单）——
+    #: 标题之外的第二条判据，判的是**窗口的种类**而不是它的内容。
+    class_name: str = ""
 
 
 @runtime_checkable
 class WindowInspector(Protocol):
-    """读**当前前台窗口**（判「这一帧里有没有敏感窗口」要用）。"""
+    """读**窗口的身份**（判「这一帧里有没有敏感窗口」要用）。
+
+    两个问题，两个方法：
+
+    * :meth:`foreground` —— **当前前台窗口**是谁（M16 的审批闸门问这个）；
+    * :meth:`visible_windows` —— **这一帧里看得见的**窗口有哪些
+      （M20 的隐私闸门问这个）。
+    """
 
     def foreground(self) -> WindowInfo:
+        ...
+
+    def visible_windows(self) -> tuple[WindowInfo, ...]:
+        """**看得见的**顶层窗口（标题 + 类名）。
+
+        抓的是**整屏**帧 —— 画面里有什么，取决于**屏幕上有哪些窗口**，
+        不只是前台那一个：前台背后的密码管理器窗口照样在那一帧里。
+        ⚠️ 只判前台窗口会漏（那是静默漏判，隐私面最不能要的那种）。
+        """
         ...
 
 

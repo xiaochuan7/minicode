@@ -47,6 +47,10 @@ from typing import TYPE_CHECKING, Any
 from minicode.approval.gate import APPROVAL_HANDOFF_NOTE, ApprovalGate
 from minicode.approval.request import TargetPreview
 from minicode.coord.coordinates import DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX, CoordinateOutOfBounds
+from minicode.privacy.guard import (
+    SENSITIVE_WINDOW_SKIPPED_NOTE,
+    SensitiveWindowGuard,
+)
 from minicode.redact.config import ModelContextConfig
 from minicode.redact.errors import ChannelUnavailableError
 from minicode.redact.redactor import TreeRedactor
@@ -237,6 +241,7 @@ class ActionExecutionSeam:
         verifier: Verifier | None = None,
         secure_desktop: SecureDesktopDetector | None = None,
         approval_gate: ApprovalGate | None = None,
+        privacy_guard: SensitiveWindowGuard | None = None,
     ):
         self.capture_sources = tuple(capture_sources)
         #: 缝内唯一的抓屏入口（整屏 / 区域）。
@@ -251,6 +256,10 @@ class ActionExecutionSeam:
         #: 没接就退到一个**没有审批人**的闸门 —— 危险动作一律发不出去。
         #: 「不装闸门」不是一种放行配置。
         self.approval_gate = approval_gate or ApprovalGate()
+        #: **隐私闸门**（工单 M20）。**硬闸门**：敏感窗口（标题命中敏感词表
+        #: 或对话框类名）**根本不许拍** —— 抓帧之前就被拦下。
+        #: 缺省 = 不装闸门（假桌面上没有真窗口可判）。
+        self.privacy_guard = privacy_guard
         self.executor = ActionExecutor(
             injector,
             sleeper=sleeper,
@@ -314,6 +323,14 @@ class ActionExecutionSeam:
             return self._run_zoom(request)
         skipped: list[str] = []
         frame = request.frame
+        # -- 隐私闸门（工单 M20）：**画面进模型上下文之前**先问一次 ------
+        # 黑名单敏感窗口**根本不许拍**：那一帧压根不抓，画面因此不进
+        # 模型上下文（事后拦就晚了）。
+        # ⚠️ **自带的一帧同样要过闸门**（它也会进模型上下文 —— 消歧那一步
+        # 会把它送给模型）。
+        blocked = self._privacy_fail(request)
+        if blocked is not None:
+            return blocked
         if frame is None:
             # -- 审批（工单 M16）：**抓帧之前**先问一次 --------------------
             # 敏感窗口的画面一旦被抓走送进模型，审批就已经晚了 ——
@@ -705,6 +722,11 @@ class ActionExecutionSeam:
         放大是**观察**：不注入任何输入；落点是模型给的整屏坐标换算出来的。
         与裁剪路径的契约区别：这里**不加任何裁剪原点偏移**。
         """
+        # -- 隐私闸门（工单 M20）：**回源重抓之前**先问一次 --------------
+        # 黑名单敏感窗口**根本不许拍**（回源重抓也是拍）。
+        blocked = self._privacy_fail(request)
+        if blocked is not None:
+            return blocked
         region = request.params.get("region")
         try:
             rect = tuple(int(value) for value in region)  # type: ignore[arg-type]
@@ -820,6 +842,13 @@ class ActionExecutionSeam:
         返回形状与既有动作一致：动作 + 最终落点（这两个动作没有落点，是 ``None``）
         + 意图 + 结果；同样产出**恰好一条**追踪记录。
         """
+        # -- 隐私闸门（工单 M20）：**抓帧之前**先问一次 ------------------
+        # 黑名单敏感窗口**根本不许拍**：截图动作也不许。
+        # ⚠️ **等待不拍画面** → 不问（闸门不许变成「什么都不许做」）。
+        if request.action_kind is ActionKind.SCREENSHOT:
+            blocked = self._privacy_fail(request)
+            if blocked is not None:
+                return blocked
         region = request.params.get("region")
         if region is not None and self._region_out_of_desktop(region):
             # 越界不夹取（架构备忘 §3）：区域越出物理表面就报错，
@@ -976,6 +1005,29 @@ class ActionExecutionSeam:
             return None
         return self.visual_admission.admit()
 
+    def _privacy_fail(self, request: SeamRequest) -> SeamResult | None:
+        """问一次「这一步能不能拍」（工单 M20 的**硬闸门**）。
+
+        没装闸门 → ``None``（假桌面上没有真窗口可判）；
+        装了闸门而屏幕上**有**黑名单窗口 → 返回那条失败结果
+        （**零动作下发**，记录里带一笔「该窗口被跳过」）。
+
+        ⚠️ 它**在审批之前**：黑名单窗口是**根本不许拍**，不是「问过人就能拍」
+        （M16 的机制是人工放行，两者互斥 —— 见 :mod:`minicode.privacy.policy`）。
+        """
+        if self.privacy_guard is None:
+            return None
+        verdict = self.privacy_guard.check()
+        if not verdict.blocked:
+            return None
+        return self._fail(
+            request,
+            ErrorCode.SENSITIVE_WINDOW_BLOCKED,
+            verdict.reason,
+            notes=(SENSITIVE_WINDOW_SKIPPED_NOTE,),
+            privacy=verdict.to_dict(),
+        )
+
     def _render_model_view(
         self, candidates: Sequence[ControlCandidate]
     ) -> ModelTreeView | None:
@@ -1058,6 +1110,7 @@ class ActionExecutionSeam:
         failure_type: str = "",
         notes: tuple[str, ...] = (),
         approval: Mapping[str, Any] | None = None,
+        privacy: Mapping[str, Any] | None = None,
     ) -> SeamResult:
         """失败路径：产出一条失败记录，**不下发任何动作**。
 
@@ -1132,6 +1185,7 @@ class ActionExecutionSeam:
             gate_undecidable=visual.gate_undecidable if visual is not None else (),
             refine_enabled=visual.refine_enabled if visual is not None else False,
             approval=dict(approval) if approval is not None else None,
+            privacy=dict(privacy) if privacy is not None else None,
             result=result,
             model_view=model_view,
         )

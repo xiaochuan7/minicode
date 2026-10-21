@@ -493,6 +493,7 @@ class WindowsDesktopExecutor:
             WindowsWindowController,
             current_virtual_desktop,
         )
+        from minicode.privacy.guard import windows_guard
         from minicode.uia.capability import CapabilityTable
         from minicode.uia.channel import UiaChannel
         from minicode.uia.observer import UiaStateObserver
@@ -537,6 +538,8 @@ class WindowsDesktopExecutor:
             zoom_locator=self._visual.zoom_locator(),
             verifier=verifier,
             secure_desktop=WindowsSecureDesktopDetector(),
+            # **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
+            privacy_guard=windows_guard(),
         )
         wiring = _Wiring(anchor=anchor, seam=seam, sink=sink, capability=entry.availability.value)
         self._wiring[window] = wiring

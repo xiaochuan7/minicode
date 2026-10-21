@@ -724,6 +724,7 @@ class NativeAppExecutor:
             WindowsWindowController,
             current_virtual_desktop,
         )
+        from minicode.privacy.guard import windows_guard
         from minicode.uia.channel import UiaChannel
         from minicode.uia.observer import UiaStateObserver
         from minicode.verification.layer import VerificationLayer
@@ -747,6 +748,8 @@ class NativeAppExecutor:
             visual_locator=self._visual.locator(),
             verifier=verifier,
             secure_desktop=WindowsSecureDesktopDetector(),
+            # **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
+            privacy_guard=windows_guard(),
         )
 
     def _find_window(self) -> int:
@@ -1280,6 +1283,7 @@ class ElectronExecutor:
         from minicode.action.capture import CapturePort
         from minicode.action.fakes import FakeControlTree, FakeInputInjector
         from minicode.action.windows import WindowsCaptureSource
+        from minicode.privacy.guard import windows_guard
         from minicode.verification.layer import VerificationLayer
 
         from .real import PageObserver
@@ -1304,6 +1308,8 @@ class ElectronExecutor:
                 screenshot_port=CapturePort([WindowsCaptureSource()]),
                 observer=PageObserver(self._source),
             ),
+            # **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
+            privacy_guard=windows_guard(),
         )
         before = len(self._sink.traces)
         if step.action_kind is ActionKind.TYPE:

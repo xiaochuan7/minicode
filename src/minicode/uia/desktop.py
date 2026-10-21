@@ -26,6 +26,7 @@ from minicode.action.ports import (
 from minicode.action.records import ListTraceSink
 from minicode.action.seam import ActionExecutionSeam
 from minicode.approval.gate import ApprovalGate
+from minicode.privacy.guard import SensitiveWindowGuard
 from minicode.uia.capability import CapabilityTable
 from minicode.uia.channel import UiaChannel
 from minicode.uia.ports import CandidatePointer
@@ -76,6 +77,8 @@ class Desktop:
     window_controller: WindowController
     secure_desktop: SecureDesktopDetector
     approval_gate: ApprovalGate
+    #: **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
+    privacy_guard: SensitiveWindowGuard
     double_click_params: DoubleClickParams
     invoker: WindowsElementInvoker
     sleeper: Callable[[float], None]
@@ -107,6 +110,8 @@ class Desktop:
             secure_desktop=self.secure_desktop,
             # **审批闸门**（工单 M16）：危险动作要人点头，没批就零动作下发。
             approval_gate=self.approval_gate,
+            # **隐私闸门**（工单 M20）：敏感窗口根本不许拍（抓帧之前拦下）。
+            privacy_guard=self.privacy_guard,
         )
 
 
@@ -136,6 +141,7 @@ def build_desktop(
     )
     from minicode.approval.console import console_gate
     from minicode.exec import dpi  # noqa: F401  (导入即声明 PMv2)
+    from minicode.privacy.guard import windows_guard
     from minicode.uia.windows import WindowsElementInvoker
 
     hwnd = find_window_by_class(window_class)
@@ -156,6 +162,9 @@ def build_desktop(
         window_controller=WindowsWindowController(),
         secure_desktop=WindowsSecureDesktopDetector(),
         approval_gate=console_gate(),
+        # **隐私闸门**（工单 M20）：敏感窗口（标题命中敏感词表或对话框类名）
+        # **根本不许拍** —— 抓帧之前就拦下，画面不进模型上下文。
+        privacy_guard=windows_guard(),
         double_click_params=system_double_click_params(),
         invoker=WindowsElementInvoker(port),
         sleeper=time.sleep,

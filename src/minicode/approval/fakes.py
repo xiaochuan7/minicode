@@ -77,13 +77,28 @@ class ScriptedApprover:
 
 
 class FakeWindowInspector:
-    """假的前台窗口读取。"""
+    """假的前台窗口读取。
 
-    def __init__(self, window: WindowInfo | None = None):
+    ``visible_windows`` 默认**只有前台那一个**；要多给几个后台窗口就传
+    ``visible=``（M20 的隐私闸门问的是「这一帧里看得见的窗口有哪些」）。
+    """
+
+    def __init__(
+        self,
+        window: WindowInfo | None = None,
+        *,
+        visible: Sequence[WindowInfo] = (),
+    ):
         self.window = window or WindowInfo()
+        self._visible = tuple(visible)
 
     def foreground(self) -> WindowInfo:
         return self.window
+
+    def visible_windows(self) -> tuple[WindowInfo, ...]:
+        if self._visible:
+            return self._visible
+        return (self.window,)
 
 
 class FakeSensitivePolicy:
