@@ -24,13 +24,26 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
+from functools import lru_cache
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SELF = Path(__file__).name
 _EXEMPT_DIRS = ("docs/research/bottom-drafts",)
-_SKIP_DIRS = {".git", ".venv", "__pycache__", "runs", ".scratch", ".pytest_cache", ".ruff_cache"}
+#: 静态兜底：即使 git 不可用也必须跳过的目录。
+_SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    "runs",
+    ".scratch",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".worktrees",
+    ".tmp_runs",
+}
 _SUFFIXES = (".md", ".py")
 _NEEDLE = "61.7"
 _CALIBER_MARKERS = ("partial", "部分分")
@@ -66,6 +79,35 @@ _README_NUMBERS = ("19.6", "6.1", "53", "14.8")
 _HARNESS_GAIN_CONTEXT = ("OpenGCUA", "换 harness", "同 harness", "只换")
 
 
+def _git_ignored(candidates: list[Path]) -> set[Path]:
+    """问 git：哪些路径被 ``.gitignore`` 忽略了（一次批量调用）。
+
+    「被 gitignore 的目录」**必须**跳过 —— 否则并行开发的工作树
+    （``.worktrees/``）里的文档副本会被当成第二份正文扫进来，
+    同一处引用被数了 N 次，全量测试假红。
+
+    git 不可用时返回空集：静态 ``_SKIP_DIRS`` 仍然兜底。
+    """
+    if not candidates:
+        return set()
+    payload = "\0".join(path.as_posix() for path in candidates) + "\0"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "check-ignore", "--stdin", "-z"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode not in (0, 1):  # 0 = 有命中；1 = 一条都没命中
+        return set()
+    return {Path(item) for item in proc.stdout.split("\0") if item}
+
+
+@lru_cache(maxsize=1)
 def _text_files() -> list[Path]:
     files: list[Path] = []
     for path in _REPO_ROOT.rglob("*"):
@@ -79,7 +121,8 @@ def _text_files() -> list[Path]:
         if any(relative.as_posix().startswith(prefix) for prefix in _EXEMPT_DIRS):
             continue
         files.append(path)
-    return sorted(files)
+    ignored = _git_ignored([path.relative_to(_REPO_ROOT) for path in files])
+    return sorted(path for path in files if path.relative_to(_REPO_ROOT) not in ignored)
 
 
 class CitationDisciplineTest(unittest.TestCase):
@@ -93,6 +136,25 @@ class CitationDisciplineTest(unittest.TestCase):
             if _NEEDLE in path.read_text(encoding="utf-8", errors="replace")
         ]
         self.assertTrue(hits, "全库扫不到 61.7 了，扫描规则可能失效")
+
+    def test_ignored_directories_are_not_scanned(self):
+        """被 ``.gitignore`` 的目录（``.worktrees/`` 等）不许被扫进来。
+
+        回归守卫：并行开发的每个工作树里都有一份文档副本，扫进去会把
+        同一处引用数成 N 份 → 全量测试假红（2026-10-21 实测踩过）。
+        """
+        for ignored in ("runs/x.md", ".worktrees/M23/docs/x.md", ".scratch/x.md"):
+            with self.subTest(ignored=ignored):
+                self.assertIn(
+                    Path(ignored),
+                    _git_ignored([Path(ignored)]),
+                    f"{ignored} 应当被 git 忽略（.gitignore 里要有它）",
+                )
+        scanned = {path.relative_to(_REPO_ROOT).as_posix() for path in _text_files()}
+        self.assertFalse(
+            [name for name in scanned if name.startswith((".worktrees/", "runs/"))],
+            "被忽略的目录被扫进来了",
+        )
 
     def test_every_mention_carries_the_caliber(self):
         problems: list[str] = []
