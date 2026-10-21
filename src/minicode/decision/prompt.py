@@ -32,6 +32,8 @@ PROGRAM_API_DOC = """程序里可以用的接口（只有这些，没有别的�
 - press_key(*keys) -> dict：按键，例如 press_key('enter')
 - wait(ms) -> dict：等待若干毫秒
 - screenshot() -> dict：截图，只给摘要（宽、高、sha256），不给图像数据
+- observe() -> dict：看当前画面（只看不动作，不注入任何输入）。返回 {"changed": 界面相对上一次观察变没变, "changed_available": 判不判得出来, "text": 画面上的文字, "text_available": 读没读到, "size": [宽, 高]}
+- last_check() -> dict：上一次动作的校验读数。返回 {"available": 有没有读数, "changed": 界面变没变, "expectation_held": 期望成不成立（没有期望时是 null）, "landing_deviation_px": 落点偏离量（没有读数时是 null）, "error_code": 上一次动作的错误码}
 - ask_user(reason) -> dict：把任务交还给人（harness 会停止本轮）
 另外有 print(...) 输出标准输出。没有 import、没有 open、没有 eval/exec。"""
 
@@ -41,7 +43,13 @@ _PLAN_RULES = """要求：
 2. 程序里可以用 if / for 做判断与循环 —— 需要看结果再决定下一步时就这样写。
 3. 每一步之后 print 一句你依据什么做了判断（标准输出会回灌给你）。
 4. 任务是否完成由 harness 判定；你只要把能做的动作做掉。
-5. 如果某一步做不了（返回的 ok 是 false），换一个做法再试；实在做不了就 ask_user。"""
+5. 如果某一步做不了（返回的 ok 是 false），换一个做法再试；实在做不了就 ask_user。
+6. 要看画面自己调 observe()：上下文里的图不保证是当前这一帧，observe() 给你
+   「相对上一次观察变没变」和画面上的文字。
+7. 上一步到底成没成，用 last_check() 读：changed 是界面变没变，expectation_held
+   是期望成不成立，error_code 是上一步的错误码 —— 据此决定下一步，别重复同一个动作。
+8. last_check() 说界面没变（changed 是 false）时，说明上一步没生效：换一个做法，
+   不要把同一个动作再做一遍。"""
 
 _FENCE_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 

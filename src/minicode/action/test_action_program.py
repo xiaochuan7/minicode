@@ -75,7 +75,17 @@ class ProgramApiSurfaceTest(unittest.TestCase):
     def test_api_names_are_exactly_the_protocol_actions(self):
         self.assertEqual(
             set(PROGRAM_API_NAMES),
-            {"click", "find", "type_text", "press_key", "wait", "screenshot", "ask_user"},
+            {
+                "click",
+                "find",
+                "type_text",
+                "press_key",
+                "wait",
+                "screenshot",
+                "observe",
+                "last_check",
+                "ask_user",
+            },
         )
 
     def test_extra_api_name_is_rejected(self):

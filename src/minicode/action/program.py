@@ -52,6 +52,8 @@ PROGRAM_API_NAMES: frozenset[str] = frozenset(
         "press_key",  # 按键
         "wait",  # 等待
         "screenshot",  # 截图（只给摘要，不给图像数据）
+        "observe",  # 观察当前画面（只看不动作）：读画面 + 判断界面变没变
+        "last_check",  # 上一次动作的校验读数（程序据此分支）
         "ask_user",  # 请求人工（把任务交还给人）
     }
 )
