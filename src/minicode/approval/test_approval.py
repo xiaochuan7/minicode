@@ -693,106 +693,11 @@ class M24SecondConfirmationTest(unittest.TestCase):
         "sensitive_screenshot",
     )
 
-    #: 关键词表**逐条钉住**（本单只改接线与触发路径，词表一个字都不动）。
+    #: ⚠️ **这里不抄关键词表**（M24 的评审发现）：抄一份 = 仓库里多一份真值，
+    #: 而 D-30「十一类关键词表按真实日志校一遍」（落点 **M30**）一改表，
+    #: 这份副本**必红** —— 而且要改两处。
+    #: 关键词表只有一份：`approval/catalog.py::DANGER_RULES`。
     #: 「截含敏感窗口的屏」是**由状态触发**的，不在关键词表里。
-    KEYWORDS = {
-        DangerCategory.REGISTRY: (
-            "注册表",
-            "registry",
-            "regedit",
-            "reg add",
-            "reg delete",
-            "hkey_",
-        ),
-        DangerCategory.INSTALL_SOFTWARE: (
-            "安装",
-            "卸载",
-            "install",
-            "uninstall",
-            "installer",
-            "setup.exe",
-            "msiexec",
-            "安装包",
-        ),
-        DangerCategory.COMMAND_LINE: (
-            "命令行",
-            "命令提示符",
-            "运行命令",
-            "执行命令",
-            "command line",
-            "powershell",
-            "cmd.exe",
-            "cmd /",
-            "shell",
-        ),
-        DangerCategory.SYSTEM_SETTINGS: (
-            "系统设置",
-            "控制面板",
-            "系统属性",
-            "system settings",
-            "control panel",
-            "防火墙",
-            "默认浏览器",
-            "开机启动",
-            "开机自启",
-            "系统更新",
-            "缩放",
-        ),
-        DangerCategory.PAYMENT: (
-            "支付",
-            "付款",
-            "购买",
-            "下单",
-            "转账",
-            "充值",
-            "扣款",
-            "结账",
-            "pay",
-            "payment",
-            "purchase",
-            "checkout",
-        ),
-        DangerCategory.SEND_MESSAGE: (
-            "发送",
-            "发消息",
-            "发表",
-            "投递",
-            "send",
-            "post message",
-        ),
-        DangerCategory.DELETE: (
-            "删除",
-            "删掉",
-            "移除",
-            "清空",
-            "格式化",
-            "delete",
-            "remove",
-            "erase",
-            "format disk",
-        ),
-        DangerCategory.REGISTER: (
-            "注册",
-            "报名",
-            "开通账号",
-            "创建账号",
-            "开户",
-            "sign up",
-            "signup",
-            "register",
-        ),
-        DangerCategory.ELEVATION: (
-            "提权",
-            "管理员权限",
-            "以管理员身份",
-            "管理员运行",
-            "uac",
-            "runas",
-            "elevate",
-            "admin",
-        ),
-        DangerCategory.CLIPBOARD_READ: ("剪贴板", "clipboard"),
-    }
 
     def test_the_eleven_categories_are_all_still_there(self):
         """AC5：十一类**逐类点名** —— 清单不许少一类。"""
@@ -820,10 +725,34 @@ class M24SecondConfirmationTest(unittest.TestCase):
                 self.assertFalse(outcome.approved)
 
     def test_the_keyword_table_is_unchanged(self):
-        """AC5：本单只改接线与触发路径 —— 关键词表一个字都不动。"""
-        self.assertEqual(
-            {rule.category: rule.keywords for rule in DANGER_RULES}, self.KEYWORDS
-        )
+        """AC5：本单只改接线与触发路径 —— 关键词表一个字都不动。
+
+        ⚠️ **断言的是行为，不是数据**：不把词表抄一份到测试里
+        （抄一份 = 第二份真值，且 D-30 / M30 校表时必红）。
+        这里直接读**唯一那份** `catalog.DANGER_RULES`，断言：
+
+        1. 每个关键词**都真的会被分类**（表是活的，不是摆设）；
+        2. 每条规则**至少有一个关键词**落回它自己那一类（没有死规则）；
+        3. 词表覆盖到的类别**每个都进得了分类**。
+        """
+        gate = ApprovalGate(approver=DenyApprover())
+        for rule in DANGER_RULES:
+            for keyword in rule.keywords:
+                with self.subTest(category=rule.category.value, keyword=keyword):
+                    match = gate.classify(intent=keyword)
+                    self.assertIsNotNone(
+                        match, f"关键词 {keyword!r} 没被任何一类命中"
+                    )
+        for rule in DANGER_RULES:
+            with self.subTest(rule=rule.category.value):
+                hits = [
+                    gate.classify(intent=keyword)
+                    for keyword in rule.keywords
+                ]
+                self.assertTrue(
+                    any(hit is not None and hit.category == rule.category for hit in hits),
+                    f"{rule.category.value} 这一条规则自己命中不了（全是死词）",
+                )
 
     def test_the_sensitive_window_port_is_provided_by_the_privacy_blacklist(self):
         """接线：M16 的端口由 **M20 的黑名单**提供（词表只有一份）。"""

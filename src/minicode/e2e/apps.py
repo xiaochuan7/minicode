@@ -108,6 +108,23 @@ _VK_MENU = 0x12
 _KEYEVENTF_KEYUP = 0x0002
 
 
+def _landing_error_px(
+    landing: tuple[int, int], rect: tuple[int, int, int, int]
+) -> float:
+    """落点与**目标矩形**的偏差：落在里面 = 0 px，落在外面 = 到最近边的距离。
+
+    ⚠️ 工单 **M28** 起浏览器通道的落点是**可见文本的实际区域中心**，
+    不是元素矩形中心 → 「到元素中心的距离」不再是这条通道的判据
+    （扁平 DOM 上元素框是整行宽，两者能差几百 px）。
+    **「落点落在目标矩形里」**这条仍然成立，且才是这里有信息量的检查。
+    """
+    x, y = float(landing[0]), float(landing[1])
+    left, top, right, bottom = (float(value) for value in rect)
+    dx = max(left - x, 0.0, x - right)
+    dy = max(top - y, 0.0, y - bottom)
+    return math.hypot(dx, dy)
+
+
 def alt_bring_to_front(hwnd: int) -> bool:
     """**ALT 技巧**置前：按住 ALT 再 ``SetForegroundWindow``。
 
@@ -1340,7 +1357,7 @@ class ElectronExecutor:
         landing = result.final_point
         truth, truth_source = self._landing_truth(step, trace)
         error = (
-            math.dist((float(landing[0]), float(landing[1])), truth)
+            _landing_error_px(landing, truth)
             if landing is not None and truth is not None
             else None
         )
@@ -1378,12 +1395,15 @@ class ElectronExecutor:
 
     def _landing_truth(
         self, step: Step, trace: Any
-    ) -> tuple[tuple[int, int] | None, str]:
-        """浏览器通道的**真值**：页面结构里那个元素的矩形中心（物理表面空间）。
+    ) -> tuple[tuple[int, int, int, int] | None, str]:
+        """浏览器通道的**真值**：页面结构里那个元素的矩形（物理表面空间）。
 
-        ⚠️ 浏览器通道的落点**按定义**就是元素矩形的中心 → 偏差恒为 0；
-        真正有信息量的是**落点落在浏览器窗口的物理矩形里**
-        （「坐标不许挪到别的窗口」那条）。
+        ⚠️ 工单 **M28** 起，浏览器通道的落点取的是**可见文本的实际区域中心**，
+        **不再是元素矩形中心** —— 所以「落点 == 元素矩形中心」这条老判据
+        **已经不成立**（扁平 DOM 上元素框是整行宽，两者能差几百 px）。
+        落点与真值的关系现在是「**落点必须落在元素矩形里面**」——
+        这条**仍然成立**，而且它才是这里真正有信息量的检查
+        （「落点没有落到别的控件上」）。
         """
         selected = getattr(trace, "selected", None) if trace is not None else None
         if selected is None:
@@ -1392,8 +1412,8 @@ class ElectronExecutor:
         if rect[2] <= rect[0] or rect[3] <= rect[1]:
             return None, "（元素矩形不合法）"
         return (
-            ((rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2),
-            "页面结构里的元素矩形中心",
+            (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])),
+            "页面结构里的元素矩形（落点必须落在它里面）",
         )
 
     def _page_setting(self) -> str:
@@ -1448,7 +1468,7 @@ class ElectronExecutor:
         return (
             f"页面结构可用（可访问性树里 {assessment.named_elements} 个具名元素、"
             f"{assessment.unnamed_interactive} 个无文本的可交互元素）"
-            "→ 选结构通道：零模型成本、落点直接取元素矩形中心；"
+            "→ 选结构通道：零模型成本、落点取可见文本的实际区域（工单 M28）；"
             "视觉通道要调模型且更慢"
         )
 

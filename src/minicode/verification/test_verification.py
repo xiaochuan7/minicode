@@ -777,6 +777,12 @@ class OcrTextComparisonTest(unittest.TestCase):
 class OcrTextNormalizationTest(unittest.TestCase):
     """OCR 读数与界面上的字有系统性差别（工单 M27 的实测）。"""
 
+    def _request(self, target):
+        return VerifyRequest(
+            expectation=Expectation(ExpectationKind.TEXT_APPEARS, target),
+            baseline_frame=make_frame(_WIDTH, _HEIGHT),
+        )
+
     def test_the_fullwidth_percent_sign_is_the_same_value(self):
         """Windows 的 OCR 把 ``%`` 认成全角 ``％`` —— 那是同一个值。"""
         self.assertIn("150%", normalize_ocr_text("Scaling 150％"))
@@ -788,9 +794,40 @@ class OcrTextNormalizationTest(unittest.TestCase):
     def test_the_case_does_not_matter(self):
         self.assertIn("scale", normalize_ocr_text("Scale"))
 
-    def test_the_tree_text_is_not_touched_by_this_rule(self):
-        """这一道**只**作用于 OCR 那一路（树里的文本是原样比对的）。"""
-        self.assertNotEqual(normalize_ocr_text("Scaling"), "Scaling")
+    def test_the_tree_path_compares_verbatim_while_the_ocr_path_normalizes(self):
+        """树里的文本是**原样比对**的；**只有** OCR 那一路才归一。
+
+        同一个目标：树里写的是「Scaling 150%」，期望写的是「scaling 150%」——
+
+        * **树那一路**：原样比对 → 大小写不同 → **不成立**（它不归一）；
+        * **OCR 那一路**：归一之后 → **成立**。
+
+        ⚠️ 这条钉的是**外部行为**（两条路的判定不同），
+        不是「归一函数不是恒等函数」。
+        """
+        # -- 树那一路：原样比对 → 大小写不同 → 不成立 ----------------------
+        tree_layer, _ = _layer(
+            [make_frame(_WIDTH, _HEIGHT)],
+            observer=FakeStateObserver(
+                sequence=[
+                    {"scaling 150%": [ControlCandidate(name="Scaling 150%")]},
+                    {"scaling 150%": [ControlCandidate(name="Scaling 150%")]},
+                ]
+            ),
+            ocr_port=FakeOcrPort(texts=["Scaling 150%", "Scaling 150%"]),
+        )
+        tree_result = _verify(tree_layer, self._request("scaling 150%"))
+        self.assertFalse(tree_result.satisfied)
+        self.assertEqual(tree_result.outcome, OUTCOME_EXPECTATION_NOT_MET)
+        # -- OCR 那一路：归一之后 → 成立 -----------------------------------
+        ocr_layer, _ = _layer(
+            [make_frame(_WIDTH, _HEIGHT)],
+            observer=FakeStateObserver(sequence=[{}, {}]),
+            ocr_port=FakeOcrPort(texts=["", "Scaling 150%"]),
+        )
+        ocr_result = _verify(ocr_layer, self._request("scaling 150%"))
+        self.assertTrue(ocr_result.satisfied)
+        self.assertEqual(ocr_result.outcome, OUTCOME_EXPECTATION_MET)
 
 
 def _build_seam(*, candidates=(), verifier=None):

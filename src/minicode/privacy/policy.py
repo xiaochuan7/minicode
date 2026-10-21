@@ -237,8 +237,10 @@ class PrivacyPolicy:
     """**隐私策略**（一份）。"""
 
     #: 敏感窗口黑名单（发送前）。
+    #: ⚠️ **默认就是那个单例**（`DEFAULT_BLACKLIST`）——
+    #: 黑名单与审批闸门两层拿的必须是**同一个对象**（工单 M24）。
     sensitive_windows: SensitiveWindowBlacklist = field(
-        default_factory=SensitiveWindowBlacklist
+        default_factory=lambda: DEFAULT_BLACKLIST
     )
     #: **送进模型**的内容范围。
     sent_to_model: tuple[PolicyClause, ...] = ()
@@ -402,9 +404,9 @@ def _persisted_clauses() -> tuple[PolicyClause, ...]:
         ),
         PolicyClause(
             key="skipped_window",
-            title="敏感窗口被跳过",
+            title="被敏感窗口策略拦下",
             detail=(
-                "黑名单窗口被跳过时，动作记录里记一笔（窗口标题 + 命中的判据 + "
+                "黑名单窗口被拦下时，动作记录里记一笔（窗口标题 + 命中的判据 + "
                 "判据来源）；**画面一个字都不落**。"
             ),
             implementation="minicode.action.records:build_record",
@@ -444,7 +446,7 @@ def default_policy() -> PrivacyPolicy:
     （工单 M20 AC 4）。
     """
     return PrivacyPolicy(
-        sensitive_windows=SensitiveWindowBlacklist(),
+        sensitive_windows=DEFAULT_BLACKLIST,
         sent_to_model=_sent_clauses(),
         withheld=_withheld_clauses(),
         persisted=_persisted_clauses(),

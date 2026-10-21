@@ -866,8 +866,16 @@ class HalfResult:
     noise_magnitude_pp: float
     flips_gate_attributable: int
     flips_noise_attributable: int
+    hard_criterion_met: bool
+    noise_criterion_met: bool
     criterion_met: bool
     conclusion: str
+    #: **第三条臂**：粗定位**直接**落点（不做第二遍精定位）——
+    #: M8 那个 38.1% 的基线，以及「crop 精定位 胜/负」条数。
+    coarse_only_hits: int
+    coarse_only_accuracy: float
+    refine_wins: int
+    refine_losses: int
     strata: tuple[dict[str, Any], ...]
     anti_masking_met: bool
     coarse_shared: dict[str, Any]
@@ -883,6 +891,7 @@ class HalfResult:
             "delta_pp": self.delta_pp,
             "delta_is_point_estimate": self.delta_is_point,
             "gate_off_rate": self.gate_off_rate,
+            "gate_off_rate_definition": "门控**未触发**的条数 / 样本数（≠ M8 的「没开 crop 精定位」）",
             "flips": self.flips,
             "coarse_differs": self.coarse_differs,
             "noise": {
@@ -894,8 +903,23 @@ class HalfResult:
                 "coarse_differs_ratio_pp": self.noise_coarse_differs_pp,
                 "magnitude_pp": self.noise_magnitude_pp,
             },
+            "criteria": {
+                "hard_criterion_met": self.hard_criterion_met,
+                "noise_criterion_met": self.noise_criterion_met,
+                "criterion_met": self.criterion_met,
+            },
             "criterion_met": self.criterion_met,
             "conclusion": self.conclusion,
+            "coarse_only": {
+                "hits": self.coarse_only_hits,
+                "accuracy": self.coarse_only_accuracy,
+                "note": "粗定位**直接**落点（不做第二遍精定位）—— M8 那个 38.1% 的基线",
+            },
+            "refine_vs_coarse": {
+                "wins": self.refine_wins,
+                "losses": self.refine_losses,
+                "note": "crop 精定位相对粗定位：胜 = 粗定位没中而精定位中了；负 = 反过来",
+            },
             "strata": [dict(item) for item in self.strata],
             "anti_masking_met": self.anti_masking_met,
             "coarse_shared": dict(self.coarse_shared),
@@ -967,6 +991,21 @@ def evaluate_half(
             }
         )
     shared = sum(1 for sample in samples if not sample.coarse_differs)
+    # -- 第三条臂：粗定位**直接**落点（不做第二遍精定位）--------------------
+    # M8 那个 38.1% 的基线；以及「crop 精定位 胜/负」条数（M8 的 8 胜 0 负）。
+    # ⚠️ 这两个数**不是**门控的效果，是「精定位值不值得做」的依据 ——
+    # D-02（按需触发要不要退役）归 M29，它要的就是这个区分。
+    coarse_only_hits = sum(1 for sample in samples if sample.always_coarse_hit is True)
+    refine_wins = sum(
+        1
+        for sample in samples
+        if sample.always_coarse_hit is False and sample.always_path.hit is True
+    )
+    refine_losses = sum(
+        1
+        for sample in samples
+        if sample.always_coarse_hit is True and sample.always_path.hit is False
+    )
     return HalfResult(
         half=half,
         samples=total,
@@ -984,8 +1023,14 @@ def evaluate_half(
         noise_magnitude_pp=noise_pp,
         flips_gate_attributable=flips_gate,
         flips_noise_attributable=flips_noise,
+        hard_criterion_met=hard_ok,
+        noise_criterion_met=noise_ok,
         criterion_met=hard_ok and noise_ok,
         conclusion="成立" if (hard_ok and noise_ok) else "不成立",
+        coarse_only_hits=coarse_only_hits,
+        coarse_only_accuracy=(coarse_only_hits / total if total else 0.0),
+        refine_wins=refine_wins,
+        refine_losses=refine_losses,
         strata=tuple(strata),
         anti_masking_met=all(item["within_tolerance"] for item in strata),
         coarse_shared={

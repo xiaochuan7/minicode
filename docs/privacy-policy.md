@@ -33,7 +33,7 @@
 | **截图只落哈希** | 落盘的是截图哈希（SHA-256 十六进制），**不落原图**；抓图尺寸与图像来源一起落。 | `minicode.action.records:frame_fields` |
 | **动作记录** | 动作种类、目标、控件框、落点（物理表面空间）、截图哈希、错误码、三段耗时与三类失败；**输入文本的正文不落**。 | `minicode.action.records:ActionRecord.to_dict` |
 | **落盘前脱敏** | 落盘前用**脱敏器同一套规则**把密钥形态的明文换成占位符；摘要字段（截图哈希）放行（它是摘要，不是明文）。 | `minicode.redact.log:sanitize_record` |
-| **敏感窗口被跳过** | 黑名单窗口被跳过时，动作记录里记一笔（窗口标题 + 命中的判据 + 判据来源）；**画面一个字都不落**。 | `minicode.action.records:build_record` |
+| **被敏感窗口策略拦下** | 黑名单窗口被拦下时，动作记录里记一笔（窗口标题 + 命中的判据 + 判据来源）；**画面一个字都不落**。 | `minicode.action.records:build_record` |
 
 ## 4. 敏感窗口黑名单（发送前）
 

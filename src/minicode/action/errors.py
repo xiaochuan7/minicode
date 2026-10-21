@@ -126,7 +126,7 @@ class ErrorCode(StrEnum):
     CAPTURE_EMPTY = "capture_empty"
 
     # -- 隐私策略（工单 M20）--
-    #: **敏感窗口被跳过**：黑名单窗口（标题命中敏感词表或对话框类名）
+    #: **被敏感窗口策略拦下**：黑名单窗口（标题命中敏感词表或对话框类名）
     #: 在**抓帧之前**被拦下 —— 那一帧根本没拍，画面不进模型上下文。
     #:
     #: ⚠️ 归「执行失败」（与 ``capture_empty`` 同类：抓帧阶段被拒）。
@@ -209,7 +209,7 @@ FAILURE_TYPE_BY_CODE: Mapping[ErrorCode, FailureType] = {
     ErrorCode.EXECUTE_FAILED: FailureType.EXECUTION,
     ErrorCode.CLIPPED_BY_DESKTOP: FailureType.EXECUTION,
     ErrorCode.CAPTURE_EMPTY: FailureType.EXECUTION,
-    #: **敏感窗口被跳过**（工单 M20）：抓帧之前被硬闸门拦下 → 零抓帧。
+    #: **被敏感窗口策略拦下**（工单 M20）：抓帧之前被硬闸门拦下 → 零抓帧。
     ErrorCode.SENSITIVE_WINDOW_BLOCKED: FailureType.EXECUTION,
     ErrorCode.INJECTION_BLOCKED: FailureType.EXECUTION,
     ErrorCode.CURSOR_MISMATCH: FailureType.EXECUTION,

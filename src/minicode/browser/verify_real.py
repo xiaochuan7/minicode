@@ -21,11 +21,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from minicode.action.executor import ActionExecutor  # noqa: E402
+from minicode.action.geometry import center_point  # noqa: E402
 from minicode.action.ports import LocateRequest, WindowAnchor  # noqa: E402
 from minicode.action.windows import WindowsInputInjector  # noqa: E402
 from minicode.browser.capability import BrowserCapabilityTable  # noqa: E402
 from minicode.browser.cdp import ChromiumCapabilityProbe, ChromiumPage, find_browser_window  # noqa: E402
 from minicode.browser.channel import BrowserChannel  # noqa: E402
+from minicode.browser.geometry import css_rect_to_physical  # noqa: E402
 from minicode.browser.typing import BrowserTyping  # noqa: E402
 from minicode.exec import dpi  # noqa: E402
 from minicode.lock import acquire, release  # noqa: E402
@@ -70,11 +72,16 @@ def _text_landing_deviation(page, source, element_id: str, landing) -> dict:
         report["error"] = "没有可见文本的区域（判不了）"
         return report
     text_center_css = (css_text[0] + css_text[2] / 2.0, css_text[1] + css_text[3] / 2.0)
-    text_center_physical = (
+    # ⚠️ **换算必须走落地路径那一处**（工单 M28 AC 2 + 坐标换算单一真值源）：
+    # 落地路径是 `textmetrics.measure_visible_text` → `css_rect_to_physical`
+    # （**逐边取整**）→ `channel` 的 `center_point`。这里**再写一遍公式**的话，
+    # 两处的取整方式不同 → 量出来的是「取整差」，不是落点误差。
+    text_center_physical = center_point(css_rect_to_physical(css_text, viewport))
+    report["text_center_physical"] = text_center_physical
+    report["text_center_physical_unrounded"] = (
         viewport.origin_physical[0] + text_center_css[0] * viewport.scale,
         viewport.origin_physical[1] + text_center_css[1] * viewport.scale,
     )
-    report["text_center_physical"] = text_center_physical
     report["deviation_page_reported"] = (
         abs(landing[0] - text_center_physical[0]),
         abs(landing[1] - text_center_physical[1]),
@@ -109,6 +116,7 @@ def _text_landing_deviation(page, source, element_id: str, landing) -> dict:
             viewport.origin_physical[0] + ink_center_css[0] * viewport.scale,
             viewport.origin_physical[1] + ink_center_css[1] * viewport.scale,
         )
+        report["ink_center_physical"] = ink_center_physical
         report["ink_bbox_pixels"] = ink
         report["pixels_per_css"] = pixels_per_css
         report["ink_bbox_css"] = (
@@ -199,16 +207,31 @@ def _run() -> None:
         if deviation.get("error"):
             print(f"[AC2] 画面核对：{deviation['error']}")
 
-        # ---- AC 5（工单 M28）：文本度量拿不到 → 判不了（不回落）------------
+        # ---- AC 6（工单 M28，口径 2026-10-21）：没有文本子节点 → 自己的矩形中心 ----
         # 夹具里的输入框「姓名」：可访问性名来自 **placeholder**，它**不是文本节点**
-        # → 可见文本的实际区域量不出来 → 判不了（不许落元素框中心）。
+        # → **元素框本身就是它的真值** → 落点取它自己的矩形中心（**不是**判不了）。
+        # ⚠️ 这**不是**「静默回落到矩形中心」—— 那是「有文本子节点却量不到」时禁止的事。
         undecidable = channel.locate(
             LocateRequest(target_description="姓名", anchor=anchor)
         )
-        print(f"[AC5] 「姓名」错误码={undecidable.error_code} "
+        print(f"[AC6] 「姓名」错误码={undecidable.error_code} "
               f"失败类型={undecidable.failure_type} "
               f"落点={undecidable.landing_point} "
               f"原因={undecidable.error_message}")
+        print("[AC6] 期望：错误码=None（不是判不了）、落点=该输入框自己的矩形中心")
+
+        # ---- AC 5（工单 M28）：**有**文本子节点却量不到 → 判不了（不回落）----
+        # 夹具里的「被裁掉的文字」：文字**在 DOM 里**，但被 overflow:hidden 裁到
+        # 可见区之外 → 文本度量判「clipped」→ **判不了**，
+        # **不静默回落到元素矩形中心**。
+        clipped = channel.locate(
+            LocateRequest(target_description="被裁掉的文字", anchor=anchor)
+        )
+        print(f"[AC5] 「被裁掉的文字」错误码={clipped.error_code} "
+              f"失败类型={clipped.failure_type} "
+              f"落点={clipped.landing_point} "
+              f"原因={clipped.error_message}")
+        print("[AC5] 期望：错误码=invalid_geometry、失败类型=selection、落点=None")
 
         # ---- 落点精度交叉核对（浏览器通道 vs UIA 树的真值）--------------
         from minicode.action.ports import WindowAnchor as WA

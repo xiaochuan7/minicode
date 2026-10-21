@@ -42,7 +42,7 @@ DEFAULT_UNMEASURED_REASON = "读不出可见文本的实际区域"
 
 #: 状态 → 人读的**原因**（判不了时记进失败原因里）。
 TEXT_STATUS_REASONS: Mapping[str, str] = {
-    "no-text": "元素没有可见文本",
+    "no-text": "元素有文本子节点，但量不到可见文本（不可见或被裁）",
     "no-text-node": "元素没有文本子节点（屏上的字来自输入框 / 按钮默认值，不是文本节点）",
     "clipped": "可见文本被裁掉了（可见部分为空）",
     "font-loading": "字体还没加载完（文本度量不可信）",
@@ -87,6 +87,9 @@ function(){
   let sawText = false;
   const collect = function(textNode){
     if (!textNode.nodeValue || !textNode.nodeValue.trim()) return;
+    // ⚠️ **`sawText` 必须在可见性检查「之前」置位**：顺序一换语义就翻转 ——
+    // 放在之后的话，`display:none` 父节点下的文本会被当成「没有文本子节点」
+    // → 走元素框中心（可落点），而工单要的是「文本不可见 → 判不了」。
     sawText = true;
     const parent = textNode.parentElement;
     if (parent) {
@@ -113,6 +116,8 @@ function(){
   //     **不是文本节点**）→ **元素框本身就是它的真值** → 落点取**元素框中心**；
   //   * 后者（文本被裁 / 字体没加载完 / 文本不可见）→ **判不了**，
   //     **不许**回落到元素矩形中心。
+  // ⚠️ **纯空白文本节点不算「有文本子节点」**（`trim()` 后为空 → 直接 return）：
+  // 一个只含空格的元素，它的框就是它的真值 → 走元素框中心（不是判不了）。
   if (!rects.length) return noText(sawText ? 'no-text' : 'no-text-node');
   let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
   for (const r of rects) {

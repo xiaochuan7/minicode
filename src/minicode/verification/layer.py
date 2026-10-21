@@ -352,10 +352,12 @@ class VerificationLayer:
                 change=change,
                 state_before=state_before,
                 state_after=state_after,
+                #: 这一步的判定来自**像素差分**（画面量的），不是树。
+                truth_source=TRUTH_SOURCE_SCREEN,
                 model_calls=0,
             )
 
-        means = self._judge(request, observation, ocr_now)
+        means, text_source = self._judge(request, observation, ocr_now)
         verdicts = [Verdict(value) for value in means.values()]
         decidable = [verdict for verdict in verdicts if verdict is not Verdict.UNKNOWN]
         if not decidable:
@@ -383,7 +385,7 @@ class VerificationLayer:
             state_after=state_after,
             ocr_readings=self._ocr_readings(request, ocr_now),
             truth_source=self._truth_source(
-                request.expectation, observation, ocr_now, means, satisfied
+                request.expectation, observation, ocr_now, means, satisfied, text_source
             ),
             model_calls=0,
         )
@@ -484,18 +486,26 @@ class VerificationLayer:
         request: VerifyRequest,
         observation: _Observation | None,
         ocr_now: OcrReading | None,
-    ) -> dict[str, str]:
-        """三个手段各给一个判定（判不了就给 ``unknown``）。"""
+    ) -> tuple[dict[str, str], str]:
+        """三个手段各给一个判定（判不了就给 ``unknown``）。
+
+        第二个返回值是**文本这一路的决定性证据来自哪一侧**
+        （「树里取的」/「画面量的」/「（没有）」）—— 它**不能**靠「此刻的树语料里
+        有没有该目标」反推（工单 M27 AC 3；否则「树的前态决定」的那一步会被
+        错标成「画面量的」）。
+        """
         expectation = request.expectation
         assert expectation is not None  # 只有有期望时才走到这里
         tree = self._tree_verdict(expectation, observation, request.baseline)
-        text = self._text_verdict(expectation, observation, request.baseline, ocr_now)
+        text, text_source = self._text_verdict(
+            expectation, observation, request.baseline, ocr_now
+        )
         return {
             "tree": tree.value,
             "text": text.value,
             # 像素差分**不判具体期望**（「像素变化 ≠ 成功」）。
             "pixels": Verdict.UNKNOWN.value,
-        }
+        }, text_source
 
     def _tree_verdict(
         self,
@@ -537,7 +547,7 @@ class VerificationLayer:
         observation: _Observation | None,
         baseline: VerificationBaseline | None,
         ocr_now: OcrReading | None,
-    ) -> Verdict:
+    ) -> tuple[Verdict, str]:
         """文本比对这一路：查**文本出现或消失**。
 
         两个来源（工单 M27）：
@@ -546,10 +556,14 @@ class VerificationLayer:
         * **画面 OCR**（读不出的那些值靠它：缩放百分比 / 时钟读数 /
           微信聊天区的标题）。
 
-        ⚠️ **接了 OCR 之后，画面这一路是权威的** ——
+        ⚠️ **接了 OCR 之后，树里没有 ≠ 期望不成立**（工单 M27 AC 2 / AC 5）：
         树覆盖不全（那些值**根本不在树里**），所以「树里没有」
-        **不能**说「期望不成立」；画面读到了才算数，读不到就是**判不了**
-        （工单 M27 AC 2 / AC 5）。
+        **不能**说「期望不成立」；画面读到了才算数，读不到就是**判不了**。
+        ⚠️ **正面证据取并**（树 ∪ OCR）：树是精确的，OCR 是有损的，谁看到都算数；
+        **否定证据才要求画面**（读出了字才算「不成立」）。
+        → 所以这一路**不等价于**「按画面判」。
+
+        返回 ``(判定, 决定性证据来自哪一侧)``。
         """
         target = expectation.target
         tree_now = (
@@ -566,21 +580,27 @@ class VerificationLayer:
         if self.ocr_port is None:
             # **没接 OCR**：树的口径（工单 M11 的行为，一个字没改）。
             if tree_now is None or tree_before is None:
-                return Verdict.UNKNOWN
+                return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
             present_now = target in tree_now
             present_before = target in tree_before
             if expectation.kind is ExpectationKind.TEXT_APPEARS:
                 if not present_now:
-                    return Verdict.NOT_MET
-                return Verdict.NOT_MET if present_before else Verdict.MET
+                    return Verdict.NOT_MET, TRUTH_SOURCE_TREE
+                return (
+                    (Verdict.NOT_MET, TRUTH_SOURCE_TREE)
+                    if present_before
+                    else (Verdict.MET, TRUTH_SOURCE_TREE)
+                )
             if expectation.kind is ExpectationKind.TEXT_DISAPPEARS:
                 if present_now:
-                    return Verdict.NOT_MET
-                return Verdict.MET if present_before else Verdict.UNKNOWN
+                    return Verdict.NOT_MET, TRUTH_SOURCE_TREE
+                if present_before:
+                    return Verdict.MET, TRUTH_SOURCE_TREE
+                return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
             # 状态类期望：文本这一路判不了。
-            return Verdict.UNKNOWN
+            return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
 
-        # **接了 OCR**：画面这一路是权威的。
+        # **接了 OCR**：树里没有 ≠ 期望不成立。
         ocr_before = baseline.ocr if baseline is not None else None
         norm_target = normalize_ocr_text(target)
         # 「读到了画面」与「读出了字」是两件事：
@@ -589,32 +609,46 @@ class VerificationLayer:
         ocr_before_ok = ocr_before is not None and ocr_before.readable
         ocr_now_decisive = ocr_now is not None and ocr_now.decisive
         # **正面证据**（读到了它）：树与 OCR 取并 —— 树是精确的，OCR 是有损的，
-        # 谁看到都算数。
-        present_now = (tree_now is not None and target in tree_now) or (
-            ocr_now_ok and norm_target in normalize_ocr_text(ocr_now.text)
+        # 谁看到都算数。**决定性证据来自哪一侧**也一并记下来（树优先：它更精确）。
+        tree_has_now = tree_now is not None and target in tree_now
+        ocr_has_now = ocr_now_ok and norm_target in normalize_ocr_text(ocr_now.text)
+        tree_has_before = tree_before is not None and target in tree_before
+        ocr_has_before = ocr_before_ok and norm_target in normalize_ocr_text(
+            ocr_before.text
         )
-        present_before = (tree_before is not None and target in tree_before) or (
-            ocr_before_ok and norm_target in normalize_ocr_text(ocr_before.text)
+        present_now = tree_has_now or ocr_has_now
+        present_before = tree_has_before or ocr_has_before
+        source_now = (
+            TRUTH_SOURCE_TREE if tree_has_now else TRUTH_SOURCE_SCREEN
+        )  # 只有 present_now 为真时才有意义
+        source_before = (
+            TRUTH_SOURCE_TREE if tree_has_before else TRUTH_SOURCE_SCREEN
         )
         if expectation.kind is ExpectationKind.TEXT_APPEARS:
             if present_now:
                 if present_before:
-                    return Verdict.NOT_MET
+                    # 它**本来就在** → 「出现」不成立。决定性证据在「之前」那一面。
+                    return Verdict.NOT_MET, source_before
                 if not ocr_before_ok:
                     # 「之前」那一面读不出来 → 说不出「它出现了」。
-                    return Verdict.UNKNOWN
-                return Verdict.MET
+                    return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
+                return Verdict.MET, source_now
             # 现在没有它：**读出了字**才算「不成立」，
             # 读不到 / 没读出字 → 判不了（工单 M27 AC 5）。
-            return Verdict.NOT_MET if ocr_now_decisive else Verdict.UNKNOWN
+            if ocr_now_decisive:
+                return Verdict.NOT_MET, TRUTH_SOURCE_SCREEN
+            return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
         if expectation.kind is ExpectationKind.TEXT_DISAPPEARS:
             if present_now:
-                return Verdict.NOT_MET
+                return Verdict.NOT_MET, source_now
             if not ocr_now_decisive:
-                return Verdict.UNKNOWN
-            return Verdict.MET if present_before else Verdict.UNKNOWN
+                return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
+            if present_before:
+                # 决定性证据是**当前这一次读到了画面**（它不在了）。
+                return Verdict.MET, TRUTH_SOURCE_SCREEN
+            return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
         # 状态类期望：文本这一路判不了。
-        return Verdict.UNKNOWN
+        return Verdict.UNKNOWN, TRUTH_SOURCE_NONE
 
     def _describe(
         self,
@@ -676,28 +710,24 @@ class VerificationLayer:
         ocr_now: OcrReading | None,
         means: Mapping[str, str],
         satisfied: bool | None,
+        text_source: str,
     ) -> str:
         """**真值来源**：这次观测值是从哪儿来的（工单 M27 AC 3）。
 
         * 「画面量的」—— 从画面上量的（OCR 读到的那一份）；
         * 「树里取的」—— 从可访问性树里取的；
         * 「（没有）」—— **判不了**，没有真值来源。
+
+        ⚠️ **取值来自文本那一路报上来的「决定性证据来自哪一侧」**，
+        **不是**靠「此刻的树语料里有没有该目标」反推 —— 反推会把
+        「树的前态决定」的那一步错标成「画面量的」。
         """
         if satisfied is None:
             return TRUTH_SOURCE_NONE
-        tree_now = (
-            _text_corpus(observation.controls)
-            if observation is not None and observation.reachable
-            else None
-        )
         text_decided = means.get("text", Verdict.UNKNOWN.value) != Verdict.UNKNOWN.value
-        if not text_decided:
-            # 文本这一路判不了 → 是树那一路定的 → 树里取的。
-            return TRUTH_SOURCE_TREE
-        if tree_now is not None and expectation.target in tree_now:
-            return TRUTH_SOURCE_TREE
-        if ocr_now is not None and ocr_now.readable:
-            return TRUTH_SOURCE_SCREEN
+        if text_decided:
+            return text_source or TRUTH_SOURCE_NONE
+        # 文本这一路判不了 → 是树那一路定的 → 树里取的。
         return TRUTH_SOURCE_TREE
 
     def _state_before(self, request: VerifyRequest) -> dict[str, Any]:

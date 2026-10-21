@@ -5,6 +5,13 @@
   <h1>下单页</h1>
   <div class="row"><div class="btn" id="submit">提交订单</div><span class="hint">今日 17:00 前下单免运费</span></div>
   <div class="row"><input id="name" type="text" placeholder="姓名" /></div>
+  <!-- AC5 的真实案例：**有**文本子节点，但文字被 overflow:hidden **裁掉**了
+       → 文本度量量不到可见文本 → **判不了**（不静默回落到元素矩形中心）。
+       与上面那个 input 的区别：input 压根**没有文本子节点**（名字来自 placeholder）
+       → 落点取它自己的矩形中心（工单 M28 AC6）。
+       ⚠️ 容器本身要保持**合法盒子**（高 4px > 0），否则元素会被整个丢掉 →
+       报成「目标不存在」（覆盖失败），那不是「判不了」。 -->
+  <div class="row"><div class="clipped" id="clipped"><span>被裁掉的文字</span></div></div>
   <div class="row"><a href="#help">帮助链接</a></div>
   <p id="status">尚未提交</p>
   <script>
@@ -12,5 +19,11 @@
       document.getElementById('status').textContent = '订单已提交';
     });
   </script>
+  <style>
+    /* 容器是合法盒子（120×4），但里面的文字被 margin 推到**可见区之外**
+       → 文字在 DOM 里、可见区域为空 → 文本度量判「clipped」（→ 判不了）。 */
+    .clipped { width: 120px; height: 4px; overflow: hidden; }
+    .clipped > span { display: block; margin-top: 20px; font-size: 16px; line-height: 20px; }
+  </style>
 </body>
 </html>
