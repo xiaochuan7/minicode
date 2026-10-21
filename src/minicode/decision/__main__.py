@@ -51,6 +51,7 @@ from minicode.uia.pointer import ModelCandidatePointer
 from minicode.uia.ports import TreeAssessment
 from minicode.verification.expect import Expectation, parse_expectation
 from minicode.verification.layer import VerificationLayer
+from minicode.verification.ocr_windows import WindowsOcrPort
 from minicode.verification.telemetry import TelemetryAccumulator
 
 from .api import ProtocolApi
@@ -90,6 +91,14 @@ def _parse_args(argv):
         help="消歧不接模型（用假指认；默认接真模型，动作步的档位证据靠它）",
     )
     parser.add_argument(
+        "--ocr",
+        action="store_true",
+        help=(
+            "observe() 从画面上读文字（Windows 自带 OCR；**默认不接** —— "
+            "接了才给得出 text，别的轮次 text_available 是 false）"
+        ),
+    )
+    parser.add_argument(
         "--tree-target",
         default="开始",
         help=(
@@ -121,6 +130,22 @@ def _fake_tree(target: str) -> tuple[UiaElement, ...]:
         )
         for index in range(2)
     )
+
+
+def _latest_verification(trace_sink: ListTraceSink):
+    """**最新一条追踪记录**里的校验读数（工单 D-2 的旁路出口）。
+
+    * 校验结果**只走追踪记录**（动作协议保持窄返回类型）；
+    * 程序要读「上一步的校验读数」，就从这里读 —— **不重跑校验**；
+    * 还没有追踪记录 / 这一步没做校验 → ``None``（**不编一个数**）。
+    """
+
+    def read() -> dict | None:
+        if not trace_sink.traces:
+            return None
+        return trace_sink.traces[-1].verification_result
+
+    return read
 
 
 def main(argv=None) -> int:
@@ -213,6 +238,14 @@ def main(argv=None) -> int:
         # **审批闸门**（工单 M16）：命中危险动作清单的动作**要人点头**。
         # 缝里那一份管点击/截图，这里这一份管**不走缝**的输入文本/按键。
         approval_gate=gate,
+        # **OCR 端口**（工单 D-1）：``observe()`` 用它从画面上读文字。
+        # ⚠️ 默认**不接** —— 不接时 ``observe()`` 如实说「读不到」
+        # （``text_available=false``、``text`` 是空串），**不假装读到**。
+        ocr_port=WindowsOcrPort() if args.ocr else None,
+        # **校验读数的旁路出口**（工单 D-2）：校验结果**只走追踪记录**
+        # （动作协议保持窄返回类型），程序要读「上一步的校验读数」
+        # 就从**最新一条追踪记录**里读 —— **不重跑校验**（校验只有一处）。
+        verification_reader=_latest_verification(trace_sink),
     )
     #: **三段耗时与三类失败**的累加器（工单 M11 AC 4 / AC 5）。
     telemetry = TelemetryAccumulator()
@@ -277,9 +310,10 @@ def main(argv=None) -> int:
     print(f"档位分布  ：{report.effort_histogram}｜未传档位={report.unset_effort_calls}")
     print(f"完整图    ：保留 {report.kept_frames} 张｜淘汰成摘要 {report.dropped_frames} 张")
     print(f"自称完成  ：{report.completion_claims_ignored} 次（**不据此停止**）")
-    print("token 曲线（步序, 上下文总输入 token）：")
+    print("token 曲线（步序, 上下文总输入 token, 图像 token）：")
+    image_tokens_by_step = dict(report.image_token_growth)
     for index, tokens in report.token_growth:
-        print(f"  {index:>2}  {tokens}")
+        print(f"  {index:>2}  {tokens}  图像={image_tokens_by_step.get(index)}")
     print("每一步：")
     for step in report.steps:
         print(
