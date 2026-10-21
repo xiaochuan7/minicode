@@ -49,9 +49,9 @@ def _element(name: str = "提交订单", **kwargs) -> BrowserElement:
     return element
 
 
-def _text(rect=None, reason: str = "") -> TextMeasurement:
+def _text(rect=None, reason: str = "", element_box: bool = False) -> TextMeasurement:
     """一次**文本度量**的结果（``rect`` 为 ``None`` = 判不了）。"""
-    return TextMeasurement(rect=rect, reason=reason)
+    return TextMeasurement(rect=rect, reason=reason, element_box=element_box)
 
 
 def _snapshot(*elements: BrowserElement, **kwargs) -> PageSnapshot:
@@ -169,6 +169,25 @@ class LandingOnVisibleTextTest(unittest.TestCase):
         self.assertIn("可见文本被裁掉了", result.error_message)
         self.assertIn("判不了", result.error_message)
 
+    def test_an_element_without_a_text_node_lands_on_its_own_rect_center(self):
+        """输入框这类（**没有文本子节点**）→ 落点取**它自己的矩形中心**。
+
+        ⚠️ 这**不是**「静默回落到矩形中心」—— 元素框本身就是它的真值
+        （口径 2026-10-21）。「有文本子节点但量不到」才判不了。
+        """
+        result = self._locate(
+            _element(
+                rect=(300, 200, 400, 240),
+                text=_text(
+                    (300, 200, 400, 240),
+                    "元素没有文本子节点 → 落点取它自己的矩形中心",
+                    element_box=True,
+                ),
+            )
+        )
+        self.assertIsNone(result.error_code)
+        self.assertEqual(result.landing_point, (350, 220))
+
     def test_it_does_not_fall_back_to_the_element_rect_center(self):
         """判不了时**不许**拿元素矩形中心凑一个落点。"""
         result = self._locate(_element(text=_text(None, "元素没有可见文本")))
@@ -234,6 +253,22 @@ class TextMeasurementTest(unittest.TestCase):
         measurement = measure_visible_text({"status": "font-loading"}, self._VIEWPORT)
         self.assertFalse(measurement.ok)
         self.assertIn("字体", measurement.reason)
+
+    def test_an_element_without_a_text_node_lands_on_its_own_box(self):
+        """⚠️ **元素框本身就是它的真值**（口径 2026-10-21）。
+
+        输入框 / 按钮这类：屏上的字来自 value / placeholder / 默认标签，
+        **不是文本节点** → 文本度量层给的是**元素盒子的中心**，
+        **不是**「静默回落到矩形中心」（那个是判不了时的事）。
+        """
+        measurement = measure_visible_text(
+            {"status": "no-text-node", "box": {"x": 10, "y": 20, "w": 40, "h": 10}},
+            self._VIEWPORT,
+        )
+        self.assertTrue(measurement.ok)
+        self.assertTrue(measurement.element_box)
+        self.assertEqual(measurement.rect, (115, 230, 175, 245))
+        self.assertIn("文本子节点", measurement.reason)
 
     def test_the_desktop_channel_does_not_use_this_layer(self):
         """AC 3：文本度量是**浏览器通道独有**的一层 —— 桌面通道的落点仍取控件框中心。"""

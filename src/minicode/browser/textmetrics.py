@@ -9,9 +9,13 @@
 * 桌面通道（UIA）的落点来自**控件框**，**不引入**文本度量；
 * 这里的读数是**页面自己给的**（渲染后的行盒），不是推算的。
 
-⚠️ **判不了 ≠ 落点落矩形中心**：元素没有可见文本 / 文本被裁 / 字体未加载
-→ :class:`~minicode.browser.elements.TextMeasurement` 的 ``rect`` 是 ``None``，
-上层据此**判不了**并记下原因，**不静默回落到元素矩形中心**。
+⚠️ **判不了 ≠ 落点落矩形中心**：元素**有**文本子节点但量不到（文本被裁 /
+字体未加载 / 文本不可见）→ :class:`~minicode.browser.elements.TextMeasurement`
+的 ``rect`` 是 ``None``，上层据此**判不了**并记下原因，**不静默回落到元素矩形中心**。
+
+⚠️ **「元素没有文本子节点」是另一回事**（输入框 / 按钮这类：屏上的字来自 value /
+placeholder / 默认标签，**不是文本节点**）→ **元素框本身就是它的真值** →
+落点取**元素框中心**。这不是「回落到矩形中心」，是这个元素的真值本来就是它的框。
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ __all__ = [
     "TEXT_MEASURE_JS",
     "TEXT_STATUS_REASONS",
     "DEFAULT_UNMEASURED_REASON",
+    "css_box_rect",
     "css_text_rect",
     "measure_visible_text",
 ]
@@ -38,6 +43,7 @@ DEFAULT_UNMEASURED_REASON = "读不出可见文本的实际区域"
 #: 状态 → 人读的**原因**（判不了时记进失败原因里）。
 TEXT_STATUS_REASONS: Mapping[str, str] = {
     "no-text": "元素没有可见文本",
+    "no-text-node": "元素没有文本子节点（屏上的字来自输入框 / 按钮默认值，不是文本节点）",
     "clipped": "可见文本被裁掉了（可见部分为空）",
     "font-loading": "字体还没加载完（文本度量不可信）",
     "hidden": "元素不可见（display:none / visibility:hidden）",
@@ -78,8 +84,10 @@ function(){
     return noText('font-loading');
   }
   const rects = [];
+  let sawText = false;
   const collect = function(textNode){
     if (!textNode.nodeValue || !textNode.nodeValue.trim()) return;
+    sawText = true;
     const parent = textNode.parentElement;
     if (parent) {
       const ps = win.getComputedStyle(parent);
@@ -100,7 +108,12 @@ function(){
     let t = walker.nextNode();
     while (t) { collect(t); t = walker.nextNode(); }
   }
-  if (!rects.length) return noText('no-text');
+  // ⚠️ **「没有文本子节点」与「有文本子节点但量不到」是两件事**：
+  //   * 前者（输入框 / 按钮这类 —— 屏上的字来自 value / placeholder / 默认标签，
+  //     **不是文本节点**）→ **元素框本身就是它的真值** → 落点取**元素框中心**；
+  //   * 后者（文本被裁 / 字体没加载完 / 文本不可见）→ **判不了**，
+  //     **不许**回落到元素矩形中心。
+  if (!rects.length) return noText(sawText ? 'no-text' : 'no-text-node');
   let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
   for (const r of rects) {
     if (r.left < left) left = r.left;
@@ -152,6 +165,22 @@ def css_text_rect(payload: Mapping[str, Any]) -> Rect | None:
         return None
 
 
+def css_box_rect(payload: Mapping[str, Any]) -> Rect | None:
+    """几何读数里的**元素盒子**（**CSS 像素**的矩形；读不到 = ``None``）。"""
+    box = payload.get("box")
+    if not isinstance(box, Mapping):
+        return None
+    try:
+        return (
+            float(box["x"]),
+            float(box["y"]),
+            float(box["w"]),
+            float(box["h"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def measure_visible_text(
     payload: Mapping[str, Any], viewport: PageViewport
 ) -> TextMeasurement:
@@ -165,6 +194,25 @@ def measure_visible_text(
     页面里的坐标是 CSS 像素，本项目的唯一真值空间是物理表面空间。
     """
     status = str(payload.get("status") or "")
+    if status == "no-text-node":
+        # ⚠️ **元素没有文本子节点**（输入框 / 按钮这类：屏上的字来自 value /
+        # placeholder / 默认标签，**不是文本节点**）→
+        # **元素框本身就是它的真值** → 落点取**元素框中心**（这不是「回落到矩形中心」，
+        # 是「这个元素的真值本来就是它的框」）。
+        css_box = css_box_rect(payload)
+        if css_box is None:
+            return TextMeasurement(
+                rect=None,
+                reason="元素没有文本子节点，且读不到它的盒子",
+            )
+        rect = css_rect_to_physical(css_box, viewport)
+        if not is_valid_rect(rect):
+            return TextMeasurement(rect=None, reason="元素盒子的读数不成合法矩形")
+        return TextMeasurement(
+            rect=rect,
+            reason="元素没有文本子节点 → 落点取它自己的矩形中心",
+            element_box=True,
+        )
     css_rect = css_text_rect(payload)
     if status != "ok" or css_rect is None:
         return TextMeasurement(
