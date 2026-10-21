@@ -342,6 +342,51 @@ def _live_summary(outcomes: Sequence[dict[str, Any]], variant: str) -> dict[str,
     }
 
 
+def _visible_controls(
+    elements: Sequence[Any],
+    *,
+    screen_left: int,
+    screen_top: int,
+    screen_width: int,
+    screen_height: int,
+) -> tuple[list[Any], list[int]]:
+    """挑出**可见**控件，并标出其中**有名字**的那些。
+
+    返回 ``(候选集, 真值下标)``：
+
+    * **候选集** = 全部可见控件 —— **无名控件也要**（候选源里给它们
+      位置型占位描述）。静默丢弃无名控件就是「图标召回 0」的成因
+      （方案原文点名要改的就是这里：``if control.name`` 那种写法）；
+    * **真值下标** = 候选集里那些**有名字**的下标 —— 没有名字就没法当
+      「目标」问模型（那一类只作候选，不作被问的那一个）。
+
+    ⚠️ **两套要分开**：生产候选源（UIA 主表）里**无名控件在清单上**，
+    真机台若把它们先滤掉，量到的候选集就与生产不是同一套东西
+    （分母会**静默变小**，图标那条路永远量不到）。
+    """
+    visible: list[Any] = []
+    named_positions: list[int] = []
+    for element in elements:
+        # UIA 的框是 **(left, top, right, bottom)**（物理像素）。
+        left, top, right, bottom = element.rect
+        if right <= left or bottom <= top:
+            continue
+        if right - left > screen_width or bottom - top > screen_height:
+            # 框比整屏还大（浏览器文档的 extent 之类）→ 不是可见元素。
+            continue
+        if (
+            left < screen_left
+            or top < screen_top
+            or right > screen_left + screen_width
+            or bottom > screen_top + screen_height
+        ):
+            continue
+        visible.append(element)
+        if (element.name or "").strip():
+            named_positions.append(len(visible) - 1)
+    return visible, named_positions
+
+
 def _run_live(args) -> int:
     """**真机**上的编号分支测量（UIA 树给真值）。
 
@@ -422,28 +467,26 @@ def _run_live(args) -> int:
         elements.extend(result.elements)
     screen_left, screen_top = dpi.virtual_desktop_origin()
     screen_width, screen_height = dpi.virtual_desktop_size()
-    targets = []
-    for element in elements:
-        if not element.name.strip():
-            continue
-        # UIA 的框是 **(left, top, right, bottom)**（物理像素）。
-        left, top, right, bottom = element.rect
-        if right <= left or bottom <= top:
-            continue
-        if right - left > screen_width or bottom - top > screen_height:
-            # 框比整屏还大（浏览器文档的 extent 之类）→ 不是可见元素。
-            continue
-        if (
-            left < screen_left
-            or top < screen_top
-            or right > screen_left + screen_width
-            or bottom > screen_top + screen_height
-        ):
-            continue
-        targets.append(element)
-    print(f"=== 目标窗口 {args.live_window!r}：{len(targets)} 个带名字的元素 ===")
+    #: **候选集**（送进模型的那份清单）与**真值集**（要问模型的那个目标）
+    #: **分开**：无名控件**进候选集**（位置型占位描述），只是**不能当目标问**。
+    visible, named_positions = _visible_controls(
+        elements,
+        screen_left=screen_left,
+        screen_top=screen_top,
+        screen_width=screen_width,
+        screen_height=screen_height,
+    )
+    targets = [visible[position] for position in named_positions]
+    print(
+        f"=== 目标窗口 {args.live_window!r}：{len(targets)} 个带名字的元素"
+        f"（候选集 {len(visible)} 个，含无名控件）==="
+    )
     if not targets:
-        print("没有带名字的元素（UIA 树是空的）")
+        print(
+            "没有带名字的元素（UIA 树是空的）"
+            if not visible
+            else "这一批控件都没有名字 → 没有可问的目标（它们只作候选）"
+        )
         return 1
 
     # 送进模型的控件名**先过脱敏**（红线④）。
@@ -460,7 +503,7 @@ def _run_live(args) -> int:
                     element.rect[3],
                 ),
             )
-            for element in targets
+            for element in visible
         ]
     )
     redacted_names = [control.name for control in view.controls]
@@ -542,9 +585,10 @@ def _run_live(args) -> int:
         }
 
     outcomes: list[dict[str, Any]] = []
-    for index, (element, name) in enumerate(
-        zip(targets, redacted_names, strict=True), start=1
+    for index, (element, position) in enumerate(
+        zip(targets, named_positions, strict=True), start=1
     ):
+        name = redacted_names[position]
         if not name:
             continue
         truth = (
@@ -598,6 +642,13 @@ def _run_live(args) -> int:
         "window": args.live_window,
         "frame": [frame.width, frame.height, frame.left, frame.top],
         "samples": len(outcomes),
+        #: **量到的范围**（分母是什么，写清楚 —— 不许静默变小）：
+        #: 候选集 = 全部可见控件（**含无名控件**）；真值集 = 其中有名字的那些。
+        "controls": {
+            "visible": len(visible),
+            "named_targets": len(targets),
+            "note": "候选集含无名控件（位置型占位描述）；无名控件不能当目标问 → 只作候选",
+        },
         "uia_candidates": _live_summary(outcomes, "uia"),
         "ocr_candidates": _live_summary(outcomes, "ocr"),
         "outcomes": outcomes,

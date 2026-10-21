@@ -245,6 +245,55 @@ class UiaCandidateSourceTests(unittest.TestCase):
         self.assertEqual(candidates[-1].number, 20)
 
 
+class LiveCandidateSetTests(unittest.TestCase):
+    """**真机台**的候选集与真值集：**无名控件也要进候选集**。
+
+    ⚠️ 方案原文点名要改的那处（``if control.name`` 那种静默丢弃）
+    在这台测量台上**必须也改掉** —— 否则量到的候选集与生产接线不是
+    同一套东西（分母**静默变小**，无名图标那条路永远量不到）。
+    """
+
+    class _Element:
+        def __init__(self, name: str, rect: tuple[int, int, int, int]):
+            self.name = name
+            self.rect = rect
+            self.control_type = "Button"
+
+    def _visible(self, elements):
+        from minicode.ground.numbered_bench import _visible_controls
+
+        return _visible_controls(
+            elements,
+            screen_left=0,
+            screen_top=0,
+            screen_width=1000,
+            screen_height=1000,
+        )
+
+    def test_unnamed_controls_stay_in_the_candidate_set(self):
+        elements = [
+            self._Element("", (10, 10, 40, 40)),
+            self._Element("开始", (60, 10, 90, 40)),
+            self._Element("", (100, 10, 130, 40)),
+        ]
+        visible, named = self._visible(elements)
+        # 候选集 = 全部可见控件（**含无名控件**）。
+        self.assertEqual(len(visible), 3)
+        # 真值集 = 有名字的那些（无名控件不能当「目标」问）。
+        self.assertEqual(named, [1])
+        self.assertEqual(visible[named[0]].name, "开始")
+
+    def test_controls_outside_the_screen_are_dropped(self):
+        elements = [
+            self._Element("开始", (10, 10, 40, 40)),
+            self._Element("屏外", (2000, 10, 2030, 40)),
+            self._Element("退化", (10, 10, 10, 40)),
+        ]
+        visible, named = self._visible(elements)
+        self.assertEqual([element.name for element in visible], ["开始"])
+        self.assertEqual(named, [0])
+
+
 class MergeCandidateSourcesTests(unittest.TestCase):
     """**合并源**（UFO² 的混合检测）：主表全留、附加表按 IoU 0.1 去重。"""
 
