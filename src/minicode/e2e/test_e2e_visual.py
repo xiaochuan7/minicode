@@ -21,7 +21,12 @@ from minicode.calib.calibrate import (
     CandidateEvaluation,
 )
 from minicode.coord.coordinates import ModelScale
-from minicode.e2e.visual import calibration_readout
+from minicode.e2e.visual import (
+    LazyUiaCandidateSource,
+    MergedCandidateSource,
+    calibration_readout,
+)
+from minicode.ground.candidates import GroundingCandidate
 
 
 def _outcome(*, hit_rate: float) -> CalibrationOutcome:
@@ -78,3 +83,59 @@ class CalibrationReadoutTests(unittest.TestCase):
         readout = _readout(1.0)
         self.assertEqual(readout["server_model_input"], "unknown")
         self.assertEqual(readout["declared_model_input"], [1280, 800])
+
+
+class MergedCandidateSourceTests(unittest.TestCase):
+    """生产接线的**合并候选源**：**「判不了」≠「没有候选」**。
+
+    ⚠️ 方案原文「接线点」一节的纪律：*判不了 ≠ 没有候选*。
+    通道侧那两个口（主表 / 附加表）已经各自单测过；
+    这里钉的是**生产接线用的那一个合并源** —— 它把两源包在一起，
+    最容易把「读不出来」悄悄吞成「界面上没有」。
+    """
+
+    class _Source:
+        def __init__(self, rows):
+            self._rows = list(rows)
+
+        def candidates(self, frame, description):
+            return list(self._rows)
+
+    class _Broken:
+        def candidates(self, frame, description):
+            raise OSError("源读不出来")
+
+    def test_a_broken_main_source_falls_back_to_the_additional_one(self):
+        """主表读不出来 → **退回附加表**（不抛、不假装没有候选）。"""
+        additional = self._Source(
+            [GroundingCandidate(number=1, text="甲", box=(0, 0, 20, 20), source="ocr")]
+        )
+        source = MergedCandidateSource(self._Broken(), additional)
+        rows = source.candidates(None, "甲")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].source, "ocr")
+
+    def test_both_sources_broken_is_a_source_error_not_no_candidates(self):
+        """两源都读不出来 → **源报错**（异常往上抛）。
+
+        ⚠️ 不许被吞成空列表：空列表在上层是「**没有候选**」，
+        而真相是「**判不了**」—— 两者在追踪记录里必须分得开。
+        """
+        source = MergedCandidateSource(self._Broken(), self._Broken())
+        with self.assertRaises(OSError):
+            source.candidates(None, "甲")
+
+    def test_the_lazy_uia_source_does_not_swallow_the_tree_error(self):
+        """读树失败 → 异常往上抛（「树是空的」与「树读不出来」是两件事）。"""
+
+        def _boom():
+            raise OSError("UIA 树读不出来")
+
+        source = LazyUiaCandidateSource(_boom)
+        with self.assertRaises(OSError):
+            source.candidates(None, "甲")
+
+    def test_an_empty_but_readable_source_is_no_candidates(self):
+        """两源都**读出来了**、只是没匹配上 → 空列表（不是源报错）。"""
+        source = MergedCandidateSource(self._Source([]), self._Source([]))
+        self.assertEqual(source.candidates(None, "甲"), [])

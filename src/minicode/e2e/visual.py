@@ -185,7 +185,9 @@ class LazyUiaCandidateSource:
       （名字 + **物理像素**矩形；形状见 :class:`minicode.ground.candidates.UiaControlLike`）；
     * ⚠️ **UIA 的框不要加任何偏移**：`BoundingRectangle` 已经是物理屏幕坐标；
     * ⚠️ **无名控件不丢**（给位置型占位描述）—— 静默丢弃就是「图标召回 0」的成因；
-    * 读树失败 → **返回空列表**（不抛）→ 上层据此走「源报错」那条（**判不了 ≠ 没有候选**）。
+    * ⚠️ **读树失败 → 异常往上抛**（不吞）：上层据此记「候选源报错」。
+      「树是空的」（UWP 页面）与「树读不出来」是**两件事** ——
+      **判不了 ≠ 没有候选**（方案原文「接线点」一节的要求）。
     """
 
     def __init__(self, controls_provider: Any, *, max_candidates: int = 20):
@@ -195,10 +197,7 @@ class LazyUiaCandidateSource:
     def candidates(self, frame: Any, description: str) -> list[Any]:
         from minicode.ground.candidates import UiaCandidateSource
 
-        try:
-            controls = list(self._provider())
-        except Exception:
-            return []
+        controls = list(self._provider())
         return UiaCandidateSource(
             controls, max_candidates=self.max_candidates
         ).candidates(frame, description)
@@ -210,6 +209,11 @@ class MergedCandidateSource:
     * **主表（UIA）全留**；附加表（OCR）中与**任一**主表项 IoU **> 0.1** 的**丢弃**；
     * **比较一律在物理像素空间**（红线①）；
     * ⚠️ **方向不能反**：UIA 框与 OCR 框重叠时**保留 UIA 框**。
+
+    ⚠️ **「判不了 ≠ 没有候选」**（方案原文「接线点」一节）：
+    * **一源报错、另一源有货** → 用有货的那一源（**主表不可用 → 退回附加表**）；
+    * **两源都报错** → **异常往上抛** → 上层记「候选源报错」，
+      **不许**被当成「没有候选」（那会让「读不出来」看起来像「界面上没有」）。
     """
 
     def __init__(self, main: Any, additional: Any):
@@ -219,14 +223,21 @@ class MergedCandidateSource:
     def candidates(self, frame: Any, description: str) -> list[Any]:
         from minicode.ground.candidates import merge_candidate_sources
 
+        errors: list[Exception] = []
         try:
             main_rows = list(self._main.candidates(frame, description))
-        except Exception:
+        except Exception as exc:
             main_rows = []
+            errors.append(exc)
         try:
             additional_rows = list(self._additional.candidates(frame, description))
-        except Exception:
+        except Exception as exc:
             additional_rows = []
+            errors.append(exc)
+        if not main_rows and not additional_rows and errors:
+            # 两源都读不出来 → **源报错**（抛出去）：上层记「候选源报错」，
+            # 不许被当成「没有候选」。
+            raise errors[0]
         return merge_candidate_sources(main_rows, additional_rows)
 
 
