@@ -37,7 +37,12 @@ from minicode.coord.coordinates import ModelScale
 from minicode.eval.png_read import read_png_frame
 from minicode.eval.sspro import SsproSample, load_samples, stratified_subset
 from minicode.ground.caliber import CaliberSample, summarize_samples
-from minicode.ground.candidates import GroundingCandidate, OcrCandidateSource
+from minicode.ground.candidates import (
+    GroundingCandidate,
+    OcrCandidateSource,
+    UiaCandidateSource,
+    iou,
+)
 from minicode.ground.channel import TwoStageGrounder
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
@@ -59,6 +64,33 @@ def _inside(point: tuple[float, float], sample: SsproSample) -> bool:
     """点落在 GT 框内吗（click accuracy 的判据 —— **另一个口径**）。"""
     x1, y1, x2, y2 = sample.bbox
     return x1 <= point[0] <= x2 and y1 <= point[1] <= y2
+
+
+def _candidate_coverage(
+    candidates: Sequence[GroundingCandidate], truth_box: tuple[int, int, int, int]
+) -> dict[str, Any]:
+    """**候选覆盖率**三列：IoU@0.3 / IoU@0.5 / 「框中心是否落在真目标内」。
+
+    ⚠️ **为什么必须单列**：公开纯 CV 方案在 IoU>0.9 口径下 F1 只有
+    **0.154~0.201**（REMAUI 0.201 / Xianyu 0.154）→ 「图标能不能救」要
+    **单独报覆盖率**，不能只看最终命中率。
+
+    ⚠️ **比较在物理像素空间**（候选框与真值框同一空间）。
+    """
+    best = 0.0
+    center_inside = False
+    left, top, right, bottom = truth_box
+    for candidate in candidates:
+        best = max(best, iou(candidate.box, truth_box))
+        center_x, center_y = candidate.center
+        if left <= center_x <= right and top <= center_y <= bottom:
+            center_inside = True
+    return {
+        "candidate_iou_max": best,
+        "candidate_iou_at_0_3": best >= 0.3,
+        "candidate_iou_at_0_5": best >= 0.5,
+        "candidate_center_inside": center_inside,
+    }
 
 
 class _FixedCandidates:
@@ -126,6 +158,7 @@ def _run_one(
         )
         for candidate in candidates
     )
+    coverage = _candidate_coverage(candidates, sample.bbox)
     return {
         "sample_id": sample.sample_id,
         "platform": sample.platform,
@@ -138,6 +171,7 @@ def _run_one(
         "candidate_count": len(candidates),
         "candidate_texts": [candidate.text for candidate in candidates],
         "candidate_recall": recall,
+        **coverage,
         "landing_point": list(landing) if landing else None,
         "candidate_center": (
             [center.raw_x, center.raw_y]
@@ -196,6 +230,10 @@ def run_samples(
                 "candidate_count": 0,
                 "candidate_texts": [],
                 "candidate_recall": False,
+                "candidate_iou_max": 0.0,
+                "candidate_iou_at_0_3": False,
+                "candidate_iou_at_0_5": False,
+                "candidate_center_inside": False,
                 "landing_point": None,
                 "candidate_center": None,
                 "truth": list(_truth(sample)),
@@ -297,28 +335,6 @@ def _error_distribution(outcomes: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return summarize_errors(values).to_dict()
 
 
-class _UiaCandidateSource:
-    """**UIA 控件**当候选源（方案原文的「UIA 控件为主表」那一半）。
-
-    候选 = 树里那些**已脱敏**的控件（名字 + 框，物理像素）。
-    """
-
-    def __init__(self, controls: Sequence[Any]):
-        self._controls = list(controls)
-
-    def candidates(self, frame: CapturedFrame, description: str) -> list[Any]:
-        return [
-            GroundingCandidate(
-                number=index + 1,
-                text=control.name,
-                box=tuple(int(value) for value in control.rect),
-                source="uia",
-            )
-            for index, control in enumerate(self._controls)
-            if control.name
-        ]
-
-
 def _live_summary(outcomes: Sequence[dict[str, Any]], variant: str) -> dict[str, Any]:
     """真机测量的一条汇总（两个口径：落点误差 / 框中心取整误差）。"""
     from minicode.ground.stats import summarize_errors
@@ -395,7 +411,28 @@ def _run_live(args) -> int:
 
     port = WindowsUiaQueryPort()
     elements = []
-    for control_type in ("Text", "Button", "Hyperlink", "Edit", "ListItem"):
+    #: **UIA 控件类型**（真值来源）—— 枚举**补全**：
+    #: ``Custom(50025)`` / ``Image(50006)`` / ``SplitButton`` / ``ToolBar`` /
+    #: ``CheckBox`` / ``MenuItem`` / ``TabItem`` / ``Thumb``。
+    #:
+    #: ⚠️ 少枚举一类 = **那一类控件压根不进候选** —— 真机上无名图标控件
+    #: 就在 ``Custom`` / ``Image`` 里（微软官方文档：可点击的图片应当实现
+    #: Invoke pattern 并使用 Button 类控件类型；纯装饰性图片可以没有名字）。
+    for control_type in (
+        "Text",
+        "Button",
+        "Hyperlink",
+        "Edit",
+        "ListItem",
+        "Custom",
+        "Image",
+        "SplitButton",
+        "ToolBar",
+        "CheckBox",
+        "MenuItem",
+        "TabItem",
+        "Thumb",
+    ):
         result = port.find(UiaFindRequest(anchor, control_type=control_type))
         print(f"    UIA {control_type}: {len(result.elements)} 个")
         elements.extend(result.elements)
@@ -536,15 +573,18 @@ def _run_live(args) -> int:
             "truth": [truth[0], truth[1]],
         }
         for variant, source in (
-            ("uia", _UiaCandidateSource(view.controls)),
+            ("uia", UiaCandidateSource(view.controls)),
             ("ocr", OcrCandidateSource(lambda _frame: words)),
         ):
             outcome = _locate(name, source)
             landing = outcome["landing_point"]
             center = outcome["candidate_center"]
+            candidates = source.candidates(frame, name)
             record[variant] = {
                 "landing_point": landing,
-                "candidate_count": len(source.candidates(frame, name)),
+                "candidate_count": len(candidates),
+                # **候选覆盖率**三列（IoU@0.3 / IoU@0.5 / 框中心是否落在真目标内）。
+                **_candidate_coverage(candidates, tuple(element.rect)),
                 "landing_error_px": (
                     math.hypot(landing[0] - truth[0], landing[1] - truth[1])
                     if landing
@@ -586,6 +626,254 @@ def _run_live(args) -> int:
     return 0
 
 
+#: **crop 尺寸扫描**的尺寸集合（**全集**，物理像素）。
+#:
+#: ⚠️ **不许只扫一半就下结论** —— 论文消融说 1024 最好（ScreenSpot-Pro
+#: Table 5：OS-Atlas-7B 512=25.1 / 768=34.2 / **1024=40.2** / 1280=40.1），
+#: 我们自己的实测说「误差 ∝ 模型视图宽」，**两组证据冲突** → 只能自己扫。
+CROP_SCAN_SIZES = (128, 192, 256, 512, 768, 1024, 1280)
+
+
+def _scan_one(
+    sample: SsproSample,
+    client,
+    *,
+    scale,
+    model_input: tuple[int, int],
+    crop_size: int,
+    effort: Effort | str,
+    max_tokens: int,
+) -> dict[str, Any]:
+    """跑一条样本的**点式路径**（粗定位 → crop 精定位），返回一条记录。"""
+    frame: CapturedFrame = read_png_frame(sample.image_path)
+    grounder = TwoStageGrounder(
+        client,
+        scale=scale,
+        model_input_size=model_input,
+        full_screen_size=(frame.width, frame.height),
+        effort=effort,
+        max_tokens=max_tokens,
+        crop_width=crop_size,
+        crop_height=crop_size,
+    )
+    result = grounder.locate(
+        VisualLocateRequest(
+            target_description=sample.instruction,
+            frame=frame,
+            surface=(0, 0, frame.width, frame.height),
+        )
+    )
+    truth = _truth(sample)
+    landing = result.landing_point
+    error = (
+        math.hypot(landing[0] - truth[0], landing[1] - truth[1]) if landing else None
+    )
+    plan = result.crop_plan or {}
+    return {
+        "sample_id": sample.sample_id,
+        "platform": sample.platform,
+        "ui_type": sample.ui_type,
+        "instruction": sample.instruction,
+        "landing_point": list(landing) if landing else None,
+        "truth": [truth[0], truth[1]],
+        "landing_error_px": error,
+        "hit": bool(landing and _inside((float(landing[0]), float(landing[1])), sample)),
+        "fallback": result.fallback,
+        "fallback_cause": result.fallback_cause,
+        "model_calls": result.model_calls,
+        "coarse_point": (
+            list(result.coarse_point) if result.coarse_point is not None else None
+        ),
+        "crop_plan": dict(plan) if plan else None,
+        "error": result.error_message,
+    }
+
+
+def _scan_summary(outcomes: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """一批扫描记录的汇总（命中率 / 误差分布 / 回落率 / 调用数）。"""
+    from minicode.ground.stats import summarize_errors
+
+    errors = [
+        outcome["landing_error_px"]
+        for outcome in outcomes
+        if outcome["landing_error_px"] is not None
+    ]
+    return {
+        "samples": len(outcomes),
+        "hits": sum(1 for outcome in outcomes if outcome["hit"]),
+        "click_accuracy": (
+            sum(1 for outcome in outcomes if outcome["hit"]) / len(outcomes)
+            if outcomes
+            else 0.0
+        ),
+        "with_landing": len(errors),
+        "landing_error_px": summarize_errors(errors).to_dict() if errors else {},
+        "fallbacks": sum(1 for outcome in outcomes if outcome["fallback"]),
+        "model_calls": sum(outcome["model_calls"] for outcome in outcomes),
+        "model_calls_per_target": (
+            sum(outcome["model_calls"] for outcome in outcomes) / len(outcomes)
+            if outcomes
+            else 0.0
+        ),
+    }
+
+
+def _run_crop_scan(args) -> int:
+    """**crop 尺寸扫描**（误差-尺寸曲线；**A 半调 / B 半评**）。
+
+    * **同一批样本**（分层抽样，种子固定）× :data:`CROP_SCAN_SIZES` 七个尺寸；
+    * **A 半调 / B 半评**：A 半（**交错**取样，两半的分层构成相同）用来**选**
+      尺寸，B 半用来**评**它 —— M23 已证明「同批调参 + 同批评估 = 作废」；
+    * 走**点式路径**（不接候选源）：粗定位 → crop 精定位 → 落点；
+    * **七个尺寸共用同一次粗定位回答**（应答记忆端口）——
+      否则七个尺寸的差异里混着模型的随机性。
+
+    ⚠️ **分母只能来自标定**：每个图像尺寸标定一次（标度 + 声明的模型输入尺寸）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from minicode.calib.calibrate import CalibrationProbe
+    from minicode.calib.probe import default_probe_spec
+    from minicode.eval.sspro import MemoizingModelCaller
+
+    started = time.time()
+    dataset = Path(args.dataset)
+    samples = load_samples(dataset)
+    chosen = stratified_subset(samples, args.per_stratum, seed=args.seed)
+    chosen = [sample for sample in chosen if sample.image_path.exists()]
+    if args.limit:
+        chosen = chosen[: args.limit]
+    sizes = [int(value) for value in args.crop_sizes.split(",") if value.strip()]
+    print(
+        f"=== crop 尺寸扫描：{len(chosen)} 条样本 × {len(sizes)} 个尺寸 "
+        f"{sizes}（种子 {args.seed}）==="
+    )
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    client = ModelClient(config, JsonlRequestLog(out_dir / "model-requests.jsonl"))
+
+    # -- 标定：每个图像尺寸一次（分母只能来自标定）------------------------
+    scale_by_size: dict[tuple[int, int], Any] = {}
+    model_input_by_size: dict[tuple[int, int], tuple[int, int]] = {}
+    for width, height in sorted({sample.image_size for sample in chosen}):
+        declared = model_input_size_for(width, height)
+        outcome = CalibrationProbe(
+            client,
+            spec=default_probe_spec(width, height),
+            model_input_size=declared,
+            call_path="image",
+            model_id=config.model,
+            effort=args.effort,
+            max_tokens=args.max_tokens,
+        ).run()
+        scale_by_size[(width, height)] = outcome.detected_scale
+        model_input_by_size[(width, height)] = declared
+        print(f"  标定 {width}×{height}：标度 {outcome.detected_scale.value}")
+
+    #: **应答记忆**：七个尺寸共用同一次粗定位回答（差异里不许混模型的随机性）。
+    memoized = MemoizingModelCaller(client)
+
+    # -- A 半调 / B 半评（**交错**取样 → 两半的分层构成相同）----------------
+    half_a = [sample for index, sample in enumerate(chosen) if index % 2 == 0]
+    half_b = [sample for index, sample in enumerate(chosen) if index % 2 == 1]
+
+    curve: list[dict[str, Any]] = []
+    per_size: dict[int, list[dict[str, Any]]] = {}
+    for size in sizes:
+        def _run(sample: SsproSample, size: int = size) -> dict[str, Any]:
+            try:
+                return _scan_one(
+                    sample,
+                    memoized,
+                    scale=scale_by_size[sample.image_size],
+                    model_input=model_input_by_size[sample.image_size],
+                    crop_size=size,
+                    effort=args.effort,
+                    max_tokens=args.max_tokens,
+                )
+            except Exception as exc:  # 一条样本跑挂 → 如实记下来
+                return {
+                    "sample_id": sample.sample_id,
+                    "platform": sample.platform,
+                    "ui_type": sample.ui_type,
+                    "instruction": sample.instruction,
+                    "landing_point": None,
+                    "truth": list(_truth(sample)),
+                    "landing_error_px": None,
+                    "hit": False,
+                    "fallback": False,
+                    "fallback_cause": "",
+                    "model_calls": 0,
+                    "coarse_point": None,
+                    "crop_plan": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+        records: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            for index, record in enumerate(pool.map(_run, chosen), start=1):
+                records.append(record)
+                if index % 20 == 0 or index == len(chosen):
+                    print(f"  [{size}px] {index}/{len(chosen)}", flush=True)
+        per_size[size] = records
+        entry = {
+            "crop_size": size,
+            "all": _scan_summary(records),
+            "a_half": _scan_summary(
+                [r for r in records if r["sample_id"] in {s.sample_id for s in half_a}]
+            ),
+            "b_half": _scan_summary(
+                [r for r in records if r["sample_id"] in {s.sample_id for s in half_b}]
+            ),
+        }
+        curve.append(entry)
+        print(
+            f"  {size}px：整体命中 {entry['all']['hits']}/{entry['all']['samples']} "
+            f"（{entry['all']['click_accuracy']:.1%}）"
+            f"｜A 半 {entry['a_half']['click_accuracy']:.1%}"
+            f"｜B 半 {entry['b_half']['click_accuracy']:.1%}"
+            f"｜中位误差 {entry['all']['landing_error_px'].get('median')}"
+        )
+
+    # -- **按 A 半的数据定**最终尺寸；B 半只用来评 --------------------------
+    def _key(entry: dict[str, Any]) -> tuple:
+        stats = entry["a_half"]
+        error = stats["landing_error_px"].get("median")
+        return (
+            -stats["click_accuracy"],
+            error if error is not None else float("inf"),
+            entry["crop_size"],
+        )
+
+    chosen_entry = min(curve, key=_key)
+    payload = {
+        "source": "sspro/crop-scan",
+        "seed": args.seed,
+        "per_stratum": args.per_stratum,
+        "samples": len(chosen),
+        "crop_sizes": sizes,
+        "split": "A 半调 / B 半评（交错取样，两半分层构成相同）",
+        "curve": curve,
+        "chosen_by_a_half": chosen_entry["crop_size"],
+        "chosen_a_half": chosen_entry["a_half"],
+        "chosen_b_half": chosen_entry["b_half"],
+        "model_calls_sent": memoized.calls,
+        "model_calls_replayed": memoized.replays,
+        "elapsed_seconds": round(time.time() - started, 1),
+    }
+    path = out_dir / "crop-scan.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(
+        f"按 A 半定下的尺寸：{chosen_entry['crop_size']} px"
+        f"（A 半 {chosen_entry['a_half']['click_accuracy']:.1%}"
+        f"｜B 半 {chosen_entry['b_half']['click_accuracy']:.1%}）"
+    )
+    print(f"记录已写入：{path}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="minicode.ground.numbered_bench",
@@ -610,10 +898,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="Shell_TrayWnd",
         help="真机测量的目标窗口标题（--live 用）",
     )
+    parser.add_argument(
+        "--crop-scan",
+        action="store_true",
+        help="**crop 尺寸扫描**（误差-尺寸曲线；A 半调 / B 半评）",
+    )
+    parser.add_argument(
+        "--crop-sizes",
+        default=",".join(str(size) for size in CROP_SCAN_SIZES),
+        help="扫描的 crop 尺寸（物理像素，逗号分隔）",
+    )
     args = parser.parse_args(argv)
 
     if args.live:
         return _run_live(args)
+    if args.crop_scan:
+        return _run_crop_scan(args)
 
     started = time.time()
     dataset = Path(args.dataset)
