@@ -122,7 +122,16 @@ def main(argv=None) -> int:
         default=Effort.LOW.value,
         help="思考预算档位（默认 low）",
     )
-    parser.add_argument("--max-tokens", type=int, default=2000)
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4096,
+        help=(
+            "输出预算（默认 4096）—— 粗定位那一级**曾经**用 2000，"
+            "被思考链吃光（「HTTP 200 但没有文本输出」丢样本）；"
+            "现在通道的默认就是 4096（`ground.channel.DEFAULT_MAX_TOKENS`）"
+        ),
+    )
     parser.add_argument(
         "--consistency-tolerance",
         type=float,

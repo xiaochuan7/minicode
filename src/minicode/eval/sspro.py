@@ -340,8 +340,7 @@ def run_arms(
     scale_by_size: dict[tuple[int, int], Any],
     model_input_by_size: dict[tuple[int, int], tuple[int, int]],
     effort: Effort | str = Effort.LOW,
-    max_tokens: int = 2000,
-    second_opinion: Callable[[CapturedFrame, str], tuple[float, float] | None] | None = None,
+    max_tokens: int = 4096,
     progress: Callable[[str], None] | None = None,
     workers: int = 1,
     gate_params: Any = None,
@@ -384,7 +383,7 @@ def run_arms(
             effort,
             max_tokens,
             client,
-            second_opinion,
+            None,
             gate_params,
         )
         always = _run_one(
@@ -410,7 +409,6 @@ def run_arms(
             effort,
             max_tokens,
             client,
-            None,
             gate_params,
             coarse_only=True,
         )
@@ -455,7 +453,6 @@ def _run_one(
     effort: Effort | str,
     max_tokens: int,
     client: ModelCaller,
-    second_opinion,
     gate_params: Any = None,
     coarse_only: bool = False,
 ) -> ArmOutcome:
@@ -471,7 +468,6 @@ def _run_one(
         effort=effort,
         max_tokens=max_tokens,
         gate_mode=gate_mode,
-        second_opinion=second_opinion,
         gate_params=gate_params,
         coarse_only=coarse_only,
     )
@@ -693,61 +689,6 @@ def render_table(rows: Sequence[dict[str, str]]) -> str:
         for row in rows
     ]
     return "\n".join([header, divider, *body])
-
-
-def second_opinion_prompt(
-    instruction: str, image_size: tuple[int, int] | None = None
-) -> str:
-    """**第二次独立粗定位**的提示词。
-
-    ⚠️ 提示词本体在 :func:`minicode.ground.prompt.second_opinion_prompt`
-    （grounding 的提示词只有那一处）；这里只是转出去，**不另写一份**。
-
-    ``image_size`` = **送模型的那张图**的尺寸（声明它，模型答的像素才是
-    那张图的像素 —— 两次粗定位要比的是同一个量）。
-    """
-    from minicode.ground.prompt import second_opinion_prompt as _prompt
-
-    return _prompt(instruction, image_size=image_size)
-
-
-def make_second_opinion(
-    client: ModelCaller,
-    *,
-    effort: Effort | str = Effort.LOW,
-    max_tokens: int = 2000,
-) -> Callable[[CapturedFrame, str], tuple[float, float] | None]:
-    """造一个「第二次独立粗定位」的端口（给 :class:`TwoStageGrounder` 用）。
-
-    拿不到坐标（调用失败 / 回答里没有坐标）→ 返回 ``None``
-    → 一致性条件**不可判定**（照旧显式落盘）。
-
-    「问模型要一个点」走 :func:`minicode.ground.channel.ask_model_point`
-    （**只有那一处实现**）；提示词走 grounding 提示词那一处。
-
-    ⚠️ **端口收到的那张图就是送模型的那张图**（整屏那一级缩到声明尺寸的那张），
-    提示词里也**声明它的尺寸** → 第二次的答案与第一次的答案在**同一个空间**里，
-    「两次是否一致」这条门控条件才判得了。
-    """
-
-    from minicode.ground.channel import ask_model_point
-    from minicode.ground.prompt import second_opinion_prompt
-
-    def second_opinion(frame: CapturedFrame, target: str) -> tuple[float, float] | None:
-        try:
-            return ask_model_point(
-                client,
-                second_opinion_prompt(
-                    target, image_size=(frame.width, frame.height)
-                ),
-                frame,
-                effort=effort,
-                max_tokens=max_tokens,
-            )
-        except Exception:
-            return None
-
-    return second_opinion
 
 
 def gate_params_snapshot(gate_params: Any = None) -> dict[str, Any]:
