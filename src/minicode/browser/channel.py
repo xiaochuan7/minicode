@@ -10,8 +10,11 @@
 4. **重取快照再定位** —— **页面元素引用有时效**（页面一变旧引用就不解析了），
    所以执行前重新取一次快照、按身份族重新定位，**不复用过期引用**。
 
-**不产生第二套坐标换算**：落点直接取元素矩形在**物理表面空间**的中心
+**不产生第二套坐标换算**：落点取**可见文本的实际包围盒**在**物理表面空间**的中心
 （:func:`minicode.action.geometry.center_point` —— 与桌面通道同一处）。
+文本区域由**文本度量**这一层算出来（:mod:`minicode.browser.textmetrics`，
+**浏览器通道独有**）；文本度量拿不到 → **判不了**，
+**不静默回落到元素矩形中心**（工单 M28）。
 动作由**浏览器自己的输入通道**下发（浏览器通道的定义，
 `CONTEXT.md`），不走桌面鼠标注入。
 """
@@ -65,7 +68,7 @@ class _ChannelRefused(Exception):
 
 
 class BrowserChannel:
-    """浏览器通道：按页面结构定位元素，落点落在该元素上。"""
+    """浏览器通道：按页面结构定位元素，落点落在该元素的**可见文本**上。"""
 
     def __init__(
         self,
@@ -188,9 +191,27 @@ class BrowserChannel:
                 limit=self.max_candidates,
                 limit_source=self.candidate_limit_source,
             )
+        # -- 落点：可见文本的**实际区域**（工单 M28）------------------------
+        # 落点不再取**元素矩形中心**（扁平 DOM 上那个框是整行宽，离文字很远），
+        # 改取**可见文本的包围盒中心**。
+        # ⚠️ **文本度量拿不到 → 判不了**（元素没有可见文本 / 文本被裁 / 字体未加载）：
+        # **不静默回落到元素矩形中心** —— 候选在那儿，只是定不下落点 → **选择失败**。
+        text = relocated.text
+        if text.rect is None:
+            return _failure(
+                ErrorCode.INVALID_GEOMETRY,
+                "文本度量拿不到："
+                f"{text.reason or '读不出可见文本的实际区域'}"
+                " —— 判不了（不静默回落到元素矩形中心）",
+                candidates=matched,
+                model_calls=model_calls,
+                selection_echo=selection_echo,
+                limit=self.max_candidates,
+                limit_source=self.candidate_limit_source,
+            )
         return LocateResult(
             selected=to_candidate(relocated),
-            landing_point=center_point(relocated.rect),
+            landing_point=center_point(text.rect),
             candidates=tuple(to_candidate(element) for element in matched),
             model_view=model_view,
             #: 浏览器通道的动作走**浏览器自己的输入通道**（不是桌面鼠标注入）。

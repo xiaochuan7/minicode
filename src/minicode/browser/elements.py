@@ -11,19 +11,39 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from minicode.action.ports import ControlCandidate
 
 __all__ = [
     "BrowserElement",
     "Rect",
+    "TextMeasurement",
     "element_identity",
     "to_candidate",
 ]
 
 #: 矩形：``(left, top, right, bottom)``（物理像素）。
 Rect = tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class TextMeasurement:
+    """**可见文本的实际区域**（文本度量这一层的产物，工单 M28）。
+
+    * ``rect`` —— 可见文本的包围盒（**物理表面空间**）；``None`` = **判不了**；
+    * ``reason`` —— 判不了的原因（人读）：元素没有可见文本 / 文本被裁 / 字体未加载。
+
+    ⚠️ **判不了 ≠ 落点落矩形中心**：拿不到就是拿不到，
+    上层据此**判不了**（不静默回落到元素矩形中心）。
+    """
+
+    rect: Rect | None = None
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.rect is not None
 
 
 @dataclass(frozen=True)
@@ -36,7 +56,9 @@ class BrowserElement:
     * ``element_id`` —— **页面元素引用**。它**有时效**：页面变了之后
       上一次的引用不再可用（工单 M13 AC 3）—— 所以它只在**本次快照**里有效；
     * ``value`` —— 元素当前的值（编辑框正文……）。**敏感面**：只进脱敏后的
-      模型侧文本，不进日志（架构决策备忘 §2.6 C-15）。
+      模型侧文本，不进日志（架构决策备忘 §2.6 C-15）；
+    * ``text`` —— **可见文本的实际区域**（文本度量这一层的产物，工单 M28）。
+      落点取它，不取 ``rect`` 的中心。
     """
 
     name: str
@@ -46,6 +68,7 @@ class BrowserElement:
     value: str = ""
     enabled: bool = True
     window_handle: int | None = None
+    text: TextMeasurement = field(default_factory=TextMeasurement)
 
     @property
     def center(self) -> tuple[float, float]:

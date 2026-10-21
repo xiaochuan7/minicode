@@ -5,6 +5,8 @@
 * 每个节点的矩形用 ``DOM.resolveNode`` + ``Runtime.callFunctionOn`` 取
   ``getBoundingClientRect()``（**CSS 像素**），再按**量出来的**比例换算到
   **物理表面空间**（:mod:`minicode.browser.geometry`）；
+* **同一次往返**里还量出**可见文本的实际区域**（工单 M28）——
+  落点落在文字上，不是落在元素框的中心（:mod:`minicode.browser.textmetrics`）；
 * **动作**走**浏览器自己的输入通道**（CDP ``Input.dispatchMouseEvent`` /
   ``Input.insertText``），不走桌面鼠标键盘注入 —— 这正是浏览器通道的定义。
 
@@ -23,6 +25,7 @@ from .capability import PageAssessment
 from .elements import BrowserElement
 from .geometry import PageViewport, css_rect_to_physical, viewport_from_window
 from .ports import PageSnapshot
+from .textmetrics import TEXT_MEASURE_JS, css_text_rect, measure_visible_text
 
 __all__ = [
     "ChromiumPage",
@@ -180,6 +183,8 @@ class ChromiumPage:
         self._generation = 0
         #: 元素 id → 该元素的 **CSS 矩形**（浏览器自己的输入通道要用）。
         self._css_rects: dict[str, tuple[float, float, float, float]] = {}
+        #: 元素 id → 该元素**可见文本的区域**（CSS 矩形；落点落在它上面）。
+        self._css_text_rects: dict[str, tuple[float, float, float, float]] = {}
         #: DOM 代理是否就位（``DOM.resolveNode`` 的前提）。
         self._dom_ready = False
         #: 最近一次读矩形失败的错误（如实记下来，便于排查）。
@@ -193,15 +198,29 @@ class ChromiumPage:
         viewport = self.viewport()
         elements: list[BrowserElement] = []
         self._css_rects = {}
+        self._css_text_rects = {}
         for node in nodes:
             if not self._kept(node):
                 continue
-            css_rect = self._node_rect(node.backend_id)
-            if css_rect is None:
+            geometry = self._node_geometry(node.backend_id)
+            if geometry is None:
                 continue
+            box = geometry.get("box")
+            if not box:
+                continue
+            css_rect = (
+                float(box["x"]),
+                float(box["y"]),
+                float(box["w"]),
+                float(box["h"]),
+            )
             rect = css_rect_to_physical(css_rect, viewport)
             element_id = str(node.backend_id)
             self._css_rects[element_id] = css_rect
+            text = measure_visible_text(geometry, viewport)
+            css_text = css_text_rect(geometry)
+            if css_text is not None:
+                self._css_text_rects[element_id] = css_text
             elements.append(
                 BrowserElement(
                     name=node.name,
@@ -209,6 +228,7 @@ class ChromiumPage:
                     rect=rect,
                     element_id=element_id,
                     window_handle=self.hwnd,
+                    text=text,
                 )
             )
         self._generation += 1
@@ -249,8 +269,13 @@ class ChromiumPage:
         return True
 
     def invoke(self, element_id: str) -> bool:
-        """用**浏览器自己的输入通道**点这个元素（CDP 的鼠标事件）。"""
-        css_rect = self._css_rects.get(element_id)
+        """用**浏览器自己的输入通道**点这个元素（CDP 的鼠标事件）。
+
+        点的是**可见文本的实际区域**的中心（工单 M28）—— 与落点同一处，
+        免得「记录的落点」与「真的点下去的地方」不是一回事。
+        文本区域读不到时退回元素盒子（这时定位本来就判不了，不会走到这里）。
+        """
+        css_rect = self._css_text_rects.get(element_id) or self._css_rects.get(element_id)
         if css_rect is None:
             return False
         x = css_rect[0] + css_rect[2] / 2.0
@@ -363,8 +388,12 @@ class ChromiumPage:
             return False
         return True
 
-    def _node_rect(self, backend_id: int) -> tuple[float, float, float, float] | None:
-        """元素的 CSS 矩形 ``(x, y, width, height)``（相对视口左上角）。"""
+    def _node_geometry(self, backend_id: int) -> dict | None:
+        """元素的**几何读数**：盒子 + **可见文本的实际区域**（一次 CDP 往返）。
+
+        盒子是元素自己的 ``getBoundingClientRect()``；文本区域是**渲染出来的
+        文本节点**的行盒并集（见 :data:`minicode.browser.textmetrics.TEXT_MEASURE_JS`）。
+        """
         self._ensure_dom()
         try:
             resolved = self.cdp.send("DOM.resolveNode", {"backendNodeId": backend_id})
@@ -373,12 +402,7 @@ class ChromiumPage:
                 "Runtime.callFunctionOn",
                 {
                     "objectId": object_id,
-                    "functionDeclaration": (
-                        "function(){const el=(this.nodeType===3)?this.parentElement:this;"
-                        "if(!el||!el.getBoundingClientRect){return null;}"
-                        "const r=el.getBoundingClientRect();"
-                        "return {x:r.x,y:r.y,w:r.width,h:r.height};}"
-                    ),
+                    "functionDeclaration": TEXT_MEASURE_JS,
                     "returnByValue": True,
                 },
             )
@@ -386,9 +410,9 @@ class ChromiumPage:
         except Exception as exc:  # noqa: BLE001 —— 读不到就当没有坐标（不猜）
             self.last_error = f"{type(exc).__name__}: {exc}"
             return None
-        if not value:
+        if not isinstance(value, dict):
             return None
-        return (float(value["x"]), float(value["y"]), float(value["w"]), float(value["h"]))
+        return value
 
     def _ensure_dom(self) -> None:
         """让 CDP 的 DOM 代理就位（``DOM.resolveNode`` 需要它）。
