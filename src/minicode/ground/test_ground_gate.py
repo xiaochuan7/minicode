@@ -405,6 +405,47 @@ class SecondOpinionTests(unittest.TestCase):
         self.assertEqual(seen[0][:2], (2560, 1600))
         self.assertEqual(seen[0][2], "开始")
 
+    def test_second_opinion_sees_the_same_image_as_the_coarse_level(self):
+        """第二次粗定位必须看到**同一张图**（整屏那一级送模型的那张）。
+
+        ⚠️ 否则两次的数在**不同的空间**里：第一次问的是**缩到声明尺寸**那张图，
+        第二次问的是**整屏原图**，而换算用的是同一套几何 → 「两次是否一致」
+        比的是**两个没法比的数**（这条门控条件就成了空判）。
+        """
+        seen: list[tuple[int, int]] = []
+
+        def _hook(frame, target):
+            seen.append((frame.width, frame.height))
+            return (390.625, 500.0)
+
+        model = _StubModel(_reply(390.625, 500.0))
+        grounder = _grounder(
+            model,
+            gate_mode=GateMode.ON_DEMAND,
+            second_opinion=_hook,
+            model_input_size=(1280, 800),
+        )
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertEqual(len(seen), 1)
+        coarse = next(echo for echo in result.echoes if echo.stage == "coarse")
+        self.assertEqual(seen[0], (coarse.sent_width, coarse.sent_height))
+        self.assertEqual(seen[0], (1280, 800))
+
+    def test_second_opinion_prompt_asks_for_the_same_quantity(self):
+        """两次粗定位必须问**同一个量**（这张图的像素坐标），否则没法比。"""
+        from minicode.ground.prompt import second_opinion_prompt
+
+        prompt = second_opinion_prompt("开始", image_size=(1280, 800))
+        self.assertIn("1280×800", prompt)
+        self.assertIn("像素坐标", prompt)
+
+    def test_second_opinion_prompt_without_a_size_still_asks_for_pixels(self):
+        """不给尺寸时也要问像素坐标（**问的量不能变**）。"""
+        from minicode.ground.prompt import second_opinion_prompt
+
+        prompt = second_opinion_prompt("开始")
+        self.assertIn("像素坐标", prompt)
+
     def test_second_point_without_a_coarse_point_is_undecidable(self):
         """第一次粗定位为空、第二次有点 → **比不了** → 记「不可判定」（不静默）。
 

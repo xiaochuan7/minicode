@@ -626,15 +626,20 @@ def render_table(rows: Sequence[dict[str, str]]) -> str:
     return "\n".join([header, divider, *body])
 
 
-def second_opinion_prompt(instruction: str) -> str:
+def second_opinion_prompt(
+    instruction: str, image_size: tuple[int, int] | None = None
+) -> str:
     """**第二次独立粗定位**的提示词。
 
     ⚠️ 提示词本体在 :func:`minicode.ground.prompt.second_opinion_prompt`
     （grounding 的提示词只有那一处）；这里只是转出去，**不另写一份**。
+
+    ``image_size`` = **送模型的那张图**的尺寸（声明它，模型答的像素才是
+    那张图的像素 —— 两次粗定位要比的是同一个量）。
     """
     from minicode.ground.prompt import second_opinion_prompt as _prompt
 
-    return _prompt(instruction)
+    return _prompt(instruction, image_size=image_size)
 
 
 def make_second_opinion(
@@ -650,7 +655,12 @@ def make_second_opinion(
 
     「问模型要一个点」走 :func:`minicode.ground.channel.ask_model_point`
     （**只有那一处实现**）；提示词走 grounding 提示词那一处。
+
+    ⚠️ **端口收到的那张图就是送模型的那张图**（整屏那一级缩到声明尺寸的那张），
+    提示词里也**声明它的尺寸** → 第二次的答案与第一次的答案在**同一个空间**里，
+    「两次是否一致」这条门控条件才判得了。
     """
+
     from minicode.ground.channel import ask_model_point
     from minicode.ground.prompt import second_opinion_prompt
 
@@ -658,7 +668,9 @@ def make_second_opinion(
         try:
             return ask_model_point(
                 client,
-                second_opinion_prompt(target),
+                second_opinion_prompt(
+                    target, image_size=(frame.width, frame.height)
+                ),
                 frame,
                 effort=effort,
                 max_tokens=max_tokens,

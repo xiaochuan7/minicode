@@ -109,6 +109,10 @@ TargetNames = Callable[[CapturedFrame], "list[str]"]
 #: 拿到的是**模型自己那个坐标系**里的原始坐标（不换算）—— 换算由本模块的
 #: 适配器做（**坐标换算链路只有一个真值来源**）。
 #: 拿不到就返回 ``None`` → 一致性条件**不可判定**（照旧显式记进追踪记录）。
+#:
+#: ⚠️ 端口收到的是**送模型的那张图**（整屏那一级缩到声明尺寸的那张）与
+#: **规范化后的目标描述** —— 两次粗定位必须**看同一张图、问同一件事**，
+#: 比出来的数才有意义（否则比的是两个没法比的数）。
 SecondOpinion = Callable[[CapturedFrame, str], "tuple[float, float] | None"]
 
 
@@ -405,7 +409,7 @@ class TwoStageGrounder:
 
         # -- 门控：命中才开第二遍（工单 M7 AC 1）-----------------------------
         left, top, right, bottom = (int(value) for value in request.surface)
-        second_coarse = self._second_coarse_point(request, frame, geometry)
+        second_coarse = self._second_coarse_point(description, screen_frame, geometry)
         decision = evaluate_gate(
             GateInputs(
                 coarse_point=coarse,
@@ -550,11 +554,17 @@ class TwoStageGrounder:
 
     def _second_coarse_point(
         self,
-        request: VisualLocateRequest,
-        frame: CapturedFrame,
+        description: str,
+        screen_frame: CapturedFrame,
         geometry,
     ) -> tuple[float, float] | None:
         """**第二次独立粗定位**的结果（物理表面空间）。
+
+        ⚠️ **它必须看到与第一次粗定位同一张图**（``screen_frame`` —— 整屏那一级
+        送模型的那张，缩到声明尺寸）、**问的也是同一个描述**（规范化后的那个）：
+        否则两次的数在**不同的空间**里（一个整屏原图、一个缩到声明尺寸的图）、
+        指的也可能是**不同的东西** → 「两次是否一致」这条门控条件比的就是
+        **两个没法比的数**。
 
         拿不到（没给端口 / 调用失败 / 坐标不可用）→ ``None``
         → 一致性条件**不可判定**（照旧显式记进追踪记录，不静默）。
@@ -562,7 +572,7 @@ class TwoStageGrounder:
         if self.second_opinion is None:
             return None
         try:
-            raw = self.second_opinion(frame, request.target_description)
+            raw = self.second_opinion(screen_frame, description)
         except Exception:
             return None
         if raw is None:
