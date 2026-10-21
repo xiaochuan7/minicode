@@ -60,14 +60,13 @@ from minicode.model.image import downscale_frame
 from minicode.model.ports import ModelCaller
 from minicode.model.request_log import IMAGE_PATCH_PX, RequestLog, total_input_tokens
 
-from .probe import ProbeSpec, build_probe_frame, probe_digest
+from .probe import ProbeSpec, build_probe_frame, probe_digest, probe_hit_radius
 from .prompt import image_prompt, parse_points, text_prompt
 from .tolerance import (
     CALIBRATION_ROUNDS,
     CALIBRATION_TOLERANCE_PX,
     DISCRIMINABILITY_SAFETY_FACTOR,
     OUT_OF_BOUNDS_TOLERANCE_PX,
-    PROBE_HIT_RADIUS_PX,
     SCALE_EQUIVALENCE_TOLERANCE_PX,
 )
 
@@ -391,7 +390,7 @@ class CalibrationProbe:
         calibration_tolerance_px: float = CALIBRATION_TOLERANCE_PX,
         out_of_bounds_tolerance_px: float = OUT_OF_BOUNDS_TOLERANCE_PX,
         equivalence_tolerance_px: float = SCALE_EQUIVALENCE_TOLERANCE_PX,
-        hit_radius_px: float = PROBE_HIT_RADIUS_PX,
+        hit_radius_px: float | None = None,
         rounds: int = CALIBRATION_ROUNDS,
         session: int = 0,
     ):
@@ -407,7 +406,15 @@ class CalibrationProbe:
         self.calibration_tolerance_px = float(calibration_tolerance_px)
         self.out_of_bounds_tolerance_px = float(out_of_bounds_tolerance_px)
         self.equivalence_tolerance_px = float(equivalence_tolerance_px)
-        self.hit_radius_px = float(hit_radius_px)
+        #: **命中半径**（物理像素）：默认按**探针自己的几何**算（方块边长的一半）——
+        #: 探针尺寸变了它跟着变，**不会**与实际方块失配。
+        #: :data:`minicode.calib.tolerance.PROBE_HIT_RADIUS_PX` 是**标准探针**
+        #: （2560 宽 → 96 px 方块）上的那个值，两者一致。
+        self.hit_radius_px = (
+            float(hit_radius_px)
+            if hit_radius_px is not None
+            else probe_hit_radius(self.spec)
+        )
         self.rounds = int(rounds)
         self.session = int(session)
 

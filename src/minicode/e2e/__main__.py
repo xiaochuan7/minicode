@@ -85,6 +85,16 @@ def _parse_args(argv):
         ),
     )
     parser.add_argument(
+        "--candidate-source",
+        default="none",
+        choices=("none", "ocr"),
+        help=(
+            "视觉通道的**候选源**（B-1 的「模型选编号」分支）："
+            "none = 那条分支不存在（缺省，行为与从前完全一致）；"
+            "ocr = 用 Windows 自带 OCR 的词级框做候选（落点 = 候选框物理中心）"
+        ),
+    )
+    parser.add_argument(
         "--model-input",
         default="",
         help=(
@@ -149,7 +159,13 @@ def _executor_for(task, args, page):
         return CrossAppExecutor(native, browser)
     if task.app == "DSH/Tabbit":
         return ElectronExecutor(out_dir=args.out, url=page.url if page else "")
-    return WindowsDesktopExecutor(**native_common)
+    #: **桌面那一条**才用得上候选源（B-1 的「模型选编号」分支在视觉通道里）。
+    desktop_common = dict(native_common)
+    if args.candidate_source == "ocr":
+        from .visual import ocr_candidate_source
+
+        desktop_common["candidate_source"] = ocr_candidate_source()
+    return WindowsDesktopExecutor(**desktop_common)
 
 
 def _load_manual(path: str) -> dict[str, dict]:

@@ -115,6 +115,7 @@ class WindowsDesktopExecutor:
         bypass_admission: bool = False,
         model_input: tuple[int, int] | None = None,
         truth_overrides: Mapping[str, tuple[int, int]] | None = None,
+        candidate_source: Any | None = None,
     ):
         self.out_dir = Path(out_dir)
         self.gate_mode = gate_mode
@@ -132,6 +133,8 @@ class WindowsDesktopExecutor:
             gate_mode=gate_mode,
             bypass_admission=bypass_admission,
             model_input=model_input,
+            #: **候选源**（B-1 的「模型选编号」分支）；``None`` = 那条分支不存在。
+            candidate_source=candidate_source,
         )
         #: **停止条件 + 卡死检测器 + 熔断**（工单 M12）：端到端评测的步循环
         #: 也归它管（撞到停止条件就停下来，并交出**交接产物**）。

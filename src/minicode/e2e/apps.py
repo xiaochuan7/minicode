@@ -511,6 +511,7 @@ class NativeAppExecutor:
         gate_mode: str = "on_demand",
         bypass_admission: bool = False,
         model_input: tuple[int, int] | None = None,
+        candidate_source: Any | None = None,
     ):
         self.out_dir = Path(out_dir)
         self.truth_overrides = dict(truth_overrides or {})
@@ -529,6 +530,8 @@ class NativeAppExecutor:
             gate_mode=gate_mode,
             bypass_admission=bypass_admission,
             model_input=model_input,
+            #: **候选源**（B-1 的「模型选编号」分支）；``None`` = 那条分支不存在。
+            candidate_source=candidate_source,
         )
         #: 运行时挑中的目标（联系人 / 条目名）。
         self._picked = ""

@@ -29,30 +29,17 @@ from pathlib import Path
 from typing import Any
 
 from minicode.model.image import model_input_size_for
+from minicode.model.request_log import total_input_tokens
 
 __all__ = [
     "VisualChannel",
     "PromptCapturingCaller",
     "RecordingSink",
     "measure_text_tokens",
+    "ocr_candidate_source",
     "reverse_lookup_model_input",
+    "reverse_lookup_from_log",
 ]
-
-
-def _total_input_tokens(reply: Any) -> int | None:
-    """一次请求的**总**输入 token 数（本次新算 + 缓存读 + 缓存写）。
-
-    服务端把三样分开报；只看 ``input_tokens`` 会把「上下文变大了」看漏。
-    三样都没报 → ``None``（不编一个 0）。
-    """
-    parts = (
-        reply.input_tokens,
-        reply.cache_read_input_tokens,
-        reply.cache_creation_input_tokens,
-    )
-    if all(part is None for part in parts):
-        return None
-    return sum(part or 0 for part in parts)
 
 
 def measure_text_tokens(
@@ -68,7 +55,11 @@ def measure_text_tokens(
     量不出来（服务端没报 token）→ ``None`` → 反查结果是 ``unknown``（不猜）。
     """
     reply = client.complete(prompt, effort=effort, max_tokens=max_tokens)
-    return _total_input_tokens(reply)
+    return total_input_tokens(
+        reply.input_tokens,
+        reply.cache_read_input_tokens,
+        reply.cache_creation_input_tokens,
+    )
 
 
 def reverse_lookup_model_input(
@@ -97,6 +88,41 @@ def reverse_lookup_model_input(
 
     return estimate_model_input_from_tokens(
         observed_input_tokens, text_tokens, aspect_ratio
+    )
+
+
+def reverse_lookup_from_log(
+    client: Any,
+    sink: Any,
+    declared: tuple[int, int],
+    *,
+    max_tokens: int = 2000,
+) -> tuple[int, int] | None:
+    """用**请求日志里的 token 数**反查服务端实际看到的那张图（**唯一一处**）。
+
+    * 图像那一部分的 token 数 = 服务端报的总输入 token − 纯文字那部分；
+    * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次；
+    * **反查不出就返回 ``None``**（调用方记 ``unknown``，不许填一个猜的数）。
+
+    ⚠️ **总**输入 token 的口径走
+    :func:`minicode.model.request_log.total_input_tokens`（本仓的唯一一处）——
+    服务端开了提示词缓存时，只看 ``input_tokens`` 会小到几十（图像 token 进了
+    ``cache_read``）→ 相减出来是负数。
+    """
+    record = getattr(sink, "last", None)
+    prompt = getattr(client, "last_prompt", "")
+    if record is None or not prompt:
+        return None
+    observed = getattr(record, "total_input_tokens", None)
+    if observed is None:
+        return None
+    text_tokens = measure_text_tokens(
+        client, prompt, effort=record.effort, max_tokens=max_tokens
+    )
+    if text_tokens is None:
+        return None
+    return reverse_lookup_model_input(
+        observed, text_tokens, declared[0] / declared[1] if declared[1] else 0.0
     )
 
 
@@ -133,6 +159,22 @@ class PromptCapturingCaller:
         return self._inner.complete(prompt, **kwargs)
 
 
+def ocr_candidate_source(language: str = "zh-Hans-CN") -> Any:
+    """用 **Windows 自带的 OCR 词级框**造一个候选源（B-1 的视觉通道那一半）。
+
+    * 候选框在**物理像素**（帧像素 + 帧原点），落点直接取框中心 → **零换算**；
+    * **只读**：OCR 不注入任何输入；
+    * ⚠️ **召回是瓶颈**：图标类目标没有文字可匹配（实测评测集上图标召回 0/13），
+      方案原文的「**UIA 控件为主表**」那一半还没接（那是 P1）。
+      → **缺省不接**（见 :class:`VisualChannel` 的 ``candidate_source``）。
+    """
+    from minicode.ground.candidates import OcrCandidateSource
+    from minicode.verification.ocr_windows import WindowsOcrPort
+
+    port = WindowsOcrPort(language)
+    return OcrCandidateSource(port.read_words)
+
+
 class VisualChannel:
     """**视觉通道**的一次接线（标定只跑一次，之后复用）。"""
 
@@ -143,6 +185,7 @@ class VisualChannel:
         gate_mode: str = "on_demand",
         bypass_admission: bool = False,
         model_input: tuple[int, int] | None = None,
+        candidate_source: Any | None = None,
     ):
         """
         ``model_input``
@@ -152,11 +195,17 @@ class VisualChannel:
             → 1280×800）。
             ⚠️ 源码里**不写死** ``(2048, 1280)`` 那样手填的值
             （工单 A-2：手填的尺寸错了就静默偏移）。
+        ``candidate_source``
+            **候选源**（B-1 的「模型选编号」分支，端口形状见
+            :class:`minicode.ground.candidates.CandidateSource`）。
+            ``None``（缺省）= **这条分支不存在** → 视觉通道的行为与从前**完全一致**。
+            要接它就传 :func:`ocr_candidate_source` 造的那个。
         """
         self.out_dir = Path(out_dir)
         self.gate_mode = gate_mode
         self.bypass_admission = bypass_admission
         self.model_input = model_input
+        self.candidate_source = candidate_source
         self._calib: dict[str, Any] = {}
         self._grounder = None
         self._context: dict[str, Any] = {}
@@ -194,6 +243,13 @@ class VisualChannel:
             model_input_size=calibration["model_input_size"],
             full_screen_size=(calibration["width"], calibration["height"]),
             gate_mode=self.gate_mode,
+            #: **候选源**（B-1 的「模型选编号」分支）。给了它：匹配得上候选就
+            #: 走编号选择（落点 = 候选框物理中心）；匹配不上或挑不出编号 →
+            #: 回落点式路径（记 ``fallback_cause``）。
+            #: ⚠️ **缺省没有** —— 候选源的**召回**是瓶颈（图标类目标 OCR 读不出
+            #: 文字；方案原文的「UIA 控件为主表」那一半还没接，见 P1）。
+            #: 默认关 = 生产路径的行为与从前**完全一致**。
+            candidate_source=self.candidate_source,
         )
         return self._grounder
 
@@ -280,25 +336,9 @@ class VisualChannel:
     ) -> tuple[int, int] | None:
         """用**请求日志里的 token 数**反查服务端实际看到的那张图。
 
-        * 图像那一部分的 token 数 = 服务端报的总输入 token − 纯文字那部分；
-        * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次。
-        * **反查不出就返回 ``None``**（调用方记 ``unknown``，不许填一个猜的数）。
+        实现只有一处：:func:`reverse_lookup_from_log`。
         """
-        record = sink.last
-        prompt = getattr(client, "last_prompt", "")
-        if record is None or not prompt:
-            return None
-        observed = record.total_input_tokens
-        if observed is None:
-            return None
-        text_tokens = measure_text_tokens(
-            client, prompt, effort=record.effort, max_tokens=2000
-        )
-        if text_tokens is None:
-            return None
-        return reverse_lookup_model_input(
-            observed, text_tokens, declared[0] / declared[1] if declared[1] else 0.0
-        )
+        return reverse_lookup_from_log(client, sink, declared)
 
 
 class _BypassAdmission:

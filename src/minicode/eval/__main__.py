@@ -37,8 +37,7 @@ from typing import Any
 from minicode.e2e.visual import (
     PromptCapturingCaller,
     RecordingSink,
-    measure_text_tokens,
-    reverse_lookup_model_input,
+    reverse_lookup_from_log,
 )
 from minicode.ground.gate import default_gate_params
 from minicode.model.client import ModelClient
@@ -368,20 +367,13 @@ def _reverse_lookup(client, sink, declared: tuple[int, int], args) -> tuple[int,
     * 反查不出（token 数对不上任何尺寸 / 文字那部分量不出来）→ ``None``
       —— 调用方记 ``unknown``，**不许填一个猜的数**。
     """
-    record = sink.last
-    prompt = getattr(client, "last_prompt", "")
-    if record is None or not prompt:
-        return None
-    observed = record.total_input_tokens
-    if observed is None:
-        return None
-    text_tokens = measure_text_tokens(
-        client, prompt, effort=args.effort, max_tokens=args.max_tokens
-    )
-    if text_tokens is None:
-        return None
-    return reverse_lookup_model_input(
-        observed, text_tokens, declared[0] / declared[1] if declared[1] else 0.0
+    """**用 token 数反查**服务端实际看到的那张图（反查不出 → ``None``）。
+
+    实现只有一处：:func:`minicode.e2e.visual.reverse_lookup_from_log`
+    （反查口径不许有第二份）。
+    """
+    return reverse_lookup_from_log(
+        client, sink, declared, max_tokens=args.max_tokens
     )
 
 
