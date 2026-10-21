@@ -67,6 +67,8 @@ def _run_fake(args):
         control_type="Button",
         rect=(1016, 1528, 1083, 1600),
         window_handle=65784,
+        # 窗口标题也是动作日志的字段（工单 M17 AC 1）—— 假桌面上给一个像样的。
+        window_title="任务栏",
     )
     return run_minimal_loop(
         target_description=args.target,

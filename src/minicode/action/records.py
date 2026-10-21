@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from minicode.redact.log import sanitize_record
 from minicode.redact.patterns import PASSWORD_PLACEHOLDER
 
 from .errors import allows_visual_fallback
@@ -51,6 +52,7 @@ __all__ = [
     "trace_candidates",
     "POINT_SPACE",
     "FAILURE_FIELDS",
+    "stage_share",
 ]
 
 #: 落点所在的坐标空间。本项目唯一真值空间。
@@ -318,98 +320,112 @@ class ActionRecord:
         return allows_visual_fallback(self.failure_type)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "protocol_version": self.protocol_version,
-            "timestamp": self.timestamp,
-            "action": self.action,
-            "intent": self.intent,
-            "target": {
-                "name": self.target_name,
-                "rect": list(self.target_rect) if self.target_rect else None,
-                "control_type": self.target_control_type,
-                "window_handle": self.target_window_handle,
-                "window_title": self.target_window_title,
-            },
-            "point": (
-                {"x": self.point_x, "y": self.point_y, "space": self.point_space}
-                if self.point_x is not None and self.point_y is not None
-                else None
-            ),
-            "capture": {"width": self.capture_width, "height": self.capture_height},
-            "sent_size": {"width": self.sent_width, "height": self.sent_height},
-            "image_source": self.image_source,
-            "screenshot_sha256": self.screenshot_sha256,
-            "result": {
-                "ok": self.ok,
-                "error_code": self.error_code,
-                "error_message": self.error_message,
-                "cursor_readback": list(self.cursor_readback) if self.cursor_readback else None,
-                "cursor_delta_px": self.cursor_delta_px,
-            },
-            "rejected_candidates": [dict(item) for item in self.rejected_candidates],
-            "timings_ms": {
-                "locate": self.locate_ms,
-                "decision": self.decision_ms,
-                "execute_verify": self.execute_verify_ms,
-            },
-            # 单步的三段**占比**（由上面三个值算出来，不是另一份数据）。
-            "timings_share": _stage_share(
-                self.locate_ms, self.decision_ms, self.execute_verify_ms
-            ),
-            "action_timing": dict(self.action_timing) if self.action_timing else None,
-            "verification": {
-                "landing_delta_px": self.landing_delta_px,
-                "landing_verified": self.landing_verified,
-            },
-            "query_scope": self.query_scope,
-            "params": dict(self.params) if self.params is not None else None,
-            "failures": {
-                "locate": self.failure_locate,
-                "decision": self.failure_decision,
-                "execute": self.failure_execute,
-            },
-            "redaction": dict(self.redaction) if self.redaction is not None else None,
-            "selection_echo": (
-                dict(self.selection_echo) if self.selection_echo is not None else None
-            ),
-            "allows_visual_fallback": self.allows_visual_fallback,
-            "channel": self.channel,
-            "failure_type": self.failure_type,
-            "model_calls": self.model_calls,
-            "unavailable_capture_sources": dict(self.unavailable_capture_sources),
-            "candidate_limit": self.candidate_limit,
-            "candidate_limit_source": self.candidate_limit_source,
-            "visual_admission": (
-                dict(self.visual_admission) if self.visual_admission is not None else None
-            ),
-            "coarse_point": list(self.coarse_point) if self.coarse_point else None,
-            "crop_plan": dict(self.crop_plan) if self.crop_plan is not None else None,
-            "grounding_echoes": [dict(echo) for echo in self.grounding_echoes],
-            "fallback": self.fallback,
-            "fallback_reason": self.fallback_reason,
-            "fallback_cause": self.fallback_cause,
-            "gate_hit": self.gate_hit,
-            "gate_reasons": list(self.gate_reasons),
-            "gate_undecidable": list(self.gate_undecidable),
-            "refine_enabled": self.refine_enabled,
-            "state": {
-                "before": dict(self.state_before) if self.state_before is not None else None,
-                "after": dict(self.state_after) if self.state_after is not None else None,
-            },
-            "verification_result": (
-                dict(self.verification_result)
-                if self.verification_result is not None
-                else None
-            ),
-            "approval": dict(self.approval) if self.approval is not None else None,
-            "notes": list(self.notes),
-        }
+        """**落盘形状**。
+
+        ⚠️ 这里做**落盘前的脱敏**（工单 M17 AC 5）：密钥形态的明文
+        （控件名 / 窗口标题 / 意图 / 错误消息里都可能出现）一律换成
+        ``[REDACTED]`` —— **用的是脱敏器同一套规则**。
+        摘要字段（截图哈希）放行：它是摘要，不是明文。
+        """
+        return sanitize_record(
+            {
+                "protocol_version": self.protocol_version,
+                "timestamp": self.timestamp,
+                "action": self.action,
+                "intent": self.intent,
+                "target": {
+                    "name": self.target_name,
+                    "rect": list(self.target_rect) if self.target_rect else None,
+                    "control_type": self.target_control_type,
+                    "window_handle": self.target_window_handle,
+                    "window_title": self.target_window_title,
+                },
+                "point": (
+                    {"x": self.point_x, "y": self.point_y, "space": self.point_space}
+                    if self.point_x is not None and self.point_y is not None
+                    else None
+                ),
+                "capture": {"width": self.capture_width, "height": self.capture_height},
+                "sent_size": {"width": self.sent_width, "height": self.sent_height},
+                "image_source": self.image_source,
+                "screenshot_sha256": self.screenshot_sha256,
+                "result": {
+                    "ok": self.ok,
+                    "error_code": self.error_code,
+                    "error_message": self.error_message,
+                    "cursor_readback": (
+                        list(self.cursor_readback) if self.cursor_readback else None
+                    ),
+                    "cursor_delta_px": self.cursor_delta_px,
+                },
+                "rejected_candidates": [dict(item) for item in self.rejected_candidates],
+                "timings_ms": {
+                    "locate": self.locate_ms,
+                    "decision": self.decision_ms,
+                    "execute_verify": self.execute_verify_ms,
+                },
+                # 单步的三段**占比**（由上面三个值算出来，不是另一份数据）。
+                "timings_share": stage_share(
+                    self.locate_ms, self.decision_ms, self.execute_verify_ms
+                ),
+                "action_timing": dict(self.action_timing) if self.action_timing else None,
+                "verification": {
+                    "landing_delta_px": self.landing_delta_px,
+                    "landing_verified": self.landing_verified,
+                },
+                "query_scope": self.query_scope,
+                "params": dict(self.params) if self.params is not None else None,
+                "failures": {
+                    "locate": self.failure_locate,
+                    "decision": self.failure_decision,
+                    "execute": self.failure_execute,
+                },
+                "redaction": dict(self.redaction) if self.redaction is not None else None,
+                "selection_echo": (
+                    dict(self.selection_echo) if self.selection_echo is not None else None
+                ),
+                "allows_visual_fallback": self.allows_visual_fallback,
+                "channel": self.channel,
+                "failure_type": self.failure_type,
+                "model_calls": self.model_calls,
+                "unavailable_capture_sources": dict(self.unavailable_capture_sources),
+                "candidate_limit": self.candidate_limit,
+                "candidate_limit_source": self.candidate_limit_source,
+                "visual_admission": (
+                    dict(self.visual_admission) if self.visual_admission is not None else None
+                ),
+                "coarse_point": list(self.coarse_point) if self.coarse_point else None,
+                "crop_plan": dict(self.crop_plan) if self.crop_plan is not None else None,
+                "grounding_echoes": [dict(echo) for echo in self.grounding_echoes],
+                "fallback": self.fallback,
+                "fallback_reason": self.fallback_reason,
+                "fallback_cause": self.fallback_cause,
+                "gate_hit": self.gate_hit,
+                "gate_reasons": list(self.gate_reasons),
+                "gate_undecidable": list(self.gate_undecidable),
+                "refine_enabled": self.refine_enabled,
+                "state": {
+                    "before": dict(self.state_before) if self.state_before is not None else None,
+                    "after": dict(self.state_after) if self.state_after is not None else None,
+                },
+                "verification_result": (
+                    dict(self.verification_result)
+                    if self.verification_result is not None
+                    else None
+                ),
+                "approval": dict(self.approval) if self.approval is not None else None,
+                "notes": list(self.notes),
+            }
+        )
 
 
-def _stage_share(
+def stage_share(
     locate_ms: float, decision_ms: float, execute_verify_ms: float
 ) -> dict[str, float]:
-    """三段耗时各自的**占比**（单步用；由那三个值算出来，不是另一份数据）。"""
+    """三段耗时各自的**占比**（单步用；由那三个值算出来，不是另一份数据）。
+
+    **占比的算法只有这一份** —— 审计层回放时用它核对日志里的占比。
+    """
     total = float(locate_ms) + float(decision_ms) + float(execute_verify_ms)
     if total <= 0:
         return {"locate": 0.0, "decision": 0.0, "execute_verify": 0.0}
