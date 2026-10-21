@@ -10,7 +10,10 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from minicode.ground.caliber import (
     CaliberSample,
@@ -19,6 +22,7 @@ from minicode.ground.caliber import (
     refine_error_px,
     summarize_samples,
 )
+from minicode.ground.caliber import main as caliber_main
 
 
 class TestUnifiedCaliber(unittest.TestCase):
@@ -78,6 +82,82 @@ class TestUnifiedCaliber(unittest.TestCase):
         )
         self.assertAlmostEqual(coarse_error_px(sample), 7.5)
         self.assertAlmostEqual(refine_error_px(sample), 2.5)
+
+
+class CoarseOnlyArmTests(unittest.TestCase):
+    """**第三臂（只用粗定位）**也要能被**统一口径**读出来。
+
+    ⚠️ 那一臂是「从来没量过的基线」（1.00 次模型调用/目标）——
+    它的落点误差读不出来，就没法回答「精定位到底值不值那多出来的一次调用」。
+    """
+
+    def _dataset(self, root: Path) -> None:
+        """造一份最小数据集（一条样本，GT 框 = (0,0)-(20,20)）。"""
+        (root / "annotations").mkdir(parents=True)
+        (root / "images").mkdir(parents=True)
+        (root / "annotations" / "a.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "s1",
+                        "img_filename": "s1.png",
+                        "bbox": [0, 0, 20, 20],
+                        "img_size": [100, 100],
+                        "instruction": "甲",
+                        "ui_type": "icon",
+                        "platform": "windows",
+                        "group": "Dev",
+                        "application": "app",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    def test_the_cli_reads_the_coarse_only_arm(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "sspro"
+            self._dataset(dataset)
+            report_path = root / "sspro-report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "outcomes": {
+                            "coarse_only": [
+                                {
+                                    "sample_id": "s1",
+                                    "landing_point": [10, 10],
+                                    "coarse_point": [10, 10],
+                                    "refine_enabled": False,
+                                    "fallback": False,
+                                    "hit": True,
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out_path = root / "caliber.json"
+            code = caliber_main(
+                [
+                    "--sspro-report",
+                    str(report_path),
+                    "--dataset",
+                    str(dataset),
+                    "--arm",
+                    "coarse_only",
+                    "--out",
+                    str(out_path),
+                ]
+            )
+            self.assertEqual(code, 0)
+            reports = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(reports[0]["samples"], 1)
+            self.assertAlmostEqual(reports[0]["click_accuracy"], 1.0)
+            self.assertIsNotNone(reports[0]["landing_error_px"])
 
 
 if __name__ == "__main__":

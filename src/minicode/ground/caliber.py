@@ -306,7 +306,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--sspro-report", default=None, help="sspro-report.json 的路径")
     parser.add_argument("--dataset", default=".scratch/sspro", help="ScreenSpot-Pro 数据集根目录")
-    parser.add_argument("--arm", default="on_demand", choices=("on_demand", "always"))
+    parser.add_argument(
+        "--arm",
+        default="on_demand",
+        choices=("on_demand", "always", "coarse_only"),
+        help=(
+            "读哪一臂（``coarse_only`` = 只用粗定位那一臂，1.00 次/目标；"
+            "它是**统一口径**下也要能读的那一臂）"
+        ),
+    )
     parser.add_argument("--bench-report", default=None, help="ground bench 报告的路径")
     parser.add_argument("--out", default=None, help="报告落盘路径（JSON）")
     args = parser.parse_args(argv)
