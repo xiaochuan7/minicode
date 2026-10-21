@@ -23,6 +23,12 @@
 **分母来自标定**：换算用的标度由调用方从标定结果给出（构造参数，**没有默认值**）；
 代码里不出现写死的 1000 / 999，也不按数值大小猜量纲（架构决策备忘 §2.6 C-04）。
 
+**「模型调用数」的口径**：``model_calls`` = **调用模型端口的次数**——
+**问不出坐标也是问过了**（回答解析不出来、越界、调用抛异常，都算这一次问过）。
+⚠️ **只记成功的那几次 → 报出来的数是下界** → 验收线「平均模型调用数/目标 ≤ 1.5」
+会判在一个**偏乐观**的数上。唯一的例外是「画面编不成 PNG」那种请求压根没发出去的情况：
+它也被记成 1 次（**宁可多记不可少记** —— 这条线是成本口径，多记只会更难达标）。
+
 **第三条路：编号选择（工单 B-1）** —— 上面那条「两级 + 门控」是**模型瞄点**
 （模型自己报坐标，误差跟着模型走）。B-1 换成**模型选编号**：
 有候选时把候选清单送给模型，模型**只答编号**，
@@ -381,6 +387,10 @@ class TwoStageGrounder:
         coarse: tuple[float, float] | None = None
         coarse_issue = ""
         coarse_out_of_bounds = False
+        # ⚠️ **这次模型调用发生了**（回答解析不出来**也是问过了**）→ 记 1 次。
+        # ⚠️ 不记它 →「平均模型调用数/目标」这条验收线**少算**
+        # （报出来的数是**下界** → 判在一个偏乐观的数上）。
+        model_calls += 1
         try:
             raw = self._ask(
                 coarse_prompt(description, self.model_input_size),
@@ -390,7 +400,6 @@ class TwoStageGrounder:
             raw = None
             coarse_issue = f"粗定位失败：{exc}"
         if raw is not None:
-            model_calls += 1
             echoes.append(
                 GroundingEcho(
                     stage=STAGE_COARSE,
@@ -471,6 +480,8 @@ class TwoStageGrounder:
 
         # -- 精定位（L1）：crop 内 -------------------------------------------
         crop_input = self.crop_model_input_size or (plan.width, plan.height)
+        # ⚠️ **这次模型调用发生了**（解析不出来**也是问过了**）→ 记 1 次。
+        model_calls += 1
         try:
             raw_refine = self._ask(refine_prompt(description, crop_input), crop)
         except GroundingParseError as exc:
@@ -499,7 +510,6 @@ class TwoStageGrounder:
                 echoes=echoes,
                 model_calls=model_calls,
             )
-        model_calls += 1
         echoes.append(
             GroundingEcho(
                 stage=STAGE_REFINE,
@@ -855,6 +865,8 @@ class TwoStageGrounder:
         （工单 M7 AC 3：不得落点、不得挪到最近的可行位置）。
         """
         retry_reason = coarse_issue or "没有给出坐标"
+        # ⚠️ **这一遍也是一次模型调用**（失败**也是问过了**）→ 记 1 次。
+        model_calls += 1
         try:
             raw = self._ask(
                 whole_screen_prompt(
@@ -866,7 +878,6 @@ class TwoStageGrounder:
             )
         except Exception as exc:
             return self._failure(f"整屏第二遍失败：{exc}", echoes, model_calls, decision)
-        model_calls += 1
         echoes.append(
             GroundingEcho(
                 stage=STAGE_WHOLE_SCREEN,

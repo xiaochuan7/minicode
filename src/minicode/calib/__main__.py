@@ -33,7 +33,7 @@ from minicode.model.request_log import JsonlRequestLog
 from .admission import CalibrationAdmission
 from .calibrate import CalibrationProbe
 from .probe import default_probe_spec
-from .record import CalibrationLog, CalibrationRecord
+from .record import CalibrationLog, CalibrationRecord, session_verdicts
 from .tolerance import CALIBRATION_MIN_HIT_RATE, CALIBRATION_ROUNDS
 
 __all__ = ["main", "physical_surface_size"]
@@ -152,6 +152,7 @@ def main(argv=None) -> int:
 
     log = CalibrationLog(args.out)
     failures = 0
+    run_records: list[CalibrationRecord] = []
     for path in paths:
         probe = CalibrationProbe(
             client,
@@ -174,14 +175,38 @@ def main(argv=None) -> int:
         except Exception as exc:  # 模型侧失败如实报出，不静默
             failures += 1
             print(f"标定失败：{type(exc).__name__}: {exc}")
+            # ⚠️ **失败的会话也要留一条记录** —— 验收线
+            # 「6 次会话中 ≥ 5 次可用」的**分母**是「跑了几次会话」；
+            # 失败的不留痕 → 分母**静默变小**（跑 6 次炸 2 次 → 日志里只剩
+            # 4 条 → 读成「4/4 = 100% 达成」，真相是 4/6 = 67% → **不达成**）。
+            failed = CalibrationRecord.failed(
+                error=f"{type(exc).__name__}: {exc}",
+                probe_size=(width, height),
+                model_input_size=model_input,
+                model_id=config.model,
+                call_path=path,
+                rounds=args.rounds,
+            )
+            log.append(failed)
+            run_records.append(failed)
+            print(f"标定失败记录已写入：{log.path}")
             continue
         record = CalibrationRecord.from_outcome(outcome)
         log.append(record)
+        run_records.append(record)
         admission = CalibrationAdmission(
             outcome, min_hit_rate=args.min_hit_rate
         ).admit()
         print(_describe(outcome, admission))
         print(f"标定记录已写入：{log.path}")
+
+    # -- 本次运行的会话汇总（验收线「N 次会话中 ≥ M 次可用」数这两行）-------
+    verdicts = session_verdicts(run_records, min_hit_rate=args.min_hit_rate)
+    available = sum(1 for verdict in verdicts if verdict["available"])
+    print(
+        f"=== 本次运行的标定会话：共 {len(verdicts)} 次"
+        f"｜准入可用 {available} 次｜失败 {failures} 次 ==="
+    )
     return 0 if failures == 0 else 1
 
 

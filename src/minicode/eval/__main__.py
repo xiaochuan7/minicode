@@ -212,6 +212,20 @@ def main(argv=None) -> int:
 
     comparison = compare_arms(on_demand, always)
     crop_size = _crop_size()
+    #: **平均模型调用数/目标**（验收线「≤ 1.5」判的就是这个数）。
+    #:
+    #: ⚠️ **口径只有这一处**：逐条累加**那一臂**的 ``model_calls`` ÷ 样本数。
+    #: 报告里另有一个 ``model_calls.sent`` —— **那是另一个口径**
+    #: （两臂合计、去掉应答记忆复用后真正发出去的请求数）→ **两个数不能互相换算**。
+    samples = len(chosen)
+    per_target = {
+        "on_demand": (
+            comparison["on_demand"]["model_calls"] / samples if samples else 0.0
+        ),
+        "always": (
+            comparison["always"]["model_calls"] / samples if samples else 0.0
+        ),
+    }
     rows = table_rows(
         comparison=comparison,
         official=OFFICIAL_ROWS,
@@ -256,7 +270,22 @@ def main(argv=None) -> int:
             "replayed": memoized.replays,
             "note": (
                 "应答记忆端口：两臂**共用同一次粗定位回答**"
-                "（模型端不确定，各自重问会把随机性混进对比里）"
+                "（模型端不确定，各自重问会把随机性混进对比里）。"
+                "⚠️ **这是另一个口径**：`sent` = 两臂合计、去掉复用后**真正发出去的请求数**"
+                "（含门控关那一臂多出来的那几次精定位）；"
+                "它**不是**「平均模型调用数/目标」—— 那个数看下面 "
+                "`model_calls_per_target`"
+            ),
+        },
+        #: **平均模型调用数/目标** —— 验收线「≤ 1.5」**判的就是这一项**。
+        "model_calls_per_target": {
+            "samples": samples,
+            "on_demand": round(per_target["on_demand"], 4),
+            "always": round(per_target["always"], 4),
+            "note": (
+                "验收线「平均模型调用数/目标 ≤ 1.5」判的是**这一项**"
+                "（门控开那一臂：逐条累加的 `model_calls` ÷ 样本数）。"
+                "⚠️ 与上面 `model_calls.sent` **不是一个口径**，两者不能互相换算"
             ),
         },
         "official_rows": list(OFFICIAL_ROWS),
@@ -434,6 +463,12 @@ def _print_summary(report: dict, comparison: dict) -> None:
     print(
         f"模型调用次数：门控开 {comparison['on_demand']['model_calls']} 次"
         f"｜门控关 {comparison['always']['model_calls']} 次"
+    )
+    print(
+        f"平均模型调用数/目标（验收线「≤ 1.5」判的是这个数）："
+        f"门控开 {report['model_calls_per_target']['on_demand']:.2f}"
+        f"｜门控关 {report['model_calls_per_target']['always']:.2f}"
+        f"（N={report['model_calls_per_target']['samples']}）"
     )
     print(f"防假象自检（GT 中心当预测点）：{report['self_check_hit_rate'] * 100:.1f}%")
     print("=== 那张 7 行表 ===")

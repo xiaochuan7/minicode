@@ -221,10 +221,8 @@ class VisualChannel:
 
     def admission_port(self):
         """视觉通道的**准入判定端口**（生产口径 = 准入门说了算）。"""
-        from minicode.calib.admission import CalibrationAdmission
-
         calibration = self._calibrate()
-        real = CalibrationAdmission(calibration["outcome"])
+        real = calibration["admission"]
         if not self.bypass_admission:
             return real
         return _BypassAdmission(real)
@@ -280,6 +278,7 @@ class VisualChannel:
         """标定（真调模型）+ 准入判定。**只跑一次**。"""
         if self._calib:
             return self._calib
+        from minicode.calib.admission import CalibrationAdmission
         from minicode.calib.calibrate import CalibrationProbe
         from minicode.calib.probe import default_probe_spec
         from minicode.exec import dpi
@@ -304,10 +303,14 @@ class VisualChannel:
         )
         outcome = probe.run()
         best = outcome.candidate(outcome.detected_scale)
+        #: **准入判定**（A-1 的真闸门：**等价族分歧 ≤ 4 px 且 K 轮命中率 ≥ 0.6**）。
+        #: 算**一次**（准入规则只有那一处），端口与读数共用它。
+        admission = CalibrationAdmission(outcome).admit()
         #: **反查服务端实际看到的那张图**（反查不出 → ``unknown``，不猜）。
         server_input = self._reverse_lookup(client, sink, declared)
         self._calib = {
             "outcome": outcome,
+            "admission": CalibrationAdmission(outcome),
             "best": best,
             "client": client,
             "scale": outcome.detected_scale,
@@ -316,19 +319,9 @@ class VisualChannel:
             "model_input_size": declared,
             "server_model_input": server_input,
         }
-        self._context["calibration"] = {
-            "scale": outcome.detected_scale.value,
-            "scale_verdict": outcome.scale_verdict,
-            "max_error_px": round(best.max_error_px, 2),
-            "ok": outcome.calibration_ok,
-            "model_input": list(declared),
-            #: **声明的模型输入尺寸**（我们自己缩到表面的一半再送模型）。
-            "declared_model_input": list(declared),
-            #: **反查出来的服务端实际尺寸**（反查不出 → ``"unknown"``）。
-            "server_model_input": (
-                list(server_input) if server_input is not None else "unknown"
-            ),
-        }
+        self._context["calibration"] = calibration_readout(
+            outcome, admission, best, declared, server_input
+        )
         return self._calib
 
     def _reverse_lookup(
@@ -339,6 +332,52 @@ class VisualChannel:
         实现只有一处：:func:`reverse_lookup_from_log`。
         """
         return reverse_lookup_from_log(client, sink, declared)
+
+
+def calibration_readout(
+    outcome: Any,
+    admission: Any,
+    best: Any,
+    declared: tuple[int, int],
+    server_input: tuple[int, int] | None,
+) -> dict[str, Any]:
+    """**标定的读数**（进任务上下文 / 报告）。
+
+    ⚠️ **``ok`` 不是闸门**：它的语义是「落点等价族判定成功」，而那个族
+    **按 4 px 定义** → **按定义恒为真**（结构事实，见
+    :mod:`minicode.calib.calibrate`）。真正的闸门是
+    ``visual_channel_available``（**等价族分歧 ≤ 4 px 且 K 轮命中率 ≥ 0.6**）。
+
+    ⚠️ **两者都在这里** —— 只报 ``ok`` 会让人以为「标定通过」，
+    而通道**其实**可能被命中率那道闸门挡下来。
+    """
+    from minicode.calib.tolerance import CALIBRATION_MIN_HIT_RATE
+
+    return {
+        "scale": outcome.detected_scale.value,
+        "scale_verdict": outcome.scale_verdict,
+        "max_error_px": round(best.max_error_px, 2),
+        #: **真闸门的那两个读数**（K 轮命中率 + 准入判定）。
+        "rounds": outcome.rounds,
+        "hit_rate": round(outcome.hit_rate, 4),
+        "min_hit_rate": CALIBRATION_MIN_HIT_RATE,
+        "visual_channel_available": admission.available,
+        "visual_channel_reason": admission.reason,
+        "model_input": list(declared),
+        #: **声明的模型输入尺寸**（我们自己缩到表面的一半再送模型）。
+        "declared_model_input": list(declared),
+        #: **反查出来的服务端实际尺寸**（反查不出 → ``"unknown"``）。
+        "server_model_input": (
+            list(server_input) if server_input is not None else "unknown"
+        ),
+        #: ⚠️ **``ok`` 不是闸门**（恒真）；真正的绿灯是
+        #: ``visual_channel_available``。
+        "ok": outcome.calibration_ok,
+        "ok_is_not_the_gate": (
+            "calibration_ok = 「落点等价族判定成功」，那个族按 4 px 定义 → "
+            "按定义恒为真；闸门是 visual_channel_available"
+        ),
+    }
 
 
 class _BypassAdmission:

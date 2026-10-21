@@ -757,6 +757,7 @@ class TestRecord(unittest.TestCase):
             "equivalence_tolerance_px",
             "scale_equivalence_verdict",
             "denominator_pair_divergence_px",
+            "error",
         ):
             data.pop(key)
         back = CalibrationRecord.from_dict(data)
@@ -764,9 +765,58 @@ class TestRecord(unittest.TestCase):
         self.assertEqual(back.hit_rate, 0.0)
         self.assertEqual(back.median_error_px, 0.0)
         self.assertEqual(back.p90_error_px, 0.0)
+        self.assertEqual(back.error, "")
         self.assertEqual(
             back.equivalence_tolerance_px, SCALE_EQUIVALENCE_TOLERANCE_PX
         )
+
+    def test_a_failed_session_leaves_a_record(self):
+        """**失败的会话也要留痕** —— 验收线「6 次会话中 ≥ 5 次可用」的分母不能静默变小。
+
+        ⚠️ 失败时不落记录 → 跑 6 次炸 2 次 → 日志里只剩 4 条 → 读成
+        「4/4 = 100% 达成」，真相是 4/6 = 67% → **不达成**。
+        """
+        from minicode.calib.record import CalibrationRecord, CalibrationStore
+
+        record = CalibrationRecord.failed(
+            error="CalibrationParseError: 模型回答里缺少这些目标的坐标",
+            probe_size=(2560, 1600),
+            model_input_size=(1280, 800),
+            model_id="stub-model",
+            call_path="image",
+            rounds=5,
+        )
+        # 记录里**没有一个测量值**（不编数）。
+        self.assertEqual(record.hit_rate, 0.0)
+        self.assertEqual(record.raw_points, ())
+        self.assertEqual(record.probe_sha256, "")
+        self.assertFalse(record.calibration_ok)
+        self.assertEqual(record.rounds, 5)
+        self.assertNotEqual(record.error, "")
+        # 读得回来。
+        back = CalibrationRecord.from_dict(record.to_dict())
+        self.assertEqual(back.error, record.error)
+        # **失败的会话给不出标度**（不能拿一个空标度去换算）。
+        store = CalibrationStore([record])
+        self.assertIsNone(store.scale_for("stub-model", "image"))
+
+    def test_session_verdicts_count_failed_sessions_in_the_denominator(self):
+        """验收线「N 次会话中 ≥ M 次可用」**直接数这个**。
+
+        分母 = **跑了几次会话**（含失败的）；分子 = 准入放行的条数。
+        """
+        from minicode.calib.record import CalibrationRecord, session_verdicts
+
+        good, _ = self._record()
+        failed = CalibrationRecord.failed(
+            error="boom", model_id="stub-model", call_path="image"
+        )
+        verdicts = session_verdicts([good, failed])
+        self.assertEqual(len(verdicts), 2)
+        self.assertTrue(verdicts[0]["available"])
+        self.assertFalse(verdicts[1]["available"])
+        self.assertFalse(verdicts[1]["ok"])
+        self.assertEqual(verdicts[1]["error"], "boom")
 
     def test_record_keeps_only_the_probe_hash(self):
         record, _ = self._record()

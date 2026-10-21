@@ -428,6 +428,34 @@ class SecondOpinionTests(unittest.TestCase):
         self.assertEqual(seen[0][:2], (2560, 1600))
         self.assertEqual(seen[0][2], "开始")
 
+
+class ModelCallAccountingTests(unittest.TestCase):
+    """**「模型调用数」的口径**：**问过了就算一次**（问不出坐标也是问过了）。
+
+    ⚠️ 只记成功的那几次 → 报出来的数是**下界** → 验收线
+    「平均模型调用数/目标 ≤ 1.5」会判在一个**偏乐观**的数上。
+    """
+
+    def test_a_failed_coarse_call_is_still_counted(self):
+        """粗定位**自己炸了**（回答解析不出来）→ 那一次仍然算一次调用。"""
+        model = _StubModel(_text_reply("我看不清那个按钮"), _text_reply("还是不知道"))
+        grounder = _grounder(model, gate_mode=GateMode.ON_DEMAND)
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertFalse(result.ok)
+        # 粗定位 1 次 + 整屏第二遍 1 次（两次都炸了，两次都问过了）。
+        self.assertEqual(result.model_calls, 2)
+        self.assertEqual(len(model.calls), 2)
+
+    def test_a_failed_refine_call_is_still_counted(self):
+        """精定位**自己炸了** → 回落，但那次调用仍要记。"""
+        model = _StubModel(_reply(390.625, 500.0), _text_reply("我看不清那个按钮"))
+        grounder = _grounder(model, gate_mode=GateMode.ALWAYS)
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertTrue(result.fallback)
+        # 粗定位 1 次 + 精定位 1 次（精定位炸了，但问过了）。
+        self.assertEqual(result.model_calls, 2)
+        self.assertEqual(len(model.calls), 2)
+
     def test_second_opinion_sees_the_same_image_as_the_coarse_level(self):
         """第二次粗定位必须看到**同一张图**（整屏那一级送模型的那张）。
 

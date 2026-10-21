@@ -26,9 +26,19 @@ from minicode.coord.coordinates import ModelScale
 
 from .admission import visual_channel_available
 from .calibrate import EQUIVALENCE_EQUIVALENT, CalibrationOutcome
-from .tolerance import CALIBRATION_MIN_HIT_RATE, SCALE_EQUIVALENCE_TOLERANCE_PX
+from .tolerance import (
+    CALIBRATION_MIN_HIT_RATE,
+    CALIBRATION_TOLERANCE_PX,
+    OUT_OF_BOUNDS_TOLERANCE_PX,
+    SCALE_EQUIVALENCE_TOLERANCE_PX,
+)
 
-__all__ = ["CalibrationRecord", "CalibrationLog", "CalibrationStore"]
+__all__ = [
+    "CalibrationRecord",
+    "CalibrationLog",
+    "CalibrationStore",
+    "session_verdicts",
+]
 
 
 @dataclass(frozen=True)
@@ -73,6 +83,13 @@ class CalibrationRecord:
     #: 它就是「落点等价容差 4 px」的**基线**：
     #: 从记录里**直接读得出**「这两个标度对落点没有影响」。
     denominator_pair_divergence_px: float = 0.0
+    #: **这次会话没跑成**的原因（空串 = 跑成了）。
+    #:
+    #: ⚠️ **失败的会话也留一条记录** —— 验收线「6 次独立标定会话中 ≥ 5 次
+    #: ``available == True``」的**分母**是「跑了几次会话」；
+    #: 失败的会话不落记录 → 分母会**静默变小**（跑 6 次炸 2 次 → 日志里只剩
+    #: 4 条 → 读成「4/4 = 100% 达成」，真相是 4/6 = 67% → **不达成**）。
+    error: str = ""
 
     @classmethod
     def from_outcome(
@@ -148,6 +165,7 @@ class CalibrationRecord:
             "equivalence_tolerance_px": self.equivalence_tolerance_px,
             "scale_equivalence_verdict": self.scale_equivalence_verdict,
             "denominator_pair_divergence_px": self.denominator_pair_divergence_px,
+            "error": self.error,
         }
 
     @classmethod
@@ -196,6 +214,55 @@ class CalibrationRecord:
             denominator_pair_divergence_px=float(
                 data.get("denominator_pair_divergence_px", 0.0)
             ),
+            error=str(data.get("error", "")),
+        )
+
+    @classmethod
+    def failed(
+        cls,
+        *,
+        error: str,
+        timestamp: str | None = None,
+        probe_size: tuple[int, int] = (0, 0),
+        model_input_size: tuple[int, int] = (0, 0),
+        model_id: str = "",
+        call_path: str = "",
+        rounds: int = 1,
+    ) -> CalibrationRecord:
+        """**一次没跑成的标定会话**也留一条记录（**不编数**）。
+
+        记录里**没有一个测量值**（``hit_rate`` = 0.0、``raw_points`` = 空、
+        ``probe_sha256`` = 空串 = 没量到）—— 只留「这次没跑成」这件事与原因。
+        """
+        return cls(
+            timestamp=timestamp
+            or datetime.now().astimezone().isoformat(timespec="seconds"),
+            probe_sha256="",
+            probe_width=int(probe_size[0]),
+            probe_height=int(probe_size[1]),
+            model_input_width=int(model_input_size[0]),
+            model_input_height=int(model_input_size[1]),
+            detected_scale="",
+            scale_verdict="",
+            landing_equivalence="",
+            equivalent_scales=(),
+            candidates=(),
+            divergences_px={},
+            calibration_tolerance_px=CALIBRATION_TOLERANCE_PX,
+            out_of_bounds_tolerance_px=OUT_OF_BOUNDS_TOLERANCE_PX,
+            calibration_ok=False,
+            model_id=model_id,
+            call_path=call_path,
+            raw_points=(),
+            targets=(),
+            rounds=int(rounds),
+            hit_rate=0.0,
+            median_error_px=0.0,
+            p90_error_px=0.0,
+            equivalence_tolerance_px=SCALE_EQUIVALENCE_TOLERANCE_PX,
+            scale_equivalence_verdict="",
+            denominator_pair_divergence_px=0.0,
+            error=str(error),
         )
 
 
@@ -267,3 +334,45 @@ class CalibrationStore:
         ):
             return None
         return ModelScale(record.detected_scale)
+
+
+def session_verdicts(
+    records: Sequence[CalibrationRecord],
+    *,
+    min_hit_rate: float = CALIBRATION_MIN_HIT_RATE,
+) -> list[dict[str, Any]]:
+    """**每一次标定会话的判定**（成功的、失败的各一条）。
+
+    验收线「**6 次独立标定会话中 ≥ 5 次 ``available == True``**」**直接数这个**：
+
+    * **分母** = 会话条数（**含失败的** —— 失败的那次也是跑了一次）；
+    * **分子** = 准入放行的条数。
+
+    * 失败的会话（``error`` 非空）→ ``available=False``（**没有测量值**）；
+    * 成功的会话 → 按 :func:`minicode.calib.admission.visual_channel_available`
+      的那一条判据算（**准入规则只有那一处**）。
+    """
+    verdicts: list[dict[str, Any]] = []
+    for record in records:
+        available = False
+        if not record.error:
+            available = visual_channel_available(
+                equivalent_scales=record.equivalent_scales,
+                divergences_px=record.divergences_px,
+                equivalence_tolerance_px=record.equivalence_tolerance_px,
+                hit_rate=record.hit_rate,
+                min_hit_rate=min_hit_rate,
+            )
+        verdicts.append(
+            {
+                "timestamp": record.timestamp,
+                "model_id": record.model_id,
+                "call_path": record.call_path,
+                "ok": not record.error,
+                "available": available,
+                "hit_rate": record.hit_rate,
+                "rounds": record.rounds,
+                "error": record.error,
+            }
+        )
+    return verdicts
