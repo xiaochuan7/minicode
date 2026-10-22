@@ -343,9 +343,14 @@ class MemoizingModelCaller:
     两臂之间剩下的差异就**只有门控**。
 
     键 = (提示词, 画面哈希) —— 只有**完全相同**的请求才复用。
+
+    **落盘缓存**（施工清单第 ⑨ 条）：``cache_path`` 给了就把回答写进
+    JSONL 缓存、下次运行**先读缓存**。这样**跨进程**的两轮（例如
+    「只换 crop 尺寸」）也能**共用同一次粗定位回答** → 那一对是**真配对**，
+    差异里**不混模型随机性**。
     """
 
-    def __init__(self, inner: ModelCaller):
+    def __init__(self, inner: ModelCaller, *, cache_path: Path | str | None = None):
         self._inner = inner
         self._cache: dict[tuple[str, str], Any] = {}
         self._lock = threading.Lock()
@@ -353,6 +358,25 @@ class MemoizingModelCaller:
         self.calls = 0
         #: 复用（没再问）的回答数。
         self.replays = 0
+        #: **落盘缓存**（跨进程复用）。
+        self._cache_path = Path(cache_path) if cache_path else None
+        self._disk: dict[str, Any] = {}
+        if self._cache_path is not None and self._cache_path.is_file():
+            for line in self._cache_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                key = record.get("key")
+                reply = record.get("reply")
+                if key and reply is not None:
+                    self._disk[str(key)] = reply
+
+    @staticmethod
+    def _disk_key(prompt: str, image_key: str) -> str:
+        return hashlib.sha256(f"{prompt}\n{image_key}".encode()).hexdigest()
 
     def complete(
         self,
@@ -370,6 +394,13 @@ class MemoizingModelCaller:
             if cached is not None:
                 self.replays += 1
                 return cached
+        if self._cache_path is not None:
+            record = self._disk.get(self._disk_key(*key))
+            if record is not None:
+                with self._lock:
+                    self._cache.setdefault(key, _reply_from_dict(record))
+                    self.replays += 1
+                return self._cache[key]
         reply = self._inner.complete(
             prompt,
             effort=effort,
@@ -381,7 +412,61 @@ class MemoizingModelCaller:
         with self._lock:
             self._cache.setdefault(key, reply)
             self.calls += 1
+        if self._cache_path is not None:
+            self._write_disk(key, reply)
         return reply
+
+    def _write_disk(self, key: tuple[str, str], reply: Any) -> None:
+        """把这一条回答写进落盘缓存（**单次 write + flush**，行不撕裂）。"""
+        assert self._cache_path is not None
+        payload = {
+            "key": self._disk_key(*key),
+            "reply": _reply_to_dict(reply),
+        }
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._cache_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            handle.flush()
+
+
+def _reply_to_dict(reply: Any) -> dict[str, Any]:
+    """把一条模型回答落成**可复原**的字典（只留读得出来的字段）。"""
+    return {
+        "text": reply.text,
+        "model": reply.model,
+        "endpoint": reply.endpoint,
+        "effort": str(reply.effort),
+        "http_status": reply.http_status,
+        "latency_ms": reply.latency_ms,
+        "input_tokens": reply.input_tokens,
+        "output_tokens": reply.output_tokens,
+        "thinking_tokens": reply.thinking_tokens,
+        "image_tokens": reply.image_tokens,
+        "cache_read_input_tokens": reply.cache_read_input_tokens,
+        "cache_creation_input_tokens": reply.cache_creation_input_tokens,
+        "raw_content": [dict(block) for block in reply.raw_content],
+    }
+
+
+def _reply_from_dict(record: dict[str, Any]) -> Any:
+    """把落盘的回答**复原**成一条 :class:`minicode.model.client.ModelReply`。"""
+    from minicode.model.client import ModelReply
+
+    return ModelReply(
+        text=record.get("text", ""),
+        model=record.get("model", ""),
+        endpoint=record.get("endpoint", ""),
+        effort=record.get("effort", "low"),
+        http_status=int(record.get("http_status") or 0),
+        latency_ms=float(record.get("latency_ms") or 0.0),
+        input_tokens=record.get("input_tokens"),
+        output_tokens=record.get("output_tokens"),
+        thinking_tokens=record.get("thinking_tokens"),
+        image_tokens=record.get("image_tokens"),
+        cache_read_input_tokens=record.get("cache_read_input_tokens"),
+        cache_creation_input_tokens=record.get("cache_creation_input_tokens"),
+        raw_content=tuple(record.get("raw_content") or ()),
+    )
 
 
 def _image_key(image_base64: str | None, images_base64: Sequence[str]) -> str:

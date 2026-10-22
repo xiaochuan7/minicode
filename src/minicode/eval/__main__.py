@@ -171,6 +171,15 @@ def main(argv=None) -> int:
         help="裁剪窗口高（物理像素）；0 = 自适应（同上）",
     )
     parser.add_argument(
+        "--memo-cache",
+        default="",
+        help=(
+            "**应答记忆的落盘缓存**（施工清单第 ⑨ 条）：给了就把每次回答写进这个"
+            " JSONL，下一轮运行**先读缓存** → 跨进程的两轮（例如「只换 crop 尺寸」）"
+            "共用同一次粗定位回答 → 那一对是**真配对**"
+        ),
+    )
+    parser.add_argument(
         "--limit", type=int, default=0, help="最多跑多少条样本（0 = 不限；调试用）"
     )
     args = parser.parse_args(argv)
@@ -198,6 +207,11 @@ def main(argv=None) -> int:
     sink = RecordingSink(_LockedSink(JsonlRequestLog(out_dir / "model-requests.jsonl")))
     #: 模型调用端口：**记住最后一次用的提示词**（反查时要逐字相同）。
     client = PromptCapturingCaller(ModelClient(config, sink))
+    #: **应答记忆端口**（施工清单第 ⑨ 条）：记忆缓存**落盘**，
+    #: 跨进程的两轮（例如「只换 crop 尺寸」）共用同一次上游回答 → 那一对**真配对**。
+    memoized = MemoizingModelCaller(
+        client, cache_path=args.memo_cache or None
+    )
 
     # -- 标定：每个图像尺寸各标一次（真调模型）--------------------------
     sizes = sorted({sample.image_size for sample in chosen})
@@ -205,7 +219,7 @@ def main(argv=None) -> int:
     model_input_by_size: dict[tuple[int, int], tuple[int, int]] = {}
     calibrations: list[dict[str, object]] = []
     for width, height in sizes:
-        record = _calibrate(client, sink, config.model, width, height, args)
+        record = _calibrate(memoized, sink, config.model, width, height, args)
         scale_by_size[(width, height)] = record["scale"]
         #: **声明的模型输入尺寸** = 坐标换算的分母（两臂共用同一个）。
         model_input_by_size[(width, height)] = tuple(record["declared_model_input_size"])
@@ -214,7 +228,6 @@ def main(argv=None) -> int:
     # -- 跑两臂 ----------------------------------------------------------
     # ⚠️ **两臂共用同一次粗定位回答**（应答记忆端口）：模型端不确定，
     # 两臂各自重问会把随机性混进「唯一差异是门控」这个对比里。
-    memoized = MemoizingModelCaller(client)
     #: ⚠️ **不再注入 `second_opinion`**（用户 2026-10-21 拍板）：
     #: 门控降级为**记录器**，「第二次独立粗定位」那一次调用被删掉了 ——
     #: 实测它正是 −19.0 pp 的来源（触发条件恰好是精定位前提条件的反面）。
