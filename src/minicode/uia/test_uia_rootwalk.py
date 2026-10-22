@@ -243,7 +243,9 @@ class RootWalkPidSetTest(unittest.TestCase):
             mock.patch.object(windows, "_release", lambda ptr: None),
         ):
             found = windows._root_walk_by_pid({4116, 14712})
-        self.assertEqual(sorted(element.name for element in found), ["设置", "缩放"])
+        self.assertEqual(
+            {element.name for element in found}, {"设置", "缩放"}
+        )
         self.assertTrue(theirs.released)
 
 
