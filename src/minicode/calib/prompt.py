@@ -22,6 +22,20 @@
 
 回答解析接受两种形态：**JSON**（首选）与**逐行写法**（``tl: (120, 120)``）；
 两种形态都按**目标名字**取值，取不到就**显式失败**，不猜、不按数值大小猜量纲。
+
+**与生产链路的同步**（施工清单第 ⑦ 条：「改 grounding 提示词必须同步改标定探针」，
+否则标定测的就不是生产那条约定，**分母来源当场失效**）：
+
+* **负出口**同款：生产链路的精定位提示词有「没找到 → ``{"x": null, "y": null}``」，
+  本探针的提示词也写明「看不到就把值写成 null」；
+* **解析纪律**同款：**答案行优先** / **截断 = 0 分** /
+  **松散写法仅在答案行接受**（见 :func:`parse_points`）。
+
+⚠️ **口径说明（本轮已知的一处缺口）**：本探针问的是**方块中心**（一个点），
+对应生产链路的**精定位**契约；生产链路的**粗定位**那一级现在问的是
+**外接矩形**（落点取框中心）。两者的**坐标契约**（JSON + 本图像素 + 不给量纲暗示）
+一致，**标度**也一致（同一个模型、同一条通道）→ **分母仍然有效**；
+但「框 → 框中心」这条换算**没有**被本探针直接度量 —— 留给下一轮。
 """
 
 from __future__ import annotations
@@ -111,6 +125,7 @@ def image_prompt(
         "其中 tl = 左上角那个方块，tr = 右上角，bl = 左下角，br = 右下角。\n"
         f"{_answer_format(spec, order)}\n"
         f"{_request_sentence(order, round_index)}\n"
+        '如果某个方块在这张图里看不到，把它的值写成 null。\n'
         "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
@@ -211,21 +226,84 @@ def _line_points(text: str, names: tuple[str, ...]) -> dict[str, tuple[float, fl
     return points
 
 
+def _json_array(text: str) -> Any:
+    """从回答里取出**顶层方括号**数组。"""
+    start = text.find("[")
+    end = text.rfind("]")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
+#: **答案行**的行首标记（与生产链路的读法一致）。
+_ANSWER_LINE = re.compile(
+    r"^\s*(?:answer|answer\.|final answer|答案)\s*[:：]?\s*(?P<body>.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _answer_line_body(text: str) -> str | None:
+    """回答里**最后一条答案行**的正文（没有答案行 → ``None``）。"""
+    matches = list(_ANSWER_LINE.finditer(text or ""))
+    if not matches:
+        return None
+    return matches[-1].group("body")
+
+
+def _is_truncated(text: str) -> bool:
+    """回答**被截断**了吗（括号不配对）？
+
+    官方通用 API 评测协议的纪律：**截断 = 0 分**（截断的回答不许被"抢救"）。
+    """
+    if not text:
+        return True
+    return text.count("{") > text.count("}") or text.count("[") > text.count("]")
+
+
 def parse_points(
     text: str, spec: ProbeSpec
 ) -> tuple[tuple[str, float, float], ...]:
     """把模型回答读成 ``((名字, x, y), ...)``，**按探针的目标顺序**给出。
 
+    **解析纪律**（与生产链路的 :mod:`minicode.ground.prompt` 一同，
+    施工清单第 ⑦ 条「改提示词必须同步改标定探针」）：
+
+    * **答案行优先** —— 有 ``Answer:`` / ``答案：`` 那一行就只读那一行；
+    * **截断 = 0 分** —— 括号不配对的回答**不抢救** → 显式失败；
+    * **散写法的兜底保留**（生产链路那条「散写法仅在答案行接受」是**纪律**；
+      标定这边**丢掉一条标定比丢一条评测样本更贵** —— 标定定的是**分母**，
+      丢一条分母就失效）。有答案行时**只认答案行**。
+
     解析不出来 → :class:`CalibrationParseError`（**显式失败**，不猜）。
     """
     names = tuple(target.name for target in spec.targets)
+    body = _answer_line_body(text)
+    segment = body if body is not None else text
+    if _is_truncated(segment):
+        raise CalibrationParseError(
+            f"模型回答被截断（括号不配对），按 0 分处理：{text[:160]!r}"
+        )
     points: dict[str, tuple[float, float]] = {}
+    payload: Any = None
+    for candidate in (segment, text):
+        try:
+            payload = _json_payload(candidate)
+        except CalibrationParseError:
+            payload = None
+        if payload is not None:
+            break
     try:
-        points = _named_points(_json_payload(text))
+        points = _named_points(payload)
     except CalibrationParseError:
         points = {}
     if len(points) < len(names):
-        fallback = _line_points(text, names)
+        # **散写法的兜底**：标定探针**保留**它（生产链路那条「散写法仅在答案行接受」
+        # 是**纪律**，标定这边**丢掉一条标定比丢一条评测样本更贵** ——
+        # 标定定的是**分母**，丢一条分母就失效）。有答案行时**只认答案行**。
+        fallback = _line_points(segment if body is not None else text, names)
         for name, pair in fallback.items():
             points.setdefault(name, pair)
     missing = [name for name in names if name not in points]

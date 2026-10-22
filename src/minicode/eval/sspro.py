@@ -676,6 +676,46 @@ def _accuracy(outcomes: Sequence[ArmOutcome]) -> float:
     return sum(1 for outcome in outcomes if outcome.hit) / len(outcomes)
 
 
+def model_input_target_sizes(
+    samples: Sequence[SsproSample],
+    model_input_by_size: dict[tuple[int, int], tuple[int, int]],
+) -> dict[str, Any]:
+    """**目标在「模型输入图」里的像素尺寸**分布（按 ui_type 分层）。
+
+    验收线 F 组要看的就是这个数：整屏那一级**缩过图**，icon 在模型看到的那张图里
+    会变成几个像素（施工清单第 ⑥ 条：icon 中位要 ≥ 16 px）。
+
+    口径：目标 GT 框的**较大边**（物理像素）× ``模型输入宽 / 原图宽``
+    —— 与「模型看到的那张图」同一个空间。
+    """
+    by_type: dict[str, list[float]] = {}
+    for sample in samples:
+        model_input = model_input_by_size.get(sample.image_size)
+        if model_input is None:
+            continue
+        scale = model_input[0] / sample.image_size[0]
+        side = max(
+            sample.bbox[2] - sample.bbox[0], sample.bbox[3] - sample.bbox[1]
+        ) * scale
+        by_type.setdefault(sample.ui_type, []).append(side)
+    summary: dict[str, Any] = {}
+    for ui_type, sizes in sorted(by_type.items()):
+        ordered = sorted(sizes)
+        middle = len(ordered) // 2
+        summary[ui_type] = {
+            "samples": len(ordered),
+            "median_px": round(ordered[middle], 2),
+            "min_px": round(ordered[0], 2),
+            "p10_px": round(ordered[max(0, int(len(ordered) * 0.1) - 1)], 2),
+            "max_px": round(ordered[-1], 2),
+            "below_16px": sum(1 for value in ordered if value < 16.0),
+            "below_16px_rate": round(
+                sum(1 for value in ordered if value < 16.0) / len(ordered), 4
+            ),
+        }
+    return summary
+
+
 def summarize(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
     """一批结果的汇总（整体 / 文本 / 图标 / 平台 / 分组 + 门控埋点）。"""
     gate_samples = [

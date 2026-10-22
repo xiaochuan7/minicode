@@ -55,6 +55,7 @@ from .sspro import (
     compare_arms,
     gate_params_snapshot,
     load_samples,
+    model_input_target_sizes,
     render_table,
     run_arms,
     stratified_subset,
@@ -301,6 +302,10 @@ def main(argv=None) -> int:
             "input_sources": GATE_INPUT_SOURCES,
         },
         "self_check_hit_rate": self_check,
+        #: **目标在「模型输入图」里的像素尺寸**（验收线 F 组看这个数）。
+        "model_input_target_sizes": model_input_target_sizes(
+            chosen, model_input_by_size
+        ),
         "comparison": comparison,
         "model_calls": {
             "sent": memoized.calls,

@@ -23,35 +23,53 @@ __all__ = ["downscale_frame", "model_input_size_for"]
 
 #: **服务端单侧上限**（物理像素）—— 我们自己缩图时的目标宽度上界。
 #:
-#: 来源是**实测**：本机把 2560 宽的图发给 MiniMax 端点，服务端把它缩到约
-#: **2048** 宽（``docs/00-现状.md`` §6.7 记着这条；请求日志的图像 token 数可复核）。
-#: ⚠️ 这是**实测值，不是猜的**；但服务端换了版本就可能变 —— 所以**我们自己**把图
-#: 缩到这条线以内，**声明的尺寸就与服务端实际看到的尺寸一致**。
-SERVER_MAX_INPUT_WIDTH_PX = 2048
+#: 来源是**实测**（探针，产物 ``runs/m6-token-probe-sweep2/token-probe.json``）：
+#: 服务端会把宽超过 **2016 px** 的图再缩到 2016 宽
+#: （2548 宽 → 实测 3240 图像 token；2016 宽 → 实测 3242，与 28 px 网格
+#: ``72×45 = 3240`` 相符）。
+#: ⚠️ 这是**实测值，不是猜的**；但服务端换了版本就可能变 —— 所以**我们自己**
+#: 把图缩到这条线以内，**声明的尺寸就与服务端实际看到的尺寸一致**。
+SERVER_MAX_INPUT_WIDTH_PX = 2016
+
+#: **我们自己缩图的目标档**（物理像素）：**长边 ≤ 1536、短边 ≤ 960**（保持宽高比）。
+#:
+#: **为什么是这一档**（施工清单第 ⑥ 条，探针先于改动）：
+#:
+#: * 原计划是 **2048×1280**（2560 宽的屏上 icon 从 13.25~14.5 px 涨到 21.2~23.2 px）；
+#:   **探针不过** —— 该档的图像 token 实测 **3240 ≠ 3404**（服务端把它缩到了
+#:   2016 宽）→ **那一次请求的坐标系不可信** → 按施工清单退回；
+#: * 退回档选 **1536×960**：探针**过了**（期望 1925、实测 1927，扣除服务端
+#:   每张图固定多记的 2 个 token 后**正好相等**）→ 服务端没有再缩；
+#: * 1536×960 在 2560×1600 的屏上是 **0.6** 的统一比例（**双轴同一个常数**，
+#:   16:10 不形变）→ 换算链仍是单一常数。
+MODEL_INPUT_MAX_WIDTH_PX = 1536
+MODEL_INPUT_MAX_HEIGHT_PX = 960
 
 
 def model_input_size_for(
-    width: int, height: int, *, max_width: int = SERVER_MAX_INPUT_WIDTH_PX
+    width: int,
+    height: int,
+    *,
+    max_width: int = MODEL_INPUT_MAX_WIDTH_PX,
+    max_height: int = MODEL_INPUT_MAX_HEIGHT_PX,
 ) -> tuple[int, int]:
-    """**声明给模型的尺寸**：把 ``width×height`` 缩到不超过 ``max_width`` 的那一档。
+    """**声明给模型的尺寸**：把 ``width×height`` 等比缩到 ``max_width×max_height`` 之内。
 
-    * 缩放比例**由整数因子给出**（因子必须同时整除宽高 → 缩放是精确的）；
-    * 在所有满足「宽高都能被因子整除」的因子里取**最小**的那个
-      （= 缩得最小、画质最好、token 最省）；
-    * 找不到可用的因子（宽高互质且都大于上限）→ **返回原尺寸**，
-      由调用方决定怎么办（**不静默给一个算不准的数**）。
+    * **等比缩放**（两个轴同一个比例 → 换算链仍是**单一常数**，
+      坐标契约不受影响）；
+    * **不放大**（原图比目标档还小 → 原样送）；
+    * 目标是**服务端不会再缩**的那一档（探针实测：服务端把宽 > 2016 px 的图
+      缩到 2016 宽 → 那一档的坐标系不可信）。
 
-    本机桌面 2560×1600 → **1280×800**（正好 ×2、16:10 不变形）——
+    本机桌面 2560×1600 → **1536×960**（比例 0.6，16:10 不变形）——
     与 Anthropic 坐标契约里「声明发出去那张图的尺寸」一致。
     """
     if width <= 0 or height <= 0:
         raise ValueError(f"尺寸必须为正数，收到 {width}x{height}")
-    for factor in range(1, min(width, height) + 1):
-        if width % factor or height % factor:
-            continue
-        if width // factor <= max_width:
-            return width // factor, height // factor
-    return width, height
+    scale = min(max_width / width, max_height / height, 1.0)
+    if scale >= 1.0:
+        return width, height
+    return (max(1, round(width * scale)), max(1, round(height * scale)))
 
 
 def downscale_frame(frame: CapturedFrame, width: int, height: int) -> CapturedFrame:

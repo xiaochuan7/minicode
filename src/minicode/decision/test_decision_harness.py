@@ -303,8 +303,8 @@ class ModelFrameSizeTest(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         size = png_image_size(base64.b64decode(sent[0]))
         #: 声明尺寸 = 量出来的表面尺寸经 ``model_input_size_for`` 算出来的那一档
-        #: （2560×1600 → 1280×800）。
-        self.assertEqual(size, (1280, 800))
+        #: （2560×1600 → 1536×960：施工清单第 ⑥ 条的探针定档，比例 0.6）。
+        self.assertEqual(size, (1536, 960))
 
     def test_the_context_keeps_the_original_resolution(self):
         """留在上下文里的帧**不缩放**（校验层的 OCR 与差分要全分辨率）。"""
