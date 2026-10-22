@@ -141,6 +141,12 @@ class FallbackCause(StrEnum):
     #: 枚举里放它是因为**回落原因只有这一处落盘的地方**（追踪记录的
     #: ``fallback_cause``）。
     CANDIDATE_SELECTION_FAILED = "candidate_selection_failed"
+    #: **整屏再搜**（施工清单 T4）—— 标记图上模型答「0」（清单里没有可信的候选）。
+    #:
+    #: ⚠️ 这一条**不是**「回到粗定位点」：它是**再问模型一次**（整屏再搜一遍），
+    #: 落点来源是 ``landing_source="rescreen"``。
+    #: 再搜也失败 → 才回到粗定位点（那时落盘的是 ``no_output``）。
+    RESCREEN = "rescreen"
 
 
 class GateMode(StrEnum):

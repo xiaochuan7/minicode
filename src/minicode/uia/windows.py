@@ -434,12 +434,31 @@ def _name_matches(element_name: str, condition: str | None) -> bool:
     return name_matches(element_name, condition)
 
 
-def _root_walk_by_pid(pid: int) -> list:
+def _window_process_ids(hwnd: int) -> set[int]:
+    """这个窗口**与它的子窗口**的进程 id 集合。
+
+    ⚠️ **XAML island 的控件注册在子窗口（CoreWindow）那个进程下**，
+    不是外层那个：本机实测（Windows 设置，2026-10-22）——
+    外层 ``ApplicationFrameWindow`` 的 pid=14712 在桌面根上只有 **8** 个元素，
+    而 ``Windows.UI.Core.CoreWindow`` 的 pid=4116 有 **132** 个
+    （就是「系统」「屏幕」「搜索框，查找设置」那些）。
+    ⇒ **只按外层窗口的 pid 过滤，root-walk 会一个都找不到。**
+    """
+    pids = {_process_id(hwnd)}
+    for child in _child_windows(hwnd):
+        pid = _process_id(child)
+        if pid:
+            pids.add(pid)
+    return pids
+
+
+def _root_walk_by_pid(pids: set[int] | int) -> list:
     """**桌面根遍历** → **按 PID 过滤**（XAML island 的兜底）。
 
     Windows 设置、计算器这类 **CoreWindow** 应用的 XAML 树
-    **注册在桌面根上**（与窗口**同 PID**），**不在窗口句柄下** ——
-    窗口那条路读到的树是空的（工单 M14 的 W-1.1 / W-1.2 就栽在这里）。
+    **注册在桌面根上**（与窗口**同进程**，见 :func:`_window_process_ids`），
+    **不在窗口句柄下** —— 窗口那条路读到的树是空的
+    （工单 M14 的 W-1.1 / W-1.2 就栽在这里）。
 
     ⚠️ **只用单条件**（``TrueCondition``）：冻结原型的 ``build_condition``
     两个条件并存会走 ``CreateAndCondition``，**在本机崩** access violation
@@ -447,10 +466,11 @@ def _root_walk_by_pid(pid: int) -> list:
     ⚠️ **先按 PID 过滤，再进 Python 侧的名字匹配**（桌面树巨大，
     过滤必须在 Python 侧做完，不能带着整棵树去问名字）。
 
-    返回的是**该进程的元素**（调用方负责 :meth:`release`）。
+    返回的是**那些进程的元素**（调用方负责 :meth:`release`）。
     """
     from minicode.exec import uia
 
+    wanted = {int(pids)} if isinstance(pids, int) else {int(pid) for pid in pids}
     controller = uia.UIA()
     try:
         root = controller.root()
@@ -465,7 +485,7 @@ def _root_walk_by_pid(pid: int) -> list:
         mine: list = []
         for element in elements:
             try:
-                if element.process_id == pid:
+                if element.process_id in wanted:
                     mine.append(element)
                     continue
             except Exception:
@@ -663,10 +683,10 @@ class WindowsUiaQueryPort:
         ⚠️ 请求**仍然必须带属性条件**（C-09 的禁令不变）：这里的全树遍历是
         **有条件请求的兜底**，且**按 PID 过滤**后只把那个进程的控件拿进匹配。
         """
-        pid = _process_id(request.anchor.hwnd)
-        if not pid:
+        pids = _window_process_ids(request.anchor.hwnd)
+        if not pids:
             return (), 0
-        elements = _root_walk_by_pid(pid)
+        elements = _root_walk_by_pid(pids)
         if not elements:
             return (), 0
         matched, unmatched = self._filter(elements, request)
@@ -823,13 +843,13 @@ class WindowsCapabilityProbe:
         if window.usable_controls and not window.name_collisions:
             # 已经判「完全可用」→ 不必再遍历桌面（省一次昂贵的桌面根遍历）。
             return window
-        # **兜底：桌面根遍历**（XAML island 的树注册在桌面根上、与窗口同 PID）。
+        # **兜底：桌面根遍历**（XAML island 的树注册在桌面根上、与窗口同进程）。
         # ⚠️ 它**自己一次超时预算**（桌面树巨大），不与窗口遍历抢同一个 5 s。
-        pid = _process_id(anchor.hwnd)
-        if not pid:
+        pids = _window_process_ids(anchor.hwnd)
+        if not pids:
             return window
         try:
-            extra = _with_deadline(lambda: _root_walk_by_pid(pid), self.timeout_s)
+            extra = _with_deadline(lambda: _root_walk_by_pid(pids), self.timeout_s)
         except UiaQueryTimeout:
             return window
         if not extra:

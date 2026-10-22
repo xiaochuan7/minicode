@@ -49,7 +49,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import Any
 
 from minicode.action.errors import ErrorCode
 from minicode.action.image import encode_frame_base64
@@ -68,11 +69,11 @@ from minicode.coord.coordinates import (
 )
 from minicode.coord.crop_refine import CropRefiner, plan_crop
 from minicode.model.effort import Effort
-from minicode.model.image import downscale_frame
+from minicode.model.image import SERVER_MAX_INPUT_WIDTH_PX, downscale_frame, upscale_frame
 from minicode.model.ports import ModelCaller
 
 from .candidates import CandidateSource, GroundingCandidate, merge_candidate_sources
-from .crop import crop_frame
+from .crop import crop_frame, crop_region, upscale_crop
 from .gate import (
     FallbackCause,
     GateCondition,
@@ -84,21 +85,26 @@ from .gate import (
     evaluate_gate,
 )
 from .geometry import crop_plan_fields, full_screen_geometry, surface_rect
+from .marker import draw_stars
 from .prompt import (
     CandidateLine,
     CoarseTarget,
     GroundingParseError,
+    aggregate_candidates_prompt,
     coarse_prompt,
     matched_on_screen,
     normalize_target,
     normalize_target_prompt,
     numbered_candidates_prompt,
+    parse_chosen_index,
     parse_chosen_numbers,
     parse_coarse_target,
     parse_optional_point,
     refine_prompt,
+    rescreen_prompt,
     whole_screen_prompt,
 )
+from .response_pool import CLUSTER_TAU_PX, ResponsePool, cluster_candidates, refine_windows
 
 __all__ = [
     "TwoStageGrounder",
@@ -275,11 +281,49 @@ LANDING_SOURCE_COARSE = "coarse"
 LANDING_SOURCE_WHOLE_SCREEN = "whole_screen"
 LANDING_SOURCE_NUMBERED = "numbered"
 LANDING_SOURCE_NONE = "none"
+#: **整屏再搜**（施工清单 T4）—— 精定位的候选**不可信**时，整屏**再搜一遍**。
+#:
+#: ⚠️ **它不是回落**：回落是「拿粗定位点顶上」，再搜是**再问模型一次**。
+#: 口径上它**不算** ``refined`` → 假命中的计数（``crop_contains_target == False``
+#: 且 ``landing_source == "refined"``）**不把它算进去**。
+LANDING_SOURCE_RESCREEN = "rescreen"
+
+#: **标记图选择**那一级的名字（施工清单 T4）。
+STAGE_MARKED = "marked"
 
 
 def _image_source(frame: CapturedFrame) -> str:
     """图像来源（截图 / 从原始帧裁出的 crop / 回源重抓）—— 追踪记录据此判定裁剪来源。"""
     return f"{frame.source}|{frame.backend}"
+
+
+def _resize_exact(frame: CapturedFrame, size: tuple[int, int]) -> CapturedFrame:
+    """把一帧**改成指定尺寸**（放大或缩小）—— **声明尺寸必须等于实际发出的尺寸**。"""
+    if (frame.width, frame.height) == (int(size[0]), int(size[1])):
+        return frame
+    if size[0] >= frame.width and size[1] >= frame.height:
+        return upscale_frame(frame, int(size[0]), int(size[1]))
+    return downscale_frame(frame, int(size[0]), int(size[1]))
+
+
+@dataclass(frozen=True)
+class _RefineOutcome:
+    """**精定位那一级**的结果（一次问或多问）。
+
+    * ``ok`` —— 有没有落点；
+    * ``landing`` —— 落点（**物理像素**）；
+    * ``rescreen`` —— 要不要**整屏再搜**（施工清单 T4）；
+    * ``fields`` —— 埋点（放大倍数 / 候选数 / 簇占比 / 选中的编号）。
+    """
+
+    ok: bool
+    landing: tuple[float, float] | None
+    rescreen: bool
+    failure_cause: str
+    failure_reason: str
+    echoes: list[GroundingEcho]
+    model_calls: int
+    fields: dict[str, Any]
 
 
 def box_center(target: CoarseTarget) -> tuple[float, float]:
@@ -366,6 +410,23 @@ class TwoStageGrounder:
         目标描述**先规范化再定位**（本地近名匹配；匹配不上时**模型侧**给
         2~3 个更具体的表述让它选）。
         **不给（默认）→ 不做规范化**（不花那次模型调用）。
+    variants
+        **每一级采几次**（施工清单 T1 的 K；默认 **1** = 现状，一次一次）。
+        K > 1 时：粗定位换 **K 种措辞**各问一次；精定位换 **K 个固定偏移子区域**
+        各问一次（每次换措辞）。**同提示词重发无效**（本机实测：同图同提示词
+        10 次原文一致率只有 10%）→ 采样必须换窗口或换措辞。
+    pool
+        **采样池**（可空）—— 每次采样的**原文与落点**都记进去，
+        **所有臂从同一份池子取**（否则臂间差异里混着模型随机性）。
+    upscale_target_px
+        **目标表观像素的下限**（施工清单 T3；默认 **30 px**）。
+        crop 从物理帧 1:1 裁出后**重采样放大**到「目标表观像素 ≥ 这个值」
+        （图宽 ≤ 服务端上限 2016）。
+        **给 0 = 不放大**（对照臂）。
+    upscale_max_factor
+        **放大倍数的上限**（默认 **3.0**）—— 免得把一张大图放成巨图。
+    marked_candidates
+        **标记图上最多画几个候选**（施工清单 T4；默认 6）。
     """
 
     def __init__(
@@ -389,6 +450,11 @@ class TwoStageGrounder:
         candidate_source: CandidateSource | None = None,
         additional_candidate_source: CandidateSource | None = None,
         target_names: TargetNames | None = None,
+        variants: int = 1,
+        pool: ResponsePool | None = None,
+        upscale_target_px: float = 30.0,
+        upscale_max_factor: float = 3.0,
+        marked_candidates: int = 6,
     ):
         self.model = model
         self.scale = scale
@@ -412,6 +478,16 @@ class TwoStageGrounder:
         self.additional_candidate_source = additional_candidate_source
         #: **界面上真实存在的名字清单**（工单 B-4）。``None`` = 不做规范化。
         self.target_names = target_names
+        #: **每一级采几次**（施工清单 T1 的 K；1 = 现状）。
+        self.variants = max(1, int(variants))
+        #: **采样池**（施工清单 T1）—— ``None`` = 不记。
+        self.pool = pool
+        #: **目标表观像素的下限**（施工清单 T3；0 = 不放大）。
+        self.upscale_target_px = float(upscale_target_px)
+        #: **放大倍数上限**（施工清单 T3）。
+        self.upscale_max_factor = float(upscale_max_factor)
+        #: **标记图上最多画几个候选**（施工清单 T4）。
+        self.marked_candidates = int(marked_candidates)
         self.adapter = CoordinateAdapter(
             scale, out_of_bounds_tolerance_px=self.out_of_bounds_tolerance_px
         )
@@ -556,6 +632,8 @@ class TwoStageGrounder:
         coarse_out_of_bounds = False
         #: 粗定位**框**推出的目标半径（物理像素）—— 0 = 模型只给了点。
         coarse_radius_px = 0.0
+        #: 粗定位的**原始框（物理像素四元组）**（施工清单 T5 要）。
+        coarse_bbox_px: list[float] | None = None
         # ⚠️ **这次模型调用发生了**（回答解析不出来**也是问过了**）→ 记 1 次。
         # ⚠️ 不记它 →「平均模型调用数/目标」这条验收线**少算**
         # （报出来的数是**下界** → 判在一个偏乐观的数上）。
@@ -571,8 +649,12 @@ class TwoStageGrounder:
             raw = None
             coarse_issue = f"粗定位失败：{exc}"
         raw_center: tuple[float, float] | None = None
+        #: 粗定位**模型自报的元素文字**（施工清单 T4 的再搜提示词要用它
+        #: 「让模型避开那个候选」）。
+        coarse_text = ""
         if raw is not None and not raw.negative:
             raw_center = box_center(raw)
+            coarse_text = raw.text
             echoes.append(
                 GroundingEcho(
                     stage=STAGE_COARSE,
@@ -593,6 +675,7 @@ class TwoStageGrounder:
             )
             try:
                 coarse, coarse_radius_px = self._coarse_physical(raw, geometry)
+                coarse_bbox_px = self._coarse_bbox_physical(raw, geometry)
             except CoordinateOutOfBounds as exc:
                 coarse_out_of_bounds = True
                 coarse_issue = f"粗定位结果越界：{exc}"
@@ -682,75 +765,23 @@ class TwoStageGrounder:
             return self._failure(f"裁剪窗口不可用：{exc}", echoes, model_calls, decision)
 
         # -- 精定位（L1）：crop 内 -------------------------------------------
-        crop_input = self.crop_model_input_size or (plan.width, plan.height)
-        # ⚠️ **这次模型调用发生了**（解析不出来**也是问过了**）→ 记 1 次。
-        model_calls += 1
-        try:
-            raw_refine = self._ask(refine_prompt(description, crop_input), crop)
-        except GroundingParseError as exc:
-            return self._result(
-                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
-                coarse=coarse,
-                plan=plan,
-                decision=decision,
-                refine_enabled=True,
-                fallback=True,
-                fallback_cause=FallbackCause.NO_OUTPUT.value,
-                fallback_reason=f"精定位失败：{exc}",
-                echoes=echoes,
-                model_calls=model_calls,
-                plan_fields=self._plan_fields(plan),
-                landing_source=LANDING_SOURCE_COARSE,
-            )
-        except Exception as exc:
-            return self._result(
-                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
-                coarse=coarse,
-                plan=plan,
-                decision=decision,
-                refine_enabled=True,
-                fallback=True,
-                fallback_cause=FallbackCause.CALL_FAILED.value,
-                fallback_reason=f"精定位失败：{exc}",
-                echoes=echoes,
-                model_calls=model_calls,
-                plan_fields=self._plan_fields(plan),
-                landing_source=LANDING_SOURCE_COARSE,
-            )
-        if raw_refine is None:
-            # **负出口**（施工清单第 ⑦ 条）：模型说「这张裁剪图里没有这个元素」
-            # → **干净回落到粗定位**（不是「接受一个假点」）。
-            return self._result(
-                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
-                coarse=coarse,
-                plan=plan,
-                decision=decision,
-                refine_enabled=True,
-                fallback=True,
-                fallback_cause=FallbackCause.NO_OUTPUT.value,
-                fallback_reason="模型说这张裁剪图里没有对应的元素（负出口）",
-                echoes=echoes,
-                model_calls=model_calls,
-                plan_fields=self._plan_fields(plan),
-                landing_source=LANDING_SOURCE_COARSE,
-            )
-        echoes.append(
-            GroundingEcho(
-                stage=STAGE_REFINE,
-                raw_x=raw_refine[0],
-                raw_y=raw_refine[1],
-                sent_width=crop_input[0],
-                sent_height=crop_input[1],
-                image_source=_image_source(crop),
-            )
-        )
-        crop_geometry = self.refiner.crop_frame(
+        refine = self._refine_stage(
+            request,
+            description,
+            frame,
             plan,
-            model_input_size=crop_input,
+            crop,
+            coarse,
+            coarse_radius_px,
+            coarse_text,
+            echoes,
+            model_calls,
         )
-        try:
-            refined = self.adapter.to_screen(raw_refine[0], raw_refine[1], crop_geometry)
-        except CoordinateError as exc:
+        if refine.rescreen:
+            return self._rescreen(
+                request, screen_frame, geometry, refine, decision, coarse_text, coarse
+            )
+        if not refine.ok:
             return self._result(
                 landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
                 coarse=coarse,
@@ -758,13 +789,14 @@ class TwoStageGrounder:
                 decision=decision,
                 refine_enabled=True,
                 fallback=True,
-                fallback_cause=FallbackCause.OUT_OF_BOUNDS.value,
-                fallback_reason=f"精定位结果不可用：{exc}",
-                echoes=echoes,
-                model_calls=model_calls,
-                plan_fields=self._plan_fields(plan),
+                fallback_cause=refine.failure_cause,
+                fallback_reason=refine.failure_reason,
+                echoes=refine.echoes,
+                model_calls=refine.model_calls,
+                plan_fields={**self._plan_fields(plan, coarse_bbox_px=coarse_bbox_px), **refine.fields},
                 landing_source=LANDING_SOURCE_COARSE,
             )
+        refined = refine.landing
 
         # -- 偏离量（施工清单第 ④ 条）：**只记录，不改落点** ------------------
         # ⚠️ **判据降级为记录器**（2026-10-22）：量的口径从「离 crop 窗口中心多远」
@@ -772,17 +804,357 @@ class TwoStageGrounder:
         # 阈值表达改成 **crop 宽度千分位**（``deviation_c1000``）。
         # **落点不再因为偏离而回落** —— 硬失败回落只剩
         # ``no_output`` / ``out_of_bounds`` / ``call_failed`` 三种。
-        plan_fields = self._plan_fields(plan, refined=refined, coarse=coarse)
+        plan_fields = {
+            **self._plan_fields(
+                plan, refined=refined, coarse=coarse, coarse_bbox_px=coarse_bbox_px
+            ),
+            **refine.fields,
+        }
         return self._result(
             landing_point=(int(round(refined[0])), int(round(refined[1]))),
             coarse=coarse,
             plan=plan,
             decision=decision,
             refine_enabled=True,
-            echoes=echoes,
-            model_calls=model_calls,
+            echoes=refine.echoes,
+            model_calls=refine.model_calls,
             plan_fields=plan_fields,
             landing_source=LANDING_SOURCE_REFINED,
+        )
+
+    # ------------------------------------------------------------------
+    # 精定位那一级（T1 多采样 + T3 放大 + T4 多候选与标记图）
+    # ------------------------------------------------------------------
+
+    def _refine_stage(
+        self,
+        request: VisualLocateRequest,
+        description: str,
+        frame: CapturedFrame,
+        plan,
+        crop: CapturedFrame,
+        coarse: tuple[float, float],
+        coarse_radius_px: float,
+        coarse_text: str,
+        echoes: list[GroundingEcho],
+        model_calls: int,
+    ) -> _RefineOutcome:
+        """**精定位那一级** —— 一次问（``variants == 1``）或多问（K 次采样）。
+
+        * **T3**：crop 从物理帧 1:1 裁出后**重采样放大**（目标表观像素 ≥ 30 px）；
+        * **T1**：K > 1 时换**措辞**与**窗口**各问一次（每次的原文与落点都进采样池）；
+        * **T4**：候选点**空间聚类** → 画成**粉红五角星**标在 crop 上 →
+          模型答编号（**答 0 = 不可信**）→ **整屏再搜**（不是回落）。
+        """
+        # -- T3：放大（crop 1:1 裁出之后）----------------------------------
+        #: **目标的物理边长**（粗定位框的较大边）—— 放大倍数按它算。
+        target_px = 2.0 * (coarse_radius_px or self.target_radius_px)
+        upscale_factor = 1.0
+        if self.upscale_target_px > 0 and target_px > 0:
+            crop, upscale_factor = upscale_crop(
+                crop,
+                factor=self.upscale_max_factor,
+                target_size_px=target_px,
+                max_width=SERVER_MAX_INPUT_WIDTH_PX,
+            )
+        if self.crop_model_input_size is not None:
+            crop = _resize_exact(crop, self.crop_model_input_size)
+            upscale_factor = crop.width / max(1, plan.width)
+        #: **送模型那张图的尺寸** —— **声明尺寸 == 实际发出的尺寸**（不许有差）。
+        crop_input = (crop.width, crop.height)
+        crop_geometry = self.refiner.crop_frame(
+            plan,
+            model_input_size=crop_input,
+        )
+
+        # -- 采样计划：变体 0 = **整张 crop**；变体 1..K-1 = **固定偏移子区域** ---
+        samples: list[tuple[int, tuple[int, int, int, int] | None, CapturedFrame]] = [
+            (0, None, crop)
+        ]
+        if self.variants > 1:
+            for index, window in enumerate(
+                refine_windows(crop.width, crop.height, self.variants - 1), start=1
+            ):
+                samples.append((index, window, crop_region(crop, window)))
+
+        fields: dict[str, Any] = {
+            "refine_upscale_factor": round(upscale_factor, 4),
+            "refine_input_width": crop_input[0],
+            "refine_input_height": crop_input[1],
+            "refine_variant_count": len(samples),
+            "refine_candidate_count": 0,
+            "refine_cluster_ratio": None,
+            "refine_chosen_candidate": None,
+        }
+        candidates: list[tuple[float, float]] = []
+        failure_cause = ""
+        failure_reason = ""
+        pool_key = frame.digest()
+
+        for variant, window, image in samples:
+            prompt = refine_prompt(
+                description,
+                (image.width, image.height),
+                upscale_factor=upscale_factor,
+                variant=variant,
+            )
+            # ⚠️ **这次模型调用发生了**（解析不出来**也是问过了**）→ 记 1 次。
+            model_calls += 1
+            try:
+                raw_text = self._ask_text(prompt, image)
+            except Exception as exc:
+                if not failure_cause:
+                    failure_cause = FallbackCause.CALL_FAILED.value
+                    failure_reason = f"精定位失败：{exc}"
+                continue
+            try:
+                point = parse_optional_point(raw_text)
+            except GroundingParseError as exc:
+                if not failure_cause:
+                    failure_cause = FallbackCause.NO_OUTPUT.value
+                    failure_reason = f"精定位失败：{exc}"
+                continue
+            if point is None:
+                # **负出口**（施工清单第 ⑦ 条）：模型说「这张图里没有这个元素」。
+                if not failure_cause:
+                    failure_cause = FallbackCause.NO_OUTPUT.value
+                    failure_reason = "模型说这张裁剪图里没有对应的元素（负出口）"
+                continue
+            self._record_sample(
+                "refine", variant, pool_key, prompt, raw_text, point, window
+            )
+            try:
+                if window is None:
+                    physical = self.adapter.to_screen(
+                        point[0], point[1], crop_geometry
+                    )
+                else:
+                    # 子区域的坐标 → **整张放大 crop 的坐标** → 物理像素。
+                    physical = self.adapter.to_screen(
+                        point[0] + window[0], point[1] + window[1], crop_geometry
+                    )
+            except CoordinateError as exc:
+                if not failure_cause:
+                    failure_cause = FallbackCause.OUT_OF_BOUNDS.value
+                    failure_reason = f"精定位结果不可用：{exc}"
+                continue
+            candidates.append(physical)
+            echoes.append(
+                GroundingEcho(
+                    stage=STAGE_REFINE,
+                    raw_x=point[0],
+                    raw_y=point[1],
+                    sent_width=image.width,
+                    sent_height=image.height,
+                    image_source=_image_source(image),
+                )
+            )
+
+        if not candidates:
+            return _RefineOutcome(
+                ok=False,
+                landing=None,
+                rescreen=False,
+                failure_cause=failure_cause or FallbackCause.NO_OUTPUT.value,
+                failure_reason=failure_reason or "精定位没有给出可用的落点",
+                echoes=echoes,
+                model_calls=model_calls,
+                fields=fields,
+            )
+
+        fields["refine_candidate_count"] = len(candidates)
+
+        # -- T4：空间聚类（**物理空间**，τ = 32 物理 px）---------------------
+        clusters = cluster_candidates(candidates, tau_px=CLUSTER_TAU_PX)
+        fields["refine_cluster_ratio"] = round(clusters[0].ratio, 4)
+
+        if self.variants <= 1:
+            # **一次一问**（现状）：落点 = 那一个候选，**不画标记图**。
+            refined = candidates[0]
+            return _RefineOutcome(
+                ok=True,
+                landing=refined,
+                rescreen=False,
+                failure_cause="",
+                failure_reason="",
+                echoes=echoes,
+                model_calls=model_calls,
+                fields=fields,
+            )
+
+        # -- T4：标记图上让模型选 -------------------------------------------
+        marked = clusters[: self.marked_candidates]
+        #: 候选在**送模型那张图**里的位置（物理像素 → 放大 crop 的像素）。
+        star_points: list[tuple[float, float]] = []
+        for cluster in marked:
+            try:
+                star_points.append(
+                    self.adapter.from_screen(cluster.centroid[0], cluster.centroid[1], crop_geometry)
+                )
+            except CoordinateError:
+                star_points.append(cluster.centroid)
+        marked_frame = draw_stars(crop, star_points)
+        marked_prompt = aggregate_candidates_prompt(
+            description,
+            (marked_frame.width, marked_frame.height),
+            count=len(marked),
+            upscale_factor=upscale_factor,
+        )
+        model_calls += 1
+        chosen: int | None = None
+        try:
+            marked_text = self._ask_text(marked_prompt, marked_frame)
+        except Exception:
+            marked_text = ""
+        if marked_text:
+            self._record_sample(
+                "marked", 0, pool_key, marked_prompt, marked_text, None, None
+            )
+            chosen = parse_chosen_index(marked_text, count=len(marked))
+        echoes.append(
+            GroundingEcho(
+                stage=STAGE_MARKED,
+                raw_x=None if chosen is None else float(chosen),
+                raw_y=None,
+                sent_width=marked_frame.width,
+                sent_height=marked_frame.height,
+                image_source=_image_source(marked_frame),
+            )
+        )
+
+        if chosen == 0:
+            # **模型说「清单里没有可信的」** → **整屏再搜**（不是回落）。
+            return _RefineOutcome(
+                ok=False,
+                landing=None,
+                rescreen=True,
+                failure_cause=FallbackCause.RESCREEN.value,
+                failure_reason="标记图上模型答 0（清单里没有可信的候选）",
+                echoes=echoes,
+                model_calls=model_calls,
+                fields={**fields, "refine_chosen_candidate": 0},
+            )
+        if chosen is None:
+            # **读不出来**（不是「答 0」）→ 用**最密簇质心**，不重搜。
+            refined = marked[0].centroid
+        else:
+            refined = marked[chosen - 1].centroid
+            fields["refine_chosen_candidate"] = chosen
+        return _RefineOutcome(
+            ok=True,
+            landing=refined,
+            rescreen=False,
+            failure_cause="",
+            failure_reason="",
+            echoes=echoes,
+            model_calls=model_calls,
+            fields=fields,
+        )
+
+    def _rescreen(
+        self,
+        request: VisualLocateRequest,
+        screen_frame: CapturedFrame,
+        geometry,
+        refine: _RefineOutcome,
+        decision: GateDecision,
+        coarse_text: str,
+        coarse: tuple[float, float],
+    ) -> VisualLocateResult:
+        """**整屏再搜**（施工清单 T4）—— **不是回落**。
+
+        提示词里带着「**上一个候选是错的**」+ **候选自报的文字** →
+        让模型**避开**那一个、找一个不同的元素。
+
+        ⚠️ **不回落粗定位**：再搜也失败 → 回落到粗定位点（**最后一档**）。
+        """
+        model_calls = refine.model_calls + 1
+        prompt = rescreen_prompt(
+            request.target_description,
+            self.model_input_size,
+            wrong_text=coarse_text,
+        )
+        try:
+            raw = parse_coarse_target(self._ask_text(prompt, screen_frame))
+        except Exception as exc:
+            return self._failure(
+                f"整屏再搜失败：{exc}", refine.echoes, model_calls, decision
+            )
+        echoes = list(refine.echoes)
+        echoes.append(
+            GroundingEcho(
+                stage=STAGE_WHOLE_SCREEN,
+                raw_x=None,
+                raw_y=None,
+                sent_width=screen_frame.width,
+                sent_height=screen_frame.height,
+                image_source=_image_source(screen_frame),
+                raw_bbox=raw.bbox,
+                raw_text=raw.text,
+            )
+        )
+        if raw.negative:
+            # 再搜也说「没有」→ **回落到粗定位**（最后一档）。
+            return self._result(
+                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
+                coarse=coarse,
+                plan=None,
+                decision=decision,
+                refine_enabled=True,
+                fallback=True,
+                fallback_cause=FallbackCause.NO_OUTPUT.value,
+                fallback_reason="整屏再搜也说这张图里没有对应的元素（负出口）",
+                echoes=echoes,
+                model_calls=model_calls,
+                landing_source=LANDING_SOURCE_COARSE,
+            )
+        try:
+            center = box_center(raw)
+            point, _radius = self._coarse_physical(raw, geometry)
+        except (GroundingParseError, CoordinateError) as exc:
+            return self._failure(
+                f"整屏再搜结果不可用：{exc}", echoes, model_calls, decision
+            )
+        echoes[-1] = replace(
+            echoes[-1],
+            raw_x=center[0],
+            raw_y=center[1],
+        )
+        return self._result(
+            landing_point=(int(round(point[0])), int(round(point[1]))),
+            coarse=coarse,
+            plan=None,
+            decision=decision,
+            refine_enabled=True,
+            fallback=True,
+            fallback_cause=FallbackCause.RESCREEN.value,
+            fallback_reason="标记图上模型答 0 → 整屏再搜",
+            echoes=echoes,
+            model_calls=model_calls,
+            landing_source=LANDING_SOURCE_RESCREEN,
+        )
+
+    def _record_sample(
+        self,
+        stage: str,
+        variant: int,
+        key: str,
+        prompt: str,
+        raw_text: str,
+        point: tuple[float, float] | None,
+        window: tuple[int, int, int, int] | None,
+    ) -> None:
+        """把一次采样**记进采样池**（施工清单 T1）—— 没给池子就不记。"""
+        if self.pool is None:
+            return
+        self.pool.record(
+            stage=stage,
+            variant=variant,
+            key=key,
+            prompt=prompt,
+            raw_text=raw_text,
+            point=point,
+            window=window,
         )
 
     # ------------------------------------------------------------------
@@ -815,13 +1187,39 @@ class TwoStageGrounder:
         height = abs(phys2[1] - phys1[1])
         return (landing, max(width, height) / 2.0)
 
+    def _coarse_bbox_physical(
+        self, target: CoarseTarget, geometry
+    ) -> list[float] | None:
+        """粗定位的**原始框** → **物理像素**的四元组（施工清单 T5 要）。
+
+        此前只落了**归一化的** ``coarse_bbox_model``（模型输入空间）→
+        护栏的离线重算**推不出**「框在物理上有多大」→ 这一条补上。
+        """
+        if target.bbox is None:
+            return None
+        x1, y1, x2, y2 = target.bbox
+        try:
+            cap1 = self.adapter.model_to_capture(x1, y1, geometry)
+            cap2 = self.adapter.model_to_capture(x2, y2, geometry)
+        except CoordinateError:
+            return None
+        phys1 = self.adapter.capture_to_physical(cap1[0], cap1[1], geometry)
+        phys2 = self.adapter.capture_to_physical(cap2[0], cap2[1], geometry)
+        return [
+            min(phys1[0], phys2[0]),
+            min(phys1[1], phys2[1]),
+            max(phys1[0], phys2[0]),
+            max(phys1[1], phys2[1]),
+        ]
+
     def _plan_fields(
         self,
         plan,
         *,
         refined: tuple[float, float] | None = None,
         coarse: tuple[float, float] | None = None,
-    ) -> dict[str, float | None]:
+        coarse_bbox_px: list[float] | None = None,
+    ) -> dict[str, Any]:
         """裁剪计划的**落盘补充字段**（偏离量与 zoom 一致性）。
 
         * ``deviation_px`` —— 精定位落点离 **crop 窗口中心**多远（**历史口径**，
@@ -836,7 +1234,7 @@ class TwoStageGrounder:
         * ``zoom_consistency_px`` / ``zoom_consistency_c1000`` —— 两级之间的位移
           （= ``deviation_px_coarse``，历史字段名，留着）。
         """
-        fields: dict[str, float | None] = {
+        fields: dict[str, Any] = {
             "deviation_px": None,
             "deviation_px_coarse": None,
             "deviation_c1000": None,
@@ -845,6 +1243,19 @@ class TwoStageGrounder:
             "refined_point_y": None,
             "zoom_consistency_px": None,
             "zoom_consistency_c1000": None,
+            #: **粗定位的原始框（物理像素四元组）**（施工清单 T5：护栏离线重算要它）。
+            "coarse_bbox_px": coarse_bbox_px,
+            #: **crop 窗口的物理矩形**（施工清单 T5）。
+            "crop_rect_px": (
+                [
+                    plan.origin_x,
+                    plan.origin_y,
+                    plan.origin_x + plan.width,
+                    plan.origin_y + plan.height,
+                ]
+                if plan is not None
+                else None
+            ),
         }
         if refined is None or plan is None:
             return fields
@@ -1235,7 +1646,7 @@ class TwoStageGrounder:
         fallback: bool = False,
         fallback_cause: str = "",
         fallback_reason: str = "",
-        plan_fields: dict[str, float | None] | None = None,
+        plan_fields: dict[str, Any] | None = None,
         landing_source: str = LANDING_SOURCE_COARSE,
     ) -> VisualLocateResult:
         """一次定位的结果（门控字段 + 回落字段一起落）。"""

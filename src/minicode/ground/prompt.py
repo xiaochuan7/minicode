@@ -40,6 +40,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from minicode.ground.response_pool import (
+    COARSE_PROMPT_VARIANTS,
+    REFINE_PROMPT_VARIANTS,
+)
 from minicode.model.answer_text import (
     answer_line_body,
     answer_line_payload,
@@ -54,19 +58,27 @@ __all__ = [
     "CandidateLine",
     "CoarseTarget",
     "GroundingParseError",
+    "aggregate_candidates_prompt",
     "answer_line_payload",
     "coarse_prompt",
     "is_truncated",
     "normalize_target",
     "normalize_target_prompt",
     "numbered_candidates_prompt",
+    "parse_chosen_index",
     "parse_chosen_numbers",
     "parse_coarse_target",
     "parse_optional_point",
     "parse_point",
     "refine_prompt",
+    "rescreen_prompt",
     "whole_screen_prompt",
 ]
+
+#: **整屏再搜**这一级的标志（施工清单 T4）—— 提示词里带着这句。
+#:
+#: ⚠️ 它同时是**阶段标签**的判据（``eval/sspro.py::prompt_stage``）。
+RESCREEN_MARKER = "上一个候选是错的"
 
 
 class GroundingParseError(Exception):
@@ -132,7 +144,9 @@ def _size_line(image_size: tuple[int, int]) -> str:
     return f"这张图是 {int(image_size[0])}×{int(image_size[1])}。"
 
 
-def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
+def coarse_prompt(
+    target_description: str, image_size: tuple[int, int], *, variant: int = 0
+) -> str:
     """整屏粗定位的提示词（工单 M6 的 L0 / A-2）—— **出框**。
 
     * 问的是 **bounding box**（官方通用 API 协议的做法）。官方仓
@@ -150,12 +164,15 @@ def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
       bbox 中心，|Δ| ≤ 1 px → 删掉是恒等变换，而留着它会与 bbox 矛盾）、
       **加 ``text`` 字段**（模型自报选中元素上的可见文字）、**加负出口**
       （元素不在这张图里 → 答 ``{"bbox": null, "text": ""}``）。
+    * **``variant``（施工清单 T1）** —— **换一种措辞再问一次**。
+      同提示词重发**拿不到独立样本**（本机实测：同图同提示词 10 次原文一致率
+      只有 10%）→ 采样必须换措辞。**变体 0 与改造前逐字相同**。
     """
+    lead = COARSE_PROMPT_VARIANTS[variant % len(COARSE_PROMPT_VARIANTS)]
     return (
         "这是一张 Windows 桌面截图。\n"
         f"{_size_line(image_size)}\n"
-        "请在图里找到与下面这个指令对应的界面元素，"
-        "并给出它的外接矩形（bounding box）。\n"
+        f"{lead}\n"
         f"指令：{target_description}\n"
         '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "text": "这个元素上可见的文字"}'
         "（坐标是这张图的像素）。\n"
@@ -166,7 +183,13 @@ def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
     )
 
 
-def refine_prompt(target_description: str, image_size: tuple[int, int]) -> str:
+def refine_prompt(
+    target_description: str,
+    image_size: tuple[int, int],
+    *,
+    upscale_factor: float = 1.0,
+    variant: int = 0,
+) -> str:
     """crop 内精定位的提示词（工单 M6 的 L1 / A-2）。
 
     模型报的是**这张 crop 图里**的位置（crop 内坐标）；**系统**负责加裁剪原点偏移
@@ -179,14 +202,35 @@ def refine_prompt(target_description: str, image_size: tuple[int, int]) -> str:
     ⚠️ **2026-10-22（施工清单第 ⑦ 条）加了「没找到」逃生口**：
     元素不在这张裁剪图里 → 答 ``{"x": null, "y": null}`` → **干净回落到粗定位**，
     而不是接受一个假点（这是「假命中归零」的手段）。
+
+    ⚠️ **2026-10-22（施工清单 T3）改了首句**：crop 放大之后，
+    「**未缩放，1 像素 = 1 屏幕像素**」这句话**是假话** → 改成
+    「**已放大约 N 倍，1 像素 = 1/N 屏幕像素**」。
+    ⚠️ **首句的前缀不变**（「这是一张从 Windows 桌面截图里裁出的小区域」）——
+    阶段标签（``eval/sspro.py::prompt_stage``）靠它判「这一条属于精定位那一级」。
+    ⚠️ **坐标契约不变**：仍然是**图内坐标**，换算链由 ``CropRefiner`` 那一条处理。
+
+    ⚠️ **``variant``（施工清单 T1）** —— 换一种措辞再问一次；
+    **变体 0 与改造前逐字相同**。
     """
+    lead = REFINE_PROMPT_VARIANTS[variant % len(REFINE_PROMPT_VARIANTS)].format(
+        desc=target_description
+    )
+    if upscale_factor > 1.0:
+        first = (
+            "这是一张从 Windows 桌面截图里裁出的小区域"
+            f"（已放大约 {upscale_factor:.2f} 倍，"
+            f"1 像素 = 1/{upscale_factor:.2f} 屏幕像素）。\n"
+        )
+    else:
+        first = "这是一张从 Windows 桌面截图里裁出的小区域（未缩放，1 像素 = 1 屏幕像素）。\n"
     return (
-        "这是一张从 Windows 桌面截图里裁出的小区域（未缩放，1 像素 = 1 屏幕像素）。\n"
-        f"{_size_line(image_size)}\n"
-        f"请给出这张图里名为「{target_description}」的元素【中心】的位置。\n"
-        f"{_answer_format()}\n"
-        '如果这张图里没有这个元素，答 {"x": null, "y": null}。\n'
-        "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
+        first
+        + f"{_size_line(image_size)}\n"
+        + f"{lead}\n"
+        + f"{_answer_format()}\n"
+        + '如果这张图里没有这个元素，答 {"x": null, "y": null}。\n'
+        + "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
 
@@ -225,6 +269,116 @@ def whole_screen_prompt(
         '如果这张图里找不到这个元素，答 {"bbox": null, "text": ""}。\n'
         "不要输出分析。"
     )
+
+
+def aggregate_candidates_prompt(
+    target_description: str,
+    image_size: tuple[int, int],
+    *,
+    count: int,
+    upscale_factor: float = 1.0,
+) -> str:
+    """**标记图选择**的提示词（施工清单 T4）—— 模型**只答编号**。
+
+    图上画了 ``count`` 个**粉红五角星**，每个星标出一个候选位置；
+    模型回答「哪个星是目标」的**编号**（**答 0 = 清单里没有可信的**）。
+
+    **依据**：RegionFocus —— "we visually mark the candidate action coordinates
+    on the snapshot … this significantly reduces the model's workload"
+    【二手·公开 https://arxiv.org/abs/2505.00684】。
+
+    ⚠️ **答 0 是合法答案**（「不可信」）—— 那是**整屏再搜**的入口，
+    **不是解析失败**。
+    """
+    if upscale_factor > 1.0:
+        first = (
+            "这是一张从 Windows 桌面截图里裁出的小区域"
+            f"（已放大约 {upscale_factor:.2f} 倍，"
+            f"1 像素 = 1/{upscale_factor:.2f} 屏幕像素）。\n"
+        )
+    else:
+        first = "这是一张从 Windows 桌面截图里裁出的小区域（未缩放，1 像素 = 1 屏幕像素）。\n"
+    return (
+        first
+        + f"{_size_line(image_size)}\n"
+        + f"这张图上画了 {count} 个粉红色五角星，每个星标出一个候选位置。\n"
+        + f"请判断哪一个星标的是「{target_description}」这个元素。\n"
+        + f"只回答它的编号（1~{count} 之间的一个整数）。\n"
+        + "如果这些星里没有一个是「"
+        + target_description
+        + "」，答 0（表示清单里没有可信的）。\n"
+        + '只回答一个 JSON 对象，不要任何解释：{"chosen": <编号>}'
+    )
+
+
+def rescreen_prompt(
+    target_description: str,
+    image_size: tuple[int, int],
+    *,
+    wrong_text: str = "",
+) -> str:
+    """**整屏再搜**的提示词（施工清单 T4）—— **不是回落**。
+
+    精定位的候选**不可信**时（标记图上模型答 0）→ **整屏再搜一遍**，
+    提示词里带着「**上一个候选是错的**」+ **候选自报的文字**
+    （模型自己说过那是什么 → 让它**避开**那一个）。
+
+    ⚠️ **问的量与 :func:`coarse_prompt` 一样**（框 + 自报文字）→
+    契约一致，两遍的结果能比。
+
+    **依据**：SafeGround 自陈的失败模式「模型一致地错时低方差的错答案看起来很自信」
+    【二手·公开，见 ``docs/research/r-s2-false-hit.md`` §2.4】→ 我们的 20 条
+    假命中正是「一致地错」→ **离散度拒答对它无效**，只能换问法。
+    """
+    hint = (
+        f"（上一个候选是错的，请找一个**不同的**元素。"
+        f"那个候选自报的文字是「{wrong_text}」—— 不要选它。）\n"
+        if wrong_text
+        else "（上一个候选是错的，请找一个**不同的**元素。）\n"
+    )
+    return (
+        "这是一张 Windows 桌面截图。\n"
+        f"{_size_line(image_size)}\n"
+        "请在图里找到与下面这个指令对应的界面元素，"
+        "并给出它的外接矩形（bounding box）。\n"
+        f"指令：{target_description}\n"
+        f"{hint}"
+        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "text": "这个元素上可见的文字"}'
+        "（坐标是这张图的像素）。\n"
+        "bbox 是这个元素在图里的外接矩形的左上角与右下角。\n"
+        "text 是这个元素上能看到的文字；这个元素没有文字就填空字符串。\n"
+        '如果这张图里找不到这个元素，答 {"bbox": null, "text": ""}。\n'
+        "不要输出分析。"
+    )
+
+
+def parse_chosen_index(text: str, *, count: int) -> int | None:
+    """**标记图选择**的回答 → 编号（``0`` = 清单里没有可信的）。
+
+    * 读法与编号分支同一套纪律（**答案行优先**、截断 = 0 分）；
+    * 返回 ``None`` = **读不出来**（**不是**「答 0」）—— 调用方据此
+      「不重搜、走最密簇」；
+    * 越界（``> count``）→ ``None``（**不猜**）。
+    """
+    if is_truncated(text):
+        return None
+    payload = answer_line_payload(text)
+    if payload is None:
+        payload = json_payload(text)
+    value: Any = None
+    if isinstance(payload, dict):
+        value = payload.get("chosen")
+    elif isinstance(payload, (int, float)):
+        value = payload
+    if value is None:
+        return None
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    if index < 0 or index > count:
+        return None
+    return index
 
 
 def numbered_candidates_prompt(

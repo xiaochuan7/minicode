@@ -24,8 +24,10 @@ __all__ = [
     "CONTROL_MODEL_INPUT_MAX_WIDTH_PX",
     "MODEL_INPUT_MAX_HEIGHT_PX",
     "MODEL_INPUT_MAX_WIDTH_PX",
+    "SERVER_MAX_INPUT_WIDTH_PX",
     "downscale_frame",
     "model_input_size_for",
+    "upscale_frame",
 ]
 
 #: **服务端单侧上限**（物理像素）—— 我们自己缩图时的目标宽度上界。
@@ -134,6 +136,111 @@ def downscale_frame(frame: CapturedFrame, width: int, height: int) -> CapturedFr
         source=f"{frame.source}|downscaled",
         pixel_format=frame.pixel_format,
     )
+
+
+def upscale_frame(frame: CapturedFrame, width: int, height: int) -> CapturedFrame:
+    """把一帧**放大**到指定尺寸（重采样）。
+
+    ⚠️ :func:`downscale_frame` **只支持缩小** —— 它是「整屏塞进声明尺寸」那一步，
+    放大是**另一件事**：把 crop 里那个 20 物理 px 的图标放大到 ≥30 px
+    （施工清单 T3）。两者**不能合成一个函数**（缩小的语义与放大的语义相反）。
+
+    * 支持**任意**比例（不只整数倍）；
+    * ``left`` / ``top`` **不变**（还是同一块屏幕区域，只是像素更密了），
+      ``source`` 加后缀标出放大过；
+    * 放大倍数由**调用方**给（按目标的表观像素算，不是固定值）。
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError(f"目标尺寸必须为正数，收到 {width}x{height}")
+    if frame.is_empty:
+        raise ValueError("画面是 0×0，放大不了")
+    if width < frame.width or height < frame.height:
+        raise ValueError(
+            f"只支持放大：{frame.width}x{frame.height} → {width}x{height}"
+        )
+    if (width, height) == (frame.width, frame.height):
+        return frame
+    channels = 4 if frame.pixel_format == PixelFormat.BGRA else 3
+    expected = frame.width * frame.height * channels
+    if len(frame.payload) != expected:
+        raise ValueError(
+            f"画面像素数与尺寸对不上：{frame.width}x{frame.height}x{channels} "
+            f"应为 {expected} 字节，实际 {len(frame.payload)} 字节"
+        )
+    payload = _upscale_payload(
+        frame.payload,
+        frame.width,
+        frame.height,
+        width,
+        height,
+        channels,
+    )
+    return CapturedFrame(
+        width=width,
+        height=height,
+        left=frame.left,
+        top=frame.top,
+        payload=payload,
+        backend=frame.backend,
+        source=f"{frame.source}|upscaled",
+        pixel_format=frame.pixel_format,
+    )
+
+
+def _upscale_payload(
+    payload: bytes,
+    src_width: int,
+    src_height: int,
+    dst_width: int,
+    dst_height: int,
+    channels: int,
+) -> bytes:
+    """**放大**的像素重采样（**双线性** / 最近邻，二选一）。
+
+    ⚠️ **不能复用缩小的盒式平均**：那套算法按「每个输出像素覆盖一段源像素」
+    算，放大时**一段源像素会被多个输出像素共享** → 计数会出现 0 → 除零。
+    放大用**双线性**：目标像素的中心映射回源坐标 → 四邻域加权。
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+    if np is not None:
+        return _upscale_bilinear_numpy(
+            np, payload, src_width, src_height, dst_width, dst_height, channels
+        )
+    return _resize_nearest(
+        payload, src_width, src_height, dst_width, dst_height, channels
+    )
+
+
+def _upscale_bilinear_numpy(
+    np,
+    payload: bytes,
+    src_width: int,
+    src_height: int,
+    dst_width: int,
+    dst_height: int,
+    channels: int,
+) -> bytes:
+    """**双线性放大**（numpy 路径）—— 目标像素中心映射回源坐标后四邻域加权。"""
+    array = np.frombuffer(payload, dtype=np.uint8).reshape(
+        src_height, src_width, channels
+    ).astype(np.float64)
+    xs = (np.arange(dst_width, dtype=np.float64) + 0.5) * src_width / dst_width - 0.5
+    ys = (np.arange(dst_height, dtype=np.float64) + 0.5) * src_height / dst_height - 0.5
+    xs = np.clip(xs, 0.0, src_width - 1.0)
+    ys = np.clip(ys, 0.0, src_height - 1.0)
+    x0 = np.floor(xs).astype(np.int64)
+    y0 = np.floor(ys).astype(np.int64)
+    x1 = np.minimum(x0 + 1, src_width - 1)
+    y1 = np.minimum(y0 + 1, src_height - 1)
+    wx = (xs - x0).reshape(1, dst_width, 1)
+    wy = (ys - y0).reshape(dst_height, 1, 1)
+    top = array[np.ix_(y0, x0)] * (1 - wx) + array[np.ix_(y0, x1)] * wx
+    bottom = array[np.ix_(y1, x0)] * (1 - wx) + array[np.ix_(y1, x1)] * wx
+    out = top * (1 - wy) + bottom * wy
+    return np.clip(np.round(out), 0, 255).astype(np.uint8).tobytes()
 
 
 def _resize_payload(

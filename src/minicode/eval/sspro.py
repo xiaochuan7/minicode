@@ -267,6 +267,21 @@ class ArmOutcome:
     dist_to_bbox: float | None = None
     #: 这一臂的**图像 token**（按 28 px patch 规则对**实际发出的那张图**估计）。
     image_tokens: int | None = None
+    # -- 施工清单 T3 / T4 / T5 的埋点 -------------------------------------
+    #: **crop 放大的倍数**（T3）—— 1 = 没放大。
+    refine_upscale_factor: float | None = None
+    #: **精定位的候选数**（T4：K 次采样里解析出可用落点的次数）。
+    refine_candidate_count: int | None = None
+    #: **最密簇的簇占比**（T4：``refine_cluster_ratio``）。
+    refine_cluster_ratio: float | None = None
+    #: **标记图上模型选的编号**（T4：``refine_chosen_candidate``）。
+    #: 0 = 模型答「清单里没有可信的」；``None`` = 没有标记图这一步
+    #: （或它的回答读不出来）。
+    refine_chosen_candidate: int | None = None
+    #: **粗定位的原始框（物理像素四元组）**（T5：护栏离线重算要它）。
+    coarse_bbox_px: list[float] | None = None
+    #: **crop 窗口的物理矩形**（T5：``(左, 上, 右, 下)``）。
+    crop_rect_px: list[float] | None = None
 
     @property
     def stratum(self) -> tuple[str, str]:
@@ -309,6 +324,14 @@ class ArmOutcome:
             "coarse_text": self.coarse_text,
             "dist_to_bbox": self.dist_to_bbox,
             "image_tokens": self.image_tokens,
+            "refine_upscale_factor": self.refine_upscale_factor,
+            "refine_candidate_count": self.refine_candidate_count,
+            "refine_cluster_ratio": self.refine_cluster_ratio,
+            "refine_chosen_candidate": self.refine_chosen_candidate,
+            "coarse_bbox_px": (
+                list(self.coarse_bbox_px) if self.coarse_bbox_px else None
+            ),
+            "crop_rect_px": list(self.crop_rect_px) if self.crop_rect_px else None,
         }
 
 
@@ -595,6 +618,11 @@ def run_arms(
     workers: int = 1,
     gate_params: Any = None,
     crop_size: tuple[int, int] | None = None,
+    variants: int = 1,
+    pool: Any = None,
+    upscale_target_px: float = 30.0,
+    upscale_max_factor: float = 3.0,
+    marked_candidates: int = 6,
 ) -> tuple[list[ArmOutcome], list[ArmOutcome], list[ArmOutcome]]:
     """跑**三臂**，返回 ``(门控记录器, 无条件两段式, 只用粗定位)`` 三组结果。
 
@@ -636,6 +664,11 @@ def run_arms(
             client,
             gate_params=gate_params,
             crop_size=crop_size,
+            variants=variants,
+            pool=pool,
+            upscale_target_px=upscale_target_px,
+            upscale_max_factor=upscale_max_factor,
+            marked_candidates=marked_candidates,
         )
         always = _run_one(
             sample,
@@ -649,6 +682,11 @@ def run_arms(
             client,
             gate_params=gate_params,
             crop_size=crop_size,
+            variants=variants,
+            pool=pool,
+            upscale_target_px=upscale_target_px,
+            upscale_max_factor=upscale_max_factor,
+            marked_candidates=marked_candidates,
         )
         coarse_only = _run_one(
             sample,
@@ -663,6 +701,11 @@ def run_arms(
             gate_params=gate_params,
             coarse_only=True,
             crop_size=crop_size,
+            variants=variants,
+            pool=pool,
+            upscale_target_px=upscale_target_px,
+            upscale_max_factor=upscale_max_factor,
+            marked_candidates=marked_candidates,
         )
         return on_demand, always, coarse_only
 
@@ -777,6 +820,11 @@ def _run_one(
     gate_params: Any = None,
     coarse_only: bool = False,
     crop_size: tuple[int, int] | None = None,
+    variants: int = 1,
+    pool: Any = None,
+    upscale_target_px: float = 30.0,
+    upscale_max_factor: float = 3.0,
+    marked_candidates: int = 6,
 ) -> ArmOutcome:
     """跑一条样本的一个臂，判命中（**按官方脚本的判定口径**）。"""
     from minicode.action.ports import VisualLocateRequest
@@ -794,6 +842,11 @@ def _run_one(
         coarse_only=coarse_only,
         crop_width=crop_size[0] if crop_size else None,
         crop_height=crop_size[1] if crop_size else None,
+        variants=variants,
+        pool=pool,
+        upscale_target_px=upscale_target_px,
+        upscale_max_factor=upscale_max_factor,
+        marked_candidates=marked_candidates,
     )
     result = grounder.locate(
         VisualLocateRequest(
@@ -856,6 +909,12 @@ def _run_one(
         coarse_text=coarse_echo.raw_text if coarse_echo is not None else "",
         dist_to_bbox=_dist_to_bbox(result.landing_point, sample.bbox),
         image_tokens=_image_tokens_of_echoes(result.echoes),
+        refine_upscale_factor=crop_plan.get("refine_upscale_factor"),
+        refine_candidate_count=crop_plan.get("refine_candidate_count"),
+        refine_cluster_ratio=crop_plan.get("refine_cluster_ratio"),
+        refine_chosen_candidate=crop_plan.get("refine_chosen_candidate"),
+        coarse_bbox_px=crop_plan.get("coarse_bbox_px"),
+        crop_rect_px=crop_plan.get("crop_rect_px"),
     )
 
 

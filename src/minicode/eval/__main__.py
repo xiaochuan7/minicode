@@ -42,6 +42,7 @@ from minicode.e2e.visual import (
     reverse_lookup_model_input,
 )
 from minicode.ground.gate import default_gate_params
+from minicode.ground.response_pool import ResponsePool
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.effort import Effort
@@ -199,6 +200,46 @@ def main(argv=None) -> int:
         ),
     )
     parser.add_argument(
+        "--variants",
+        type=int,
+        default=1,
+        help=(
+            "**每一级采几次**（施工清单 T1 的 K；默认 1 = 现状）。"
+            "K > 1 时：粗定位换 K 种措辞、精定位换 K 个固定偏移子区域各问一次；"
+            "K > 1 时还会跑**标记图选择**（T4）"
+        ),
+    )
+    parser.add_argument(
+        "--upscale-target-px",
+        type=float,
+        default=30.0,
+        help=(
+            "**目标表观像素的下限**（施工清单 T3；默认 30 px）。"
+            "crop 从物理帧 1:1 裁出后重采样放大到「目标 ≥ 这个值」"
+            "（图宽 ≤ 服务端上限 2016）。**给 0 = 不放大**（对照臂）"
+        ),
+    )
+    parser.add_argument(
+        "--upscale-max-factor",
+        type=float,
+        default=3.0,
+        help="**放大倍数上限**（施工清单 T3；默认 3.0）",
+    )
+    parser.add_argument(
+        "--marked-candidates",
+        type=int,
+        default=6,
+        help="**标记图上最多画几个候选**（施工清单 T4；默认 6）",
+    )
+    parser.add_argument(
+        "--pool",
+        default="",
+        help=(
+            "**采样池的落盘路径**（施工清单 T1）：每次采样的原文与落点都写进这个"
+            " JSONL（所有臂从同一份池子取 → 臂间差异不混模型随机性）"
+        ),
+    )
+    parser.add_argument(
         "--limit", type=int, default=0, help="最多跑多少条样本（0 = 不限；调试用）"
     )
     parser.add_argument(
@@ -270,6 +311,8 @@ def main(argv=None) -> int:
     memoized = MemoizingModelCaller(
         client, cache_path=args.memo_cache or None
     )
+    #: **采样池**（施工清单 T1）—— 所有臂从同一份池子取。
+    pool = ResponsePool(args.pool) if args.pool else None
 
     # -- 标定：每个图像尺寸各标一次（真调模型）--------------------------
     sizes = sorted({sample.image_size for sample in chosen})
@@ -321,6 +364,11 @@ def main(argv=None) -> int:
         workers=args.workers,
         gate_params=gate_params,
         crop_size=crop_size,
+        variants=args.variants,
+        pool=pool,
+        upscale_target_px=args.upscale_target_px,
+        upscale_max_factor=args.upscale_max_factor,
+        marked_candidates=args.marked_candidates,
     )
 
     comparison = compare_arms(on_demand, always, coarse_only=coarse_only)
@@ -458,6 +506,20 @@ def main(argv=None) -> int:
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (out_dir / "sspro-table.md").write_text(table + "\n", encoding="utf-8")
+    #: **采样池落盘**（施工清单 T1）—— 每次采样的原文与落点都在里面。
+    if pool is not None:
+        pool_path = pool.save()
+        report["response_pool"] = {
+            "path": str(pool_path),
+            "samples": len(pool.entries()),
+            "note": (
+                "采样池：每次采样的**原文与落点**（施工清单 T1）。"
+                "所有臂从同一份池子取 → 臂间差异不混模型随机性"
+            ),
+        }
+        path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     _print_summary(report, comparison)
     print(f"记录已写入：{path}")

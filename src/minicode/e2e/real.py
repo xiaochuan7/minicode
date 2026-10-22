@@ -1218,8 +1218,11 @@ class ChromeExecutor:
         before = len(self._sink.traces)
         before_names = self._page_names()
         before_items = self._list_item_names()
+        verification: dict[str, Any] = {}
         if step.action_kind is ActionKind.TYPE:
-            result = self._type(step)
+            #: 文本输入**不走缝**（它走浏览器自己的输入通道）→ 期望由
+            #: **校验层**在这里判（基线在输入之前取）。
+            result, verification = self._type(step)
         else:
             result = seam.run(
                 SeamRequest(
@@ -1233,7 +1236,8 @@ class ChromeExecutor:
         self._policy.observe_round()
         traces = self._sink.traces[before:]
         trace = traces[-1] if traces else None
-        verification = (trace.verification_result or {}) if trace is not None else {}
+        if not verification and trace is not None:
+            verification = trace.verification_result or {}
         after_names = self._page_names()
         if before_names and after_names:
             disappeared = before_names - after_names
@@ -1430,11 +1434,34 @@ class ChromeExecutor:
         return {element.name for element in snapshot.elements if element.name}
 
     def _type(self, step: Step):
-        """文本输入（走浏览器通道自己的输入通道，退化会记下来）。"""
-        from minicode.action.executor import ActionExecutor
-        from minicode.action.windows import WindowsInputInjector, current_virtual_desktop
-        from minicode.browser.typing import BrowserTyping
+        """文本输入（走浏览器通道自己的输入通道，退化会记下来）。
 
+        返回 ``(缝的形状, 校验层的读数)`` —— 期望由**校验层**判
+        （基线在输入之前取：期望判的是「变化」）。
+        """
+        from dataclasses import replace
+
+        from minicode.action.capture import CapturePort
+        from minicode.action.executor import ActionExecutor
+        from minicode.action.windows import (
+            WindowsCaptureSource,
+            WindowsInputInjector,
+            current_virtual_desktop,
+        )
+        from minicode.browser.typing import BrowserTyping
+        from minicode.verification.layer import VerificationLayer, VerifyRequest
+
+        verifier = VerificationLayer(
+            screenshot_port=CapturePort([WindowsCaptureSource()]),
+            observer=PageObserver(self._source),
+        )
+        request = VerifyRequest(
+            expectation=step.expectation,
+            action=None,
+            landing_point=None,
+            target_description=step.target,
+        )
+        baseline = verifier.begin(request)
         desktop = current_virtual_desktop()
         injector = WindowsInputInjector(desktop)
         typing = BrowserTyping(
@@ -1449,15 +1476,19 @@ class ChromeExecutor:
         self._context_data["input_value"] = self._focused_value()
         # **剪贴板用过后要恢复**（工单 M14 C-2 的验收条款）。
         self._context_data["clipboard_restored"] = clipboard_before == clipboard_after
+        verification = verifier.verify(replace(request, baseline=baseline))
         #: **形状对齐**：下面那段按**缝的返回值**取字段（``result.result.error_code``）——
         #: 这一条（文本输入）走的是浏览器自己的输入通道，返回的是**动作结果**，
         #: 所以要包成缝的形状。⚠️ 漏了这一层 → ``'ActionResult' object has no
         #: attribute 'result'``（本轮 wave1 的 C-2 就死在这）。
-        return SeamResult(
-            action=None,
-            final_point=None,
-            intent=step.description,
-            result=result,
+        return (
+            SeamResult(
+                action=None,
+                final_point=None,
+                intent=step.description,
+                result=result,
+            ),
+            verification.to_dict(),
         )
 
     def _focused_value(self) -> str:

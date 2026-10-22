@@ -220,6 +220,33 @@ class RootWalkTest(unittest.TestCase):
         self.assertEqual(controller.conditions, [{}])
 
 
+class RootWalkPidSetTest(unittest.TestCase):
+    """PID 过滤要**覆盖子窗口那个进程**（XAML island 在那儿）。"""
+
+    def test_the_pid_set_covers_the_child_windows(self):
+        with (
+            mock.patch.object(
+                windows, "_process_id", lambda hwnd: {1: 10, 2: 20, 3: 30}[hwnd]
+            ),
+            mock.patch.object(windows, "_child_windows", lambda hwnd: [2, 3]),
+        ):
+            pids = windows._window_process_ids(1)
+        self.assertEqual(pids, {10, 20, 30})
+
+    def test_every_pid_of_the_set_is_kept(self):
+        mine = _FakeElement("缩放", pid=4116)
+        other = _FakeElement("设置", pid=14712)
+        theirs = _FakeElement("别人的", pid=999)
+        controller = _FakeController(root_elements=[mine, other, theirs])
+        with (
+            mock.patch("minicode.exec.uia.UIA", return_value=controller),
+            mock.patch.object(windows, "_release", lambda ptr: None),
+        ):
+            found = windows._root_walk_by_pid({4116, 14712})
+        self.assertEqual(sorted(element.name for element in found), ["设置", "缩放"])
+        self.assertTrue(theirs.released)
+
+
 class QueryPortFallbackTest(unittest.TestCase):
     """定点查询端口：窗口那一遍查不到 → **桌面根遍历兜底**。"""
 
