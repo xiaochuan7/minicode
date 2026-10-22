@@ -13,20 +13,29 @@
 
 ---
 
-## 一、抽验结果（Lead 独立核对，2026-10-22 17:5x）
+## 一、抽验结果（Lead 独立核对，2026-10-22 17:40 之前）
+
+> ⚠️ **本节第 1 条的判定已被第二/第三遍复核订正**（`docs/research/ralph-round2-review.md` §三 / §九·C）：
+> **复核说的「文件不存在」在它审的那一版报告上是对的** —— 时间线：
+> `runs/g2-eval-crop192/model-requests.jsonl` **16:16:48 创建**（这一轮评测开跑）→ 报告首版 commit `7e74d33`
+> **16:20:55** 提交（其 `:234` 索引了 `runs/g2-eval-crop192/sspro-report.json`）→ 该文件 **16:34:04 才生成**。
+> ⇒ 报告提交后 **13 分 9 秒**里那条引用确实断链；**是 Lead 的抽验（17:40 之前）看到了已经收工的目录才判成「误报」**。
+> **本节下面的表已按这个结论改写**；同时原稿写的抽验时间「17:5x」与本文件提交时间（17:40:56）矛盾，已订正。
 
 复核报告共列 15 条 evidence + 6 条 nextSteps。Lead 抽验了其中最狠的 6 条：
 
 | # | 复核的说法 | Lead 核对产物 | 判定 |
 |---|---|---|---|
-| 1 | `runs/g2-eval-crop192/sspro-report.json` **不存在**，⑨ 的 183 条配对 mid-p McNemar 未做成 | `Get-ChildItem runs\g2-eval-crop192` → `sspro-report.json` **763576 bytes 存在** | ❌ **复核误报** |
+| 1 | `runs/g2-eval-crop192/sspro-report.json` **不存在**，⑨ 的 183 条配对 mid-p McNemar 未做成 | 抽验时 `Get-ChildItem runs\g2-eval-crop192` → `sspro-report.json` **763576 bytes 存在**（但它 **16:34:04** 才生成，晚于被审报告的提交时刻 **16:20:55**） | ✅ **成立（带时点限定）** —— 报告首版提交时该路径确实不存在；**不是误报** |
 | 2 | 报告写「视觉步骤可判率 100%」，产物 `visual_step_decidable_rate = 0.0` | `runs/v1-wave1c/e2e-report.json` → `visual_steps=2, visual_steps_decided=0, visual_step_decidable_rate=0.0`；tiers `{hit:2, near_miss:0, wrong:0, undecidable:2}` | ✅ **复核正确** |
 | 3 | 报告写「等价标度族分歧 0.00 px」，产物实为 `2.8676273` | `runs/v1-calib/s0/calibration-records.jsonl` → `denominator_pair_divergence_px = 2.86762730308723`；`divergences_px` 内为 `Infinity` | ✅ **复核正确**（但 2.87 ≤ 4，该项**仍达成**，只是数写错） |
 | 4 | 报告写 icon 中位 **14.00 px**，产物实为 **12.0 px** | `runs/g2-eval-final/sspro-report.json` → `model_input_target_sizes.icon = {samples:87, median_px:12.0, below_16px:64, below_16px_rate:0.7356}` | ✅ **复核正确** |
 | 5 | **BLOCKER**：`ground/prompt.py:437-455 parse_optional_point` 未调 `is_truncated`，与自己 docstring:445「截断 = 0 分、不抢救」矛盾 | 实测：函数体 437-455 全文**无** `is_truncated` 调用；`is_truncated` 只在 `prompt.py:240`、`prompt.py:515` 两处被用 | ✅ **复核正确（真 BLOCKER）** |
 | 6 | 施工清单要求的 χ² + 连续性校正在 `src/` 不存在 | `grep -c "chi2\|chi_square\|chisquare\|continuity"` over `src/minicode/**/*.py` = **0** | ✅ **复核正确** |
 
-**结论：5/6 正确，1 处误报。这份复核可信度足够高，应当复用。**
+**结论：6/6 成立**（第 1 条带上述时点限定）。这份复核可信度足够高，应当复用。
+**后续**：它的 6 条 nextSteps 已在 `docs/research/vision-final-closure.md` §二 逐条交账（已修 / 半修 / 未修）；
+第二遍与第三遍复核的结论在 `docs/research/ralph-round2-review.md`。
 
 它自己那句话也站得住：**「报告确把多条未达成/未做/未测写成达成」。**
 
