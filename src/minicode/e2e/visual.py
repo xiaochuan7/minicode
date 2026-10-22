@@ -16,9 +16,16 @@ M14 的 Windows 设置执行器与 M15 的微信执行器都要用它：
 * **声明**：我们自己把整屏图缩到**物理表面的一半**再送模型，
   并在提示词里声明那张图的尺寸 —— 声明值**从量出来的表面尺寸算**，
   **源码里不写死 1280×800**（表面变了，声明跟着变）。
-* **反查**：请求日志里的 token 数能反推**服务端实际看到的那张图**有多大
-  （28 px patch 规则，**【二手】未在本机端点验证**）。
+* **相等断言**（**闸门**）：观测图像 token vs 期望值
+  ``ceil(W/28) × ceil(H/28)``（容差 ±2）——
+  **不等 ⇒ 服务端再缩了那张图 ⇒ 该次请求的坐标系不可信**
+  → 视觉通道**不可用**（零动作下发），**不许**继续按声明尺寸换算。
+  ⚠️ **它不被「测量口径」绕过**（坐标系不可信不是测量旋钮）。
+* **反查**（**诊断/证据**）：请求日志里的 token 数能反推**服务端大概**缩到了
+  多大（28 px patch 规则，**【二手】未在本机端点验证**）。
   **反查不出就如实记 ``unknown``，不许填一个猜的数**。
+  ⚠️ **它不作准入依据**（盒子给的是**区间**，区间落在声明尺寸附近
+  **不代表**服务端没缩过）。
 * 声明值**只有这一个来源**：标定探针与两级 grounding 拿的是**同一个值**
   （换算链路的分母不许有两个）。
 """
@@ -42,6 +49,8 @@ __all__ = [
     "ocr_candidate_source",
     "reverse_lookup_model_input",
     "reverse_lookup_from_log",
+    "server_image_evidence_from_log",
+    "untrusted_coordinate_system_reason",
 ]
 
 
@@ -70,9 +79,9 @@ def reverse_lookup_model_input(
     text_tokens: int | None,
     aspect_ratio: float,
 ) -> tuple[int, int] | None:
-    """**用 token 数反查**服务端实际看到的那张图（反查不出 → ``None``）。
+    """**诊断**：用 token 数反查服务端**大概**缩到了多大（反查不出 → ``None``）。
 
-    实现在 :func:`minicode.calib.calibrate.estimate_model_input_from_tokens`
+    实现在 :func:`minicode.calib.calibrate.diagnose_server_model_input_from_tokens`
     （calib 包，**唯一一处**）。
 
     参数（calib 那份的契约）：
@@ -86,12 +95,72 @@ def reverse_lookup_model_input(
     ⚠️ 返回的是 **28 px patch 网格的上界**（每边误差 ≤ 28 px）——
     它是「服务端确实缩到多大了」的**证据**，**不是坐标基准**
     （坐标基准仍用我们自己缩放后声明的那个尺寸）。
-    """
-    from minicode.calib.calibrate import estimate_model_input_from_tokens
 
-    return estimate_model_input_from_tokens(
+    ⚠️ **它只是「证据」，不作准入依据**：「能不能信这次请求的坐标系」
+    由**相等断言**判（:func:`minicode.calib.calibrate.assert_server_kept_image_tokens`）
+    —— 盒子给的是**区间**，区间落在声明尺寸附近**不代表**服务端没缩过。
+    """
+    from minicode.calib.calibrate import diagnose_server_model_input_from_tokens
+
+    return diagnose_server_model_input_from_tokens(
         observed_input_tokens, text_tokens, aspect_ratio
     )
+
+
+def server_image_evidence_from_log(
+    client: Any,
+    sink: Any,
+    declared: tuple[int, int],
+    *,
+    max_tokens: int = 2000,
+) -> tuple[tuple[int, int] | None, Any]:
+    """一次测量 → **两个结论**：**相等断言**（闸门）与**盒子反查**（诊断）。
+
+    * 图像那一部分的 token 数 = 服务端报的总输入 token − 纯文字那部分；
+    * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次；
+    * **量不出来 → 两个结论都是 unknown**（**不猜**、不填一个猜的数）。
+
+    返回 ``(盒子, 相等断言)``：
+
+    * **盒子** —— 服务端**大概**缩到了多大（``None`` = 反查不出）；
+    * **相等断言** —— 服务端**有没有**再缩那张图
+      （``server_kept_size``：``True`` = 没再缩（坐标系**可信**）/
+      ``False`` = 缩过（**不可信**）/ ``None`` = 量不出来（**不猜**））。
+
+    ⚠️ **总**输入 token 的口径走
+    :func:`minicode.model.request_log.total_input_tokens`（本仓的唯一一处）——
+    服务端开了提示词缓存时，只看 ``input_tokens`` 会小到几十（图像 token 进了
+    ``cache_read``）→ 相减出来是负数。
+
+    ⚠️ **先取这条请求日志**，再量纯文字 —— 量纯文字会再发一次请求，
+    把 ``sink.last`` 覆盖掉。
+    """
+    from minicode.calib.calibrate import (
+        assert_server_kept_image_tokens,
+        observed_image_tokens,
+    )
+
+    unknown = assert_server_kept_image_tokens(None, declared)
+    record = getattr(sink, "last", None)
+    prompt = getattr(client, "last_prompt", "")
+    if record is None or not prompt:
+        return (None, unknown)
+    observed_total = getattr(record, "total_input_tokens", None)
+    if observed_total is None:
+        return (None, unknown)
+    text_tokens = measure_text_tokens(
+        client, prompt, effort=record.effort, max_tokens=max_tokens
+    )
+    if text_tokens is None:
+        return (None, unknown)
+    observed = observed_image_tokens(observed_total, text_tokens)
+    assertion = assert_server_kept_image_tokens(observed, declared)
+    box = reverse_lookup_model_input(
+        observed_total,
+        text_tokens,
+        declared[0] / declared[1] if declared[1] else 0.0,
+    )
+    return (box, assertion)
 
 
 def reverse_lookup_from_log(
@@ -101,32 +170,15 @@ def reverse_lookup_from_log(
     *,
     max_tokens: int = 2000,
 ) -> tuple[int, int] | None:
-    """用**请求日志里的 token 数**反查服务端实际看到的那张图（**唯一一处**）。
+    """**诊断**（盒子反查）—— **不作准入依据**。
 
-    * 图像那一部分的 token 数 = 服务端报的总输入 token − 纯文字那部分；
-    * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次；
-    * **反查不出就返回 ``None``**（调用方记 ``unknown``，不许填一个猜的数）。
-
-    ⚠️ **总**输入 token 的口径走
-    :func:`minicode.model.request_log.total_input_tokens`（本仓的唯一一处）——
-    服务端开了提示词缓存时，只看 ``input_tokens`` 会小到几十（图像 token 进了
-    ``cache_read``）→ 相减出来是负数。
+    ⚠️ 「能不能信这次请求的坐标系」由**相等断言**判 →
+    :func:`server_image_evidence_from_log`（一次测量 → 两个结论）。
     """
-    record = getattr(sink, "last", None)
-    prompt = getattr(client, "last_prompt", "")
-    if record is None or not prompt:
-        return None
-    observed = getattr(record, "total_input_tokens", None)
-    if observed is None:
-        return None
-    text_tokens = measure_text_tokens(
-        client, prompt, effort=record.effort, max_tokens=max_tokens
+    box, _assertion = server_image_evidence_from_log(
+        client, sink, declared, max_tokens=max_tokens
     )
-    if text_tokens is None:
-        return None
-    return reverse_lookup_model_input(
-        observed, text_tokens, declared[0] / declared[1] if declared[1] else 0.0
-    )
+    return box
 
 
 class RecordingSink:
@@ -297,20 +349,32 @@ class VisualChannel:
     # -- 端口 -------------------------------------------------------------
 
     def admission_port(self):
-        """视觉通道的**准入判定端口**（生产口径 = 准入门说了算）。"""
+        """视觉通道的**准入判定端口**（生产口径 = 准入门说了算）。
+
+        ⚠️ **坐标系可信性**（相等断言）是**闸门**，且**不被「测量口径」绕过** ——
+        坐标系不可信不是测量旋钮：在一个**没观察过的空间**里换算出来的
+        落点**一定是错的**。
+        """
         calibration = self._calibrate()
         real = calibration["admission"]
-        if not self.bypass_admission:
-            return real
-        return _BypassAdmission(real)
+        if self.bypass_admission:
+            real = _BypassAdmission(real)
+        return _CoordinateSystemGate(real, calibration["image_token_assertion"])
 
     def locator(self):
-        """两级 grounding（视觉通道）。"""
+        """两级 grounding（视觉通道）。
+
+        ⚠️ **坐标系不可信 → 显式失败**：服务端再缩了那张图时，
+        **不许**继续按声明尺寸换算（那是在一个没观察过的空间里换算）。
+        """
         if self._grounder is not None:
             return self._grounder
         from minicode.ground.channel import TwoStageGrounder
 
         calibration = self._calibrate()
+        assertion = calibration["image_token_assertion"]
+        if assertion.server_kept_size is False:
+            return _UntrustedCoordinateSystemLocator(assertion)
         self._grounder = TwoStageGrounder(
             calibration["client"],
             scale=calibration["scale"],
@@ -329,10 +393,16 @@ class VisualChannel:
         return self._grounder
 
     def zoom_locator(self):
-        """放大动作的端口（回源重抓 + 模型报整屏坐标）。"""
+        """放大动作的端口（回源重抓 + 模型报整屏坐标）。
+
+        ⚠️ **坐标系不可信 → 显式失败**（同上：放大那一级也按声明尺寸换算）。
+        """
         from minicode.ground.zoom import zoom_locate
 
         calibration = self._calibrate()
+        assertion = calibration["image_token_assertion"]
+        if assertion.server_kept_size is False:
+            return _UntrustedZoomLocator(assertion)
         client = calibration["client"]
         scale = calibration["scale"]
         #: **与标定探针同一个声明值**（换算链路的分母只有一个来源）。
@@ -383,8 +453,9 @@ class VisualChannel:
         #: **准入判定**（A-1 的真闸门：**等价族分歧 ≤ 4 px 且 K 轮命中率 ≥ 0.6**）。
         #: 算**一次**（准入规则只有那一处），端口与读数共用它。
         admission = CalibrationAdmission(outcome).admit()
-        #: **反查服务端实际看到的那张图**（反查不出 → ``unknown``，不猜）。
-        server_input = self._reverse_lookup(client, sink, declared)
+        #: **服务端实际看到的那张图**（盒子 = **诊断**）+ **相等断言**（**闸门**）。
+        #: 一次测量 → 两个结论（**不额外发模型调用**）。
+        server_input, assertion = self._server_evidence(client, sink, declared)
         self._calib = {
             "outcome": outcome,
             "admission": CalibrationAdmission(outcome),
@@ -395,20 +466,21 @@ class VisualChannel:
             "height": height,
             "model_input_size": declared,
             "server_model_input": server_input,
+            "image_token_assertion": assertion,
         }
         self._context["calibration"] = calibration_readout(
-            outcome, admission, best, declared, server_input
+            outcome, admission, best, declared, server_input, assertion
         )
         return self._calib
 
-    def _reverse_lookup(
+    def _server_evidence(
         self, client: Any, sink: RecordingSink, declared: tuple[int, int]
-    ) -> tuple[int, int] | None:
-        """用**请求日志里的 token 数**反查服务端实际看到的那张图。
+    ) -> tuple[tuple[int, int] | None, Any]:
+        """**服务端实际看到的那张图**（盒子，诊断）+ **相等断言**（闸门）。
 
-        实现只有一处：:func:`reverse_lookup_from_log`。
+        实现只有一处：:func:`server_image_evidence_from_log`。
         """
-        return reverse_lookup_from_log(client, sink, declared)
+        return server_image_evidence_from_log(client, sink, declared)
 
 
 def calibration_readout(
@@ -417,6 +489,7 @@ def calibration_readout(
     best: Any,
     declared: tuple[int, int],
     server_input: tuple[int, int] | None,
+    assertion: Any = None,
 ) -> dict[str, Any]:
     """**标定的读数**（进任务上下文 / 报告）。
 
@@ -427,6 +500,11 @@ def calibration_readout(
 
     ⚠️ **两者都在这里** —— 只报 ``ok`` 会让人以为「标定通过」，
     而通道**其实**可能被命中率那道闸门挡下来。
+
+    ⚠️ **第三道闸门**在这里也报出来：**相等断言**
+    （``image_token_assertion`` / ``coordinate_system_trusted``）——
+    服务端再缩了那张图 → **该次请求的坐标系不可信** →
+    视觉通道不可用（**零动作下发**）。
     """
     from minicode.calib.tolerance import CALIBRATION_MIN_HIT_RATE
 
@@ -443,6 +521,16 @@ def calibration_readout(
         "model_input": list(declared),
         #: **声明的模型输入尺寸**（我们自己缩到表面的一半再送模型）。
         "declared_model_input": list(declared),
+        #: **相等断言**（闸门）：观测图像 token vs 期望值
+        #: ``ceil(W/28) × ceil(H/28)``（容差 ±2）。
+        "image_token_assertion": (
+            assertion.to_dict() if assertion is not None else None
+        ),
+        #: **这次请求的坐标系可信吗**（``False`` = 服务端再缩了那张图 →
+        #: **视觉通道不可用**；``None`` = 量不出来，**不猜**）。
+        "coordinate_system_trusted": (
+            assertion.server_kept_size if assertion is not None else None
+        ),
         #: **反查出来的服务端实际尺寸**（反查不出 → ``"unknown"``）。
         "server_model_input": (
             list(server_input) if server_input is not None else "unknown"
@@ -477,4 +565,78 @@ class _BypassAdmission:
             scale_verdict=verdict.scale_verdict,
             landing_equivalence=verdict.landing_equivalence,
             equivalent_scales=verdict.equivalent_scales,
+        )
+
+
+def untrusted_coordinate_system_reason(assertion: Any) -> str:
+    """「**坐标系不可信**」的人读理由（相等断言不通过时用）。"""
+    return (
+        f"服务端再缩了那张图（观测图像 token {assertion.observed_image_tokens}"
+        f" ≠ 期望 {assertion.expected_image_tokens}，差 "
+        f"{assertion.difference_tokens} > 容差 {assertion.tolerance_tokens}）"
+        " → 该次请求的坐标系不可信 → 视觉通道不可用"
+    )
+
+
+class _CoordinateSystemGate:
+    """**坐标系可信性**的闸门（**相等断言**）。
+
+    ⚠️ **它不被「测量口径」绕过** —— 坐标系不可信**不是**测量旋钮：
+    服务端再缩了那张图，模型就在一个**我们没观察过的空间**里出坐标 →
+    按声明尺寸换算出来的落点**一定是错的**。
+    """
+
+    def __init__(self, inner: Any, assertion: Any):
+        self.inner = inner
+        self.assertion = assertion
+
+    def admit(self):
+        from minicode.action.ports import VisualAdmission
+
+        verdict = self.inner.admit()
+        if self.assertion.server_kept_size is False:
+            return VisualAdmission(
+                available=False,
+                reason=untrusted_coordinate_system_reason(self.assertion),
+                scale=verdict.scale,
+                scale_verdict=verdict.scale_verdict,
+                landing_equivalence=verdict.landing_equivalence,
+                equivalent_scales=verdict.equivalent_scales,
+            )
+        return verdict
+
+
+class _UntrustedCoordinateSystemLocator:
+    """**坐标系不可信**时的视觉定位口 —— **显式失败**，不换算。
+
+    ⚠️ 它**不抛异常**：抛异常会打断整轮真机任务（连 UIA 能做的步也做不了）。
+    这里返回一条**带错误码的失败结果** → 上层记「视觉通道不可用」。
+    """
+
+    def __init__(self, assertion: Any):
+        self.assertion = assertion
+
+    def locate(self, request: Any) -> Any:
+        from minicode.action.errors import ErrorCode
+        from minicode.action.ports import VisualLocateResult
+
+        return VisualLocateResult(
+            error_code=ErrorCode.VISUAL_CHANNEL_UNAVAILABLE,
+            error_message=untrusted_coordinate_system_reason(self.assertion),
+        )
+
+
+class _UntrustedZoomLocator:
+    """**坐标系不可信**时的放大口 —— **显式失败**，不换算。"""
+
+    def __init__(self, assertion: Any):
+        self.assertion = assertion
+
+    def locate(self, request: Any) -> Any:
+        from minicode.action.errors import ErrorCode
+        from minicode.action.ports import ZoomResult
+
+        return ZoomResult(
+            error_code=ErrorCode.VISUAL_CHANNEL_UNAVAILABLE,
+            error_message=untrusted_coordinate_system_reason(self.assertion),
         )

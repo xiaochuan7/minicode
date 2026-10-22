@@ -21,6 +21,8 @@ import math
 import unittest
 
 from minicode.eval.stats import (
+    mcnemar_chisq_cc,
+    mcnemar_exact,
     mcnemar_midp,
     mde,
     paired_bootstrap_delta,
@@ -107,6 +109,114 @@ class McNemarMidPTests(unittest.TestCase):
         self.assertAlmostEqual(exact_two_sided(16, 4), 12392 / 1048576, places=12)
         self.assertAlmostEqual(exact_two_sided(1, 0), 1.0, places=12)
         self.assertAlmostEqual(exact_two_sided(0, 3), 0.25, places=12)
+
+
+class McNemarExactTests(unittest.TestCase):
+    """**普通精确二项**（保守对照）：手算 + 与 mid-p 的关系。
+
+    ⚠️ **主报是 mid-p**；这个是**对照**（Fagerland 2013：普通 exact
+    与渐近+连续性校正表现差）。
+    """
+
+    def test_hand_computed_examples(self):
+        """三个手算样例（分母都是 2^n，整数精确）。"""
+        # (b, c) = (16, 4)：n = 20，m = 4
+        #   Σ_{k≤4} C(20,k) = 1 + 20 + 190 + 1140 + 4845 = 6196
+        #   exact = 2 · 6196 / 2^20 = 12392 / 1048576
+        self.assertAlmostEqual(mcnemar_exact(16, 4), 12392 / 1048576, places=12)
+        # (b, c) = (1, 0)：n = 1 → 2 · C(1,0) / 2 = 1.0
+        self.assertAlmostEqual(mcnemar_exact(1, 0), 1.0, places=12)
+        # (b, c) = (0, 3)：n = 3 → 2 · 1 / 8 = 0.25
+        self.assertAlmostEqual(mcnemar_exact(0, 3), 0.25, places=12)
+
+    def test_no_discordant_pair_gives_one(self):
+        """没有不一致对 → p = 1.0。"""
+        self.assertEqual(mcnemar_exact(0, 0), 1.0)
+
+    def test_exact_is_mid_p_plus_the_observed_cell_mass(self):
+        """exact − mid-p = **观测格那一格的概率质量**（边界格折半的那一半）。"""
+        for b, c in ((16, 4), (30, 12), (0, 3), (38, 11)):
+            n = b + c
+            m = min(b, c)
+            self.assertAlmostEqual(
+                mcnemar_exact(b, c) - mcnemar_midp(b, c),
+                math.comb(n, m) / 2**n,
+                places=12,
+                msg=f"({b},{c})",
+            )
+
+    def test_negative_counts_are_rejected(self):
+        with self.assertRaises(ValueError):
+            mcnemar_exact(-1, 2)
+
+
+class McNemarChisqCcTests(unittest.TestCase):
+    """**χ² + 连续性校正**（保守对照）：公式 + 关系。"""
+
+    def test_the_statistic_matches_the_formula(self):
+        """χ² = ``(|b−c| − 1)² / (b+c)``；自由度 1 的上尾 = ``erfc(√(χ²/2))``。"""
+        for b, c in ((38, 11), (16, 4), (30, 12), (60, 5)):
+            n = b + c
+            statistic = (abs(b - c) - 1) ** 2 / n
+            self.assertAlmostEqual(
+                mcnemar_chisq_cc(b, c),
+                math.erfc(math.sqrt(statistic / 2)),
+                places=12,
+                msg=f"({b},{c})",
+            )
+
+    def test_no_discordant_pair_gives_one(self):
+        """没有不一致对 → p = 1.0。"""
+        self.assertEqual(mcnemar_chisq_cc(0, 0), 1.0)
+
+    def test_the_result_is_a_probability(self):
+        for b, c in ((0, 0), (1, 0), (38, 11), (100, 3)):
+            value = mcnemar_chisq_cc(b, c)
+            self.assertGreaterEqual(value, 0.0)
+            self.assertLessEqual(value, 1.0)
+
+    def test_negative_counts_are_rejected(self):
+        with self.assertRaises(ValueError):
+            mcnemar_chisq_cc(1, -2)
+
+    def test_the_continuity_correction_makes_the_equal_case_less_than_one(self):
+        """``b = c``（无方向性证据）时统计量**不为零** → p 略小于 1。
+
+        ⚠️ 这是那条公式的**定义**（不是 bug）：报数时按原样报。
+        """
+        self.assertLess(mcnemar_chisq_cc(7, 7), 1.0)
+        self.assertGreater(mcnemar_chisq_cc(7, 7), 0.5)
+
+
+class McNemarThreeWayTests(unittest.TestCase):
+    """**三个检验的关系**（mid-p 主报 + 两个保守对照）。"""
+
+    def test_the_degenerate_case_agrees(self):
+        """``b = c = 0`` → 三个都是 1.0。"""
+        for function in (mcnemar_midp, mcnemar_exact, mcnemar_chisq_cc):
+            self.assertEqual(function(0, 0), 1.0)
+
+    def test_the_three_are_in_the_same_ballpark(self):
+        """``b = 38, c = 11``：三者同一量级，且 exact/χ² ≥ mid-p。
+
+        ⚠️ 「exact/χ² ≥ mid-p」只在 **|b − c| ≥ 1** 时成立：
+        ``b = c`` 时连续性校正把统计量从 0 抬到 1（见上面那条测试）。
+        """
+        mid = mcnemar_midp(38, 11)
+        exact = mcnemar_exact(38, 11)
+        chisq = mcnemar_chisq_cc(38, 11)
+        self.assertGreaterEqual(exact, mid)
+        self.assertGreaterEqual(chisq, mid)
+        for value in (mid, exact, chisq):
+            self.assertLess(value, 1e-3)
+            self.assertGreater(value, 1e-5)
+
+    def test_the_controls_are_never_smaller_than_mid_p(self):
+        """一批 (b, c)（|b − c| ≥ 1）上，两个对照都 **不小于** mid-p。"""
+        for b, c in ((1, 0), (0, 3), (2, 5), (16, 4), (30, 12), (38, 11)):
+            mid = mcnemar_midp(b, c)
+            self.assertGreaterEqual(mcnemar_exact(b, c), mid, msg=f"({b},{c})")
+            self.assertGreaterEqual(mcnemar_chisq_cc(b, c), mid, msg=f"({b},{c})")
 
 
 class WilsonTests(unittest.TestCase):

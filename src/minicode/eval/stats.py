@@ -1,4 +1,4 @@
-"""**评测统计模块**（施工清单 ⑨）—— 四个纯函数，零依赖、可单测。
+"""**评测统计模块**（施工清单 ⑨）—— 纯函数，零依赖、可单测。
 
 为什么要有这个模块：评测台原来的数**没有区间、没有检验、没有配对**——
 「两半各跑一遍再比」把**构成差**当成了效应（见
@@ -8,7 +8,9 @@
 ============================  ============================================
 函数                          语义
 ============================  ============================================
-:func:`mcnemar_midp`          **mid-p McNemar**（双侧）的 p 值
+:func:`mcnemar_midp`          **mid-p McNemar**（双侧）的 p 值（**主报**）
+:func:`mcnemar_exact`         **普通精确二项**（双侧）的 p 值（保守对照）
+:func:`mcnemar_chisq_cc`      **χ² + 连续性校正**（双侧）的 p 值（保守对照）
 :func:`wilson_ci`             单臂命中率的 **Wilson 95% 区间**
 :func:`paired_bootstrap_delta`  **配对 bootstrap** 的 Δ 与 95% CI
 :func:`mde`                  **最小可检测效应**（百分点）
@@ -16,6 +18,14 @@
 
 ⚠️ **本模块不引入第三方依赖**（仓库的 ``core`` 路径要求零第三方依赖）——
 二项分布用**整数二项式系数**精确算，bootstrap 用标准库 ``random``。
+
+⚠️ **检验的分工**（施工清单第 ⑨ 条：mid-p 为主报，普通精确二项与
+χ²+连续性校正当保守对照；依据 Fagerland 2013）：
+
+* **主报** —— :func:`mcnemar_midp`（mid-p 在 9595 个场景里都没违反名义水平）；
+* **对照** —— :func:`mcnemar_exact`（普通精确二项）与
+  :func:`mcnemar_chisq_cc`（χ² + 连续性校正；NIST 的 McNemar 参考里
+  ``b + c > 20`` 才用它，``b + c ≤ 20`` 用精确二项）。
 """
 
 from __future__ import annotations
@@ -27,6 +37,8 @@ from typing import NamedTuple
 
 __all__ = [
     "BootstrapDelta",
+    "mcnemar_chisq_cc",
+    "mcnemar_exact",
     "mcnemar_midp",
     "mde",
     "paired_bootstrap_delta",
@@ -88,6 +100,69 @@ def mcnemar_midp(b: int, c: int) -> float:
     #: ``2 · Σ_{k<m} C(n,k) + C(n,m)`` —— 边界格只算**一半**。
     numerator = 2 * sum(counts[:m]) + counts[m]
     return min(1.0, numerator / (2**n))
+
+
+def mcnemar_exact(b: int, c: int) -> float:
+    """**普通精确二项检验**（McNemar 的 exact conditional / binomial，双侧）。
+
+    ``b`` / ``c`` 是 2×2 表里两个**不一致格**的计数
+    （``b`` = 只在 A 臂命中，``c`` = 只在 B 臂命中）。
+    零假设下 ``X ~ Binomial(n = b + c, p = 0.5)``，
+    双侧 p = ``2 · P(X ≤ min(b, c))``（**边界那一格不折半**）。
+
+    这就是 ``scipy.stats.binomtest`` 的双侧分支；与 mid-p 的差恰好是
+    **观测格那一格的概率质量**（:func:`mcnemar_midp` 把那一格折半）。
+
+    * ``b = c = 0``（没有不一致对）→ 返回 ``1.0``；
+    * 结果夹在 ``[0, 1]``。
+
+    ⚠️ **它是保守对照**（Fagerland 2013：普通 exact 与渐近+连续性校正
+    表现差）—— **主报是 mid-p**（:func:`mcnemar_midp`）。
+
+    ⚠️ **用在哪**：NIST 的 McNemar 参考说 ``b + c ≤ 20`` 时用**精确二项**
+    （https://www.itl.nist.gov/div898/software/dataplot/refman1/auxillar/mcnemar.htm）。
+    """
+    if b < 0 or c < 0:
+        raise ValueError("b 与 c 必须是非负计数")
+    n = b + c
+    if n == 0:
+        return 1.0
+    m = min(b, c)
+    counts = _binom_counts(n, m)
+    return min(1.0, 2 * sum(counts) / (2**n))
+
+
+def mcnemar_chisq_cc(b: int, c: int) -> float:
+    """**χ² + 连续性校正**（Yates）的 McNemar 检验（双侧）的 p 值。
+
+    统计量（**连续性校正版**）::
+
+        χ² = ( |b − c| − 1 )² / (b + c)
+
+    ``χ²`` 服从**自由度 1** 的卡方分布 → 双侧 p = 它的**上尾**
+    （自由度 1 时上尾 = ``erfc(√(χ²/2))``，标准库 ``math.erfc``）。
+
+    * ``b = c = 0``（没有不一致对）→ 返回 ``1.0``；
+    * 结果夹在 ``[0, 1]``。
+
+    ⚠️ **它是保守对照**（连续性校正在小样本上过度保守）——
+    **主报是 mid-p**（:func:`mcnemar_midp`）。
+
+    ⚠️ **用在哪**：NIST 的 McNemar 参考里，这个版本用于 ``b + c > 20``
+    （``b + c ≤ 20`` 用精确二项 :func:`mcnemar_exact`）
+    （https://www.itl.nist.gov/div898/software/dataplot/refman1/auxillar/mcnemar.htm）。
+
+    ⚠️ **连续性校正的副作用**：``b = c``（无方向性证据）时统计量**不为零**
+    （``(|b−c| − 1)² = 1``）→ p **略小于 1** —— 这是这条公式的**定义**
+    （不是 bug），报数时按原样报。
+    """
+    if b < 0 or c < 0:
+        raise ValueError("b 与 c 必须是非负计数")
+    n = b + c
+    if n == 0:
+        return 1.0
+    statistic = (abs(b - c) - 1) ** 2 / n
+    return min(1.0, max(0.0, math.erfc(math.sqrt(statistic / 2))))
 
 
 def wilson_ci(

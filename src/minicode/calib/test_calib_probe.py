@@ -54,6 +54,7 @@ from minicode.calib import (
     CalibrationProbe,
     CalibrationStore,
     default_probe_spec,
+    diagnose_server_model_input_from_tokens,
     estimate_model_input_from_log,
     estimate_model_input_from_tokens,
     probe_hit_radius,
@@ -953,43 +954,76 @@ class TestTwoCallPaths(unittest.TestCase):
 
 
 class TestEstimateModelInputFromTokens(unittest.TestCase):
-    """A-2：用图像 token 数反查服务端实际看到的尺寸。"""
+    """服务端实际看到的那张图：**按相等断言判定**（唯一真值来源）。
 
-    def test_reverse_lookup_finds_the_patch_grid(self):
-        """观测 3404 个图像 token + 宽高比 1.6 → 反查出格子上界。"""
-        size = estimate_model_input_from_tokens(3417, 13, 1.6)
-        self.assertIsNotNone(size)
-        width, height = size
-        self.assertEqual(-(-width // 28) * -(-height // 28), 3404)
-        self.assertAlmostEqual(width / height, 1.6, delta=0.05)
+    ⚠️ **新契约**（2026-10-22）：这个函数**不再**返回「±28 px 的盒子」——
+    它按**相等断言**（观测图像 token == 期望图像 token，容差 ±2）判定：
+    相等 ⇒ 服务端**没再缩** ⇒ 返回**声明尺寸**；不等 ⇒ **坐标系不可信**
+    ⇒ 返回 ``None``。盒子降级为**诊断/证据**
+    （:func:`diagnose_server_model_input_from_tokens`），**不作准入依据**。
+    """
 
-    def test_reverse_lookup_keeps_the_declared_aspect_ratio(self):
-        """格子的可容纳比值区间必须容得下声明的宽高比。"""
-        size = estimate_model_input_from_tokens(1334, 0, 1280 / 800)
-        self.assertIsNotNone(size)
-        width, height = size
-        self.assertEqual(-(-width // 28) * -(-height // 28), 1334)
+    #: 声明 1280×800 → 期望图像 token = ceil(1280/28) × ceil(800/28) = 46×29。
+    DECLARED = (1280, 800)
+    EXPECTED = 1334
+
+    def test_equal_tokens_mean_the_model_saw_the_declared_size(self):
+        """观测 == 期望（容差内）→ 服务端没再缩 → 返回**声明尺寸**。"""
+        self.assertEqual(
+            estimate_model_input_from_tokens(self.EXPECTED + 10, 10, self.DECLARED),
+            self.DECLARED,
+        )
+
+    def test_a_shrunk_image_gives_none(self):
+        """服务端再缩了那张图 → **坐标系不可信** → ``None``。
+
+        ⚠️ **不许**返回盒子的答案（「大概缩到了多大」）—— 那不是准入判据。
+        """
+        self.assertIsNone(
+            estimate_model_input_from_tokens(861, 10, self.DECLARED)  # 图像 851
+        )
+
+    def test_the_box_answer_is_never_returned_as_the_size(self):
+        """**盒子与闸门是两件事**：盒子查得出一个像样的尺寸，
+        但相等断言不通过 → 仍然 ``None``（坐标系不可信）。"""
+        box = diagnose_server_model_input_from_tokens(861, 10, 1280 / 800)
+        self.assertIsNotNone(box)
+        self.assertNotEqual(box, self.DECLARED)
+        self.assertIsNone(estimate_model_input_from_tokens(861, 10, self.DECLARED))
 
     def test_unknown_text_tokens_gives_none(self):
         """文本 token 数未知 → 如实标 unknown（不猜）。"""
-        self.assertIsNone(estimate_model_input_from_tokens(3417, None, 1.6))
+        self.assertIsNone(
+            estimate_model_input_from_tokens(self.EXPECTED + 10, None, self.DECLARED)
+        )
 
     def test_unknown_observed_tokens_gives_none(self):
-        self.assertIsNone(estimate_model_input_from_tokens(None, 13, 1.6))
+        self.assertIsNone(
+            estimate_model_input_from_tokens(None, 10, self.DECLARED)
+        )
 
-    def test_no_compatible_cell_gives_none(self):
-        """没有任何格子的宽高比与声明相容 → None。"""
-        self.assertIsNone(estimate_model_input_from_tokens(100, 90, 1.6))
+    def test_the_tolerance_is_the_named_constant(self):
+        """容差 = ±2（网关固定开销），不是严格相等。"""
+        from minicode.calib.calibrate import IMAGE_TOKEN_ASSERTION_TOLERANCE_TOKENS
 
-    def test_reverse_lookup_uses_the_total_input_tokens(self):
+        self.assertEqual(IMAGE_TOKEN_ASSERTION_TOLERANCE_TOKENS, 2)
+        inside = self.EXPECTED + IMAGE_TOKEN_ASSERTION_TOLERANCE_TOKENS
+        self.assertEqual(
+            estimate_model_input_from_tokens(inside + 10, 10, self.DECLARED),
+            self.DECLARED,
+        )
+        self.assertIsNone(
+            estimate_model_input_from_tokens(inside + 11, 10, self.DECLARED)
+        )
+
+    def test_the_log_variant_uses_the_total_input_tokens(self):
         """服务端开了**提示词缓存**时，观测值必须取**总和**。
 
         这条日志照抄本机实测：``input_tokens=403``、``cache_read=1280``
-        → 总和 1683；减去文字 349 → 图像 1334 = 46×29（28 px 规则）
-        → 反查得 (1288, 812)（与声明的 1280×800 每边差 ≤ 28 px）。
+        → 总和 1683；减去文字 349 → 图像 1334 = 期望 → 相等 → 声明尺寸。
 
-        **只看 ``input_tokens``** 会把图像那部分漏掉 → 反查出一个
-        完全不同的（错的）尺寸。
+        **只看 ``input_tokens``** 会把图像那部分漏掉 → 算出来的图像 token
+        不是期望值 → **坐标系不可信**（而不是给一个错的尺寸）。
         """
         record = RequestLog(
             effort="low",
@@ -1002,11 +1036,73 @@ class TestEstimateModelInputFromTokens(unittest.TestCase):
             cache_read_input_tokens=1280,
         )
         self.assertEqual(record.total_input_tokens, 1683)
-        size = estimate_model_input_from_log(record, 349, 1.6)
+        self.assertEqual(
+            estimate_model_input_from_log(record, 349, self.DECLARED), self.DECLARED
+        )
+        # 只看 input_tokens（漏掉缓存里那部分）→ 图像 token 不是期望值 → 不可信
+        self.assertIsNone(
+            estimate_model_input_from_tokens(record.input_tokens, 349, self.DECLARED)
+        )
+
+
+class TestServerModelInputDiagnostic(unittest.TestCase):
+    """**盒子反查**（诊断/证据）—— **不作准入依据**。
+
+    ⚠️ 它回答的是「服务端**大概**缩到了多大」，不是「能不能信」。
+    """
+
+    def test_reverse_lookup_finds_the_patch_grid(self):
+        """观测 3404 个图像 token + 宽高比 1.6 → 反查出格子上界。"""
+        size = diagnose_server_model_input_from_tokens(3417, 13, 1.6)
+        self.assertIsNotNone(size)
+        width, height = size
+        self.assertEqual(-(-width // 28) * -(-height // 28), 3404)
+        self.assertAlmostEqual(width / height, 1.6, delta=0.05)
+
+    def test_reverse_lookup_keeps_the_declared_aspect_ratio(self):
+        """格子的可容纳比值区间必须容得下声明的宽高比。"""
+        size = diagnose_server_model_input_from_tokens(1334, 0, 1280 / 800)
+        self.assertIsNotNone(size)
+        width, height = size
+        self.assertEqual(-(-width // 28) * -(-height // 28), 1334)
+
+    def test_unknown_text_tokens_gives_none(self):
+        """文本 token 数未知 → 如实标 unknown（不猜）。"""
+        self.assertIsNone(diagnose_server_model_input_from_tokens(3417, None, 1.6))
+
+    def test_unknown_observed_tokens_gives_none(self):
+        self.assertIsNone(diagnose_server_model_input_from_tokens(None, 13, 1.6))
+
+    def test_no_compatible_cell_gives_none(self):
+        """没有任何格子的宽高比与声明相容 → None。"""
+        self.assertIsNone(diagnose_server_model_input_from_tokens(100, 90, 1.6))
+
+    def test_the_total_input_tokens_are_the_ones_to_subtract(self):
+        """服务端开了提示词缓存时，观测值必须取**总和**。
+
+        这条日志照抄本机实测：``input_tokens=403``、``cache_read=1280``
+        → 总和 1683；减去文字 349 → 图像 1334 = 46×29（28 px 规则）
+        → 反查得 (1288, 812)（与声明的 1280×800 每边差 ≤ 28 px）。
+        """
+        record = RequestLog(
+            effort="low",
+            model="stub",
+            endpoint="stub://model",
+            http_status=200,
+            latency_ms=1.0,
+            input_tokens=403,
+            output_tokens=1,
+            cache_read_input_tokens=1280,
+        )
+        self.assertEqual(record.total_input_tokens, 1683)
+        size = diagnose_server_model_input_from_tokens(
+            record.total_input_tokens, 349, 1.6
+        )
         self.assertEqual(size, (1288, 812))
         # 只看 input_tokens（漏掉缓存里那部分）→ 结果完全不同（错的）
         self.assertNotEqual(
-            estimate_model_input_from_tokens(record.input_tokens, 349, 1.6), size
+            diagnose_server_model_input_from_tokens(record.input_tokens, 349, 1.6),
+            size,
         )
 
 

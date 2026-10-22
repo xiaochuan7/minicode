@@ -1126,10 +1126,15 @@ def _paired(
     """**配对比较**（施工清单第 ⑨ 条）：同批样本、复用同一次上游回答。
 
     * ``b`` / ``c`` —— 2×2 表里两个不一致格的计数；
-    * ``p`` —— **mid-p McNemar**（双侧，α=0.05）；
+    * ``p`` —— **mid-p McNemar**（双侧，α=0.05）**主报**，
+      另附**保守对照**：普通精确二项与 χ²+连续性校正；
     * ``delta`` 与 95% CI —— **配对 bootstrap**（2000 次，按 task 聚类）；
     * ``d`` —— 不一致对占比（噪声地板）；
+    * ``mde_pp`` —— **这个样本量下能判出的最小效应**（百分点）；
     * 按「**粗定位命中 / 没命中**」**分层**（预注册的次要分析）。
+
+    ⚠️ **MDE 的读法**：``|Δ| ≥ mde_pp`` 才算「这个样本量判得出」——
+    达不到就是**样本量不够**，不是「没效果」（判据由调用点自己比）。
 
     ⚠️ **分层键 = 粗定位那一臂的命中与否**（``coarse_arm`` 里那条的 ``hit``），
     **不是**「有没有粗点」—— 「有没有粗点」判的是「模型答没答」，
@@ -1140,7 +1145,14 @@ def _paired(
     条件在**先于处理的变量**上 → 不构成 collider
     （依据见 ``docs/research/vision-final-plan.md``「评测设计」§2）。
     """
-    from .stats import mcnemar_midp, paired_bootstrap_delta, wilson_ci
+    from .stats import (
+        mcnemar_chisq_cc,
+        mcnemar_exact,
+        mcnemar_midp,
+        mde,
+        paired_bootstrap_delta,
+        wilson_ci,
+    )
 
     right_by_id = {outcome.sample_id: outcome for outcome in right}
     coarse_by_id = {outcome.sample_id: outcome for outcome in coarse_arm}
@@ -1168,6 +1180,12 @@ def _paired(
     neither = sum(1 for first, second in pairs if not first and not second)
     bootstrap = paired_bootstrap_delta(pairs)
     n = len(pairs)
+    #: **不一致对占比**（π_d 的估计 —— 噪声地板）。
+    discordance = ((b + c) / n) if n else 0.0
+    #: **这个样本量下能判出的最小效应**（百分点）——
+    #: 配对近似 ``mde(n, π_d)``（π_d = 这批配对的不一致率）。
+    mde_pp = mde(n, discordance) if n else None
+    delta_pp = bootstrap.delta * 100
     return {
         "left": label_left,
         "right": label_right,
@@ -1179,11 +1197,22 @@ def _paired(
             "both_miss": neither,
         },
         #: **不一致对占比**（π_d 的估计 —— 噪声地板）。
-        "discordance": ((b + c) / n) if n else 0.0,
-        #: mid-p McNemar（双侧）。
+        "discordance": discordance,
+        #: mid-p McNemar（双侧）—— **主报**。
         "mcnemar_midp_p": mcnemar_midp(b, c),
+        #: **保守对照**：普通精确二项（McNemar 的 exact conditional）。
+        "mcnemar_exact_p": mcnemar_exact(b, c),
+        #: **保守对照**：χ² + 连续性校正（Yates）。
+        "mcnemar_chisq_cc_p": mcnemar_chisq_cc(b, c),
+        #: **最小可检测效应**（百分点）：这个样本量下能判出的最小 Δ。
+        "mde_pp": mde_pp,
+        #: 「Δ ≥ MDE 即够」的口径（**由调用点自己比**）：判不出就是
+        #: **样本量不够**，不是「没效果」。
+        "delta_at_or_above_mde": (
+            bool(mde_pp is not None and abs(delta_pp) >= mde_pp)
+        ),
         #: Δ = 右臂命中率 − 左臂命中率，配对 bootstrap 的 95% CI。
-        "delta_pp": bootstrap.delta * 100,
+        "delta_pp": delta_pp,
         "delta_ci95_pp": [bootstrap.ci_low * 100, bootstrap.ci_high * 100],
         "ci_excludes_zero": (
             bootstrap.ci_low > 0 or bootstrap.ci_high < 0
@@ -1352,6 +1381,8 @@ def compare_arms(
             "note": (
                 "配对 = 同批样本、复用同一次上游回答；"
                 "Δ = 右臂 − 左臂；CI 是配对 bootstrap（2000 次，按 task 聚类）。"
+                "主检验 = mid-p McNemar（另附普通精确二项与 χ²+连续性校正作对照）；"
+                "MDE = 这个样本量下能判出的最小效应（|Δ| ≥ MDE 才算判得出）。"
                 "⚠️ **CI 跨 0 就不许写「改进成立」**"
             ),
         },

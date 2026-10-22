@@ -20,13 +20,16 @@ from minicode.calib.calibrate import (
     SCALE_VERDICT_UNIQUE,
     CalibrationOutcome,
     CandidateEvaluation,
+    assert_server_kept_image_tokens,
 )
 from minicode.coord.coordinates import ModelScale
 from minicode.e2e.real import read_window_controls
 from minicode.e2e.visual import (
     LazyUiaCandidateSource,
     MergedCandidateSource,
+    VisualChannel,
     calibration_readout,
+    server_image_evidence_from_log,
 )
 from minicode.ground.candidates import GroundingCandidate
 
@@ -85,6 +88,140 @@ class CalibrationReadoutTests(unittest.TestCase):
         readout = _readout(1.0)
         self.assertEqual(readout["server_model_input"], "unknown")
         self.assertEqual(readout["declared_model_input"], [1280, 800])
+
+
+class _AlwaysAvailable:
+    """假准入端口（永远放行）。"""
+
+    def admit(self):
+        from minicode.action.ports import VisualAdmission
+
+        return VisualAdmission(available=True, reason="测试替身：放行")
+
+
+class _FakeRecord:
+    """假请求日志（只有这条链路要用的字段）。"""
+
+    def __init__(self, total_input_tokens: int):
+        self.total_input_tokens = total_input_tokens
+        self.effort = "low"
+
+
+class _FakeClient:
+    """假模型端口：只回 token 数（纯文字那一遍）。"""
+
+    def __init__(self, input_tokens: int | None):
+        self.last_prompt = "这是一张 Windows 桌面截图。"
+        self._input_tokens = input_tokens
+        self.calls = 0
+
+    def complete(self, prompt, *, effort=None, max_tokens=2000, image_base64=None):
+        self.calls += 1
+        from minicode.model.client import ModelReply
+        from minicode.model.effort import Effort
+
+        return ModelReply(
+            text="",
+            model="fake",
+            endpoint="fake://",
+            effort=Effort.LOW,
+            http_status=200,
+            latency_ms=1.0,
+            input_tokens=self._input_tokens,
+            output_tokens=0,
+        )
+
+
+class _FakeSink:
+    """假请求日志出口（只留最后一条）。"""
+
+    def __init__(self, record):
+        self.last = record
+
+
+class CoordinateSystemTrustTests(unittest.TestCase):
+    """**相等断言**接进生产链：服务端再缩了那张图 → **坐标系不可信**。
+
+    ⚠️ 「能不能信这次请求的坐标系」由**相等断言**判（唯一真值来源）；
+    **盒子反查只是证据**，不作准入依据。
+    """
+
+    #: 声明 1280×800 → 期望图像 token = 46×29 = 1334。
+    DECLARED = (1280, 800)
+
+    def test_equal_tokens_mean_the_server_kept_the_size(self):
+        """观测 == 期望 → 相等断言通过 → 坐标系可信。"""
+        client = _FakeClient(349)
+        sink = _FakeSink(_FakeRecord(349 + 1334))
+        box, assertion = server_image_evidence_from_log(client, sink, self.DECLARED)
+        self.assertTrue(assertion.server_kept_size)
+        self.assertEqual(assertion.observed_image_tokens, 1334)
+        self.assertEqual(assertion.expected_image_tokens, 1334)
+        # 盒子只是**证据**（诊断），与闸门分开。
+        self.assertIsNotNone(box)
+
+    def test_a_shrunk_image_makes_the_coordinate_system_untrustworthy(self):
+        """服务端再缩了那张图 → 坐标系不可信 → **视觉通道不可用**。"""
+        client = _FakeClient(349)
+        sink = _FakeSink(_FakeRecord(349 + 851))
+        _box, assertion = server_image_evidence_from_log(client, sink, self.DECLARED)
+        self.assertFalse(assertion.server_kept_size)
+
+    def test_an_unmeasured_request_stays_unknown(self):
+        """量不出来 → ``None``（**不猜**）→ 不拦（不静默判成不可信）。"""
+        client = _FakeClient(None)
+        sink = _FakeSink(_FakeRecord(1683))
+        _box, assertion = server_image_evidence_from_log(client, sink, self.DECLARED)
+        self.assertIsNone(assertion.server_kept_size)
+
+    def _channel(self, assertion) -> VisualChannel:
+        """一个**标定已就绪**的视觉通道（不真调模型）。"""
+        channel = VisualChannel(out_dir=".")
+        channel._calib = {
+            "admission": _AlwaysAvailable(),
+            "image_token_assertion": assertion,
+        }
+        return channel
+
+    def test_the_admission_gate_blocks_an_untrustworthy_coordinate_system(self):
+        """坐标系不可信 → 准入判定**不放行**（零动作下发）。"""
+        channel = self._channel(
+            assert_server_kept_image_tokens(851, self.DECLARED)
+        )
+        verdict = channel.admission_port().admit()
+        self.assertFalse(verdict.available)
+        self.assertIn("坐标系不可信", verdict.reason)
+
+    def test_the_gate_lets_a_trustworthy_coordinate_system_through(self):
+        """坐标系可信 → 准入判定照常（这里放行）。"""
+        channel = self._channel(
+            assert_server_kept_image_tokens(1334, self.DECLARED)
+        )
+        self.assertTrue(channel.admission_port().admit().available)
+
+    def test_the_locator_fails_explicitly_when_untrustworthy(self):
+        """坐标系不可信 → 视觉定位口**显式失败**（不按声明尺寸换算）。"""
+        channel = self._channel(
+            assert_server_kept_image_tokens(851, self.DECLARED)
+        )
+        result = channel.locator().locate(None)
+        self.assertFalse(result.ok)
+        self.assertIn("坐标系不可信", result.error_message)
+
+    def test_the_readout_records_the_assertion(self):
+        """读数里看得见「坐标系可信吗」（报告据此判断）。"""
+        outcome = _outcome(hit_rate=1.0)
+        admission = CalibrationAdmission(outcome).admit()
+        best = outcome.candidate(outcome.detected_scale)
+        assertion = assert_server_kept_image_tokens(851, self.DECLARED)
+        readout = calibration_readout(
+            outcome, admission, best, self.DECLARED, None, assertion
+        )
+        self.assertFalse(readout["coordinate_system_trusted"])
+        self.assertEqual(readout["image_token_assertion"]["observed_image_tokens"], 851)
+        self.assertEqual(
+            readout["image_token_assertion"]["expected_image_tokens"], 1334
+        )
 
 
 class MergedCandidateSourceTests(unittest.TestCase):

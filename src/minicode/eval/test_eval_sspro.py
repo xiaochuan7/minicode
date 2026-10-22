@@ -40,6 +40,7 @@ from minicode.eval.sspro import (
     summarize,
     table_rows,
 )
+from minicode.eval.stats import mde
 from minicode.ground.gate import (
     GateCondition,
     GateInputs,
@@ -391,6 +392,95 @@ class PairedStrataTests(unittest.TestCase):
         strata = self._strata([_sample("a")], [_sample("a")])
         self.assertIn("hit", strata["variable"])
         self.assertIn("collider", strata["note"])
+
+
+class PairedControlsAndMdeTests(unittest.TestCase):
+    """配对输出里的**两个对照检验**与 **MDE**（施工清单第 ⑨ 条）。
+
+    * 主报 = **mid-p McNemar**；
+    * 对照 = **普通精确二项**与 **χ²+连续性校正**（保守）；
+    * **MDE** = 这个样本量下能判出的最小效应（用该配对的不一致率算）。
+    """
+
+    def _paired(self, always, coarse_only):
+        comparison = compare_arms(always, always, coarse_only=coarse_only)
+        return comparison["paired"]["always_vs_coarse_only"]
+
+    def test_the_paired_output_carries_the_three_p_values(self):
+        """三个 p 值**并列**写在同一个配对输出里（主报 + 两个对照）。"""
+        always = [
+            _sample("a", hit=True),
+            _sample("b", hit=True),
+            _sample("c", hit=False),
+            _sample("d", hit=False),
+        ]
+        coarse_only = [
+            _sample("a", hit=False),
+            _sample("b", hit=True),
+            _sample("c", hit=False),
+            _sample("d", hit=False),
+        ]
+        paired = self._paired(always, coarse_only)
+        self.assertEqual(paired["table"]["left_only"], 1)
+        self.assertEqual(paired["table"]["right_only"], 0)
+        for key in ("mcnemar_midp_p", "mcnemar_exact_p", "mcnemar_chisq_cc_p"):
+            self.assertIn(key, paired)
+            self.assertGreaterEqual(paired[key], 0.0)
+            self.assertLessEqual(paired[key], 1.0)
+        # 对照是**保守**的 → 不小于 mid-p。
+        # ⚠️ 「χ²+CC ≥ mid-p」只在 **|b − c| ≥ 1** 时成立：
+        # ``b = c`` 时连续性校正把统计量从 0 抬到 1（那条对照的**定义**）。
+        self.assertGreaterEqual(
+            paired["mcnemar_exact_p"], paired["mcnemar_midp_p"]
+        )
+        self.assertGreaterEqual(
+            paired["mcnemar_chisq_cc_p"], paired["mcnemar_midp_p"]
+        )
+
+    def test_the_paired_output_carries_the_mde(self):
+        """MDE = ``mde(n, 该配对的不一致率)``；「Δ ≥ MDE 即够」可读。"""
+        always = [
+            _sample("a", hit=True),
+            _sample("b", hit=True),
+            _sample("c", hit=False),
+            _sample("d", hit=False),
+        ]
+        coarse_only = [
+            _sample("a", hit=False),
+            _sample("b", hit=True),
+            _sample("c", hit=False),
+            _sample("d", hit=False),
+        ]
+        paired = self._paired(always, coarse_only)
+        expected = mde(paired["samples"], paired["discordance"])
+        self.assertAlmostEqual(paired["mde_pp"], expected, places=9)
+        self.assertEqual(
+            paired["delta_at_or_above_mde"],
+            abs(paired["delta_pp"]) >= expected,
+        )
+
+    def test_a_bigger_sample_gives_a_smaller_mde(self):
+        """样本量翻倍（不一致率不变）→ 能判出的最小效应变小。"""
+        small_always = [_sample("a", hit=True), _sample("b", hit=True)]
+        small_coarse = [_sample("a", hit=True), _sample("b", hit=False)]
+        big_always = [_sample(f"s{index}", hit=True) for index in range(4)]
+        big_coarse = [
+            _sample("s0", hit=True),
+            _sample("s1", hit=True),
+            _sample("s2", hit=False),
+            _sample("s3", hit=False),
+        ]
+        small = self._paired(small_always, small_coarse)
+        big = self._paired(big_always, big_coarse)
+        self.assertAlmostEqual(small["discordance"], big["discordance"], places=9)
+        self.assertLess(big["mde_pp"], small["mde_pp"])
+
+    def test_an_empty_comparison_has_no_mde(self):
+        """没有样本 → MDE 是 ``None``（**不猜**），不是 0。"""
+        paired = self._paired([], [_sample("a")])
+        self.assertEqual(paired["samples"], 0)
+        self.assertIsNone(paired["mde_pp"])
+        self.assertFalse(paired["delta_at_or_above_mde"])
 
 
 class NearMissCalibrationTests(unittest.TestCase):

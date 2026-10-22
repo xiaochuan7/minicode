@@ -39,7 +39,7 @@
 **越界记为无穷大误差、不中断**（AC 6）：把 0~1000 的数值当 0~1 读时，
 模型空间那层先判越界，该候选的最大误差记 ``inf``，标定继续跑完。
 
-## 「服务端有没有再缩那张图」：闸门与诊断是**两件事**
+## 「服务端有没有再缩那张图」：**相等断言是唯一真值来源**
 
 我们的坐标契约是「**声明的尺寸 = 模型看到的那张图**」——
 服务端一旦再缩，这条契约就断了（模型在一个我们没观察过的空间里出坐标）。
@@ -47,15 +47,19 @@
 
 | | 回答的问题 | 实现 | 用途 |
 |---|---|---|---|
-| **诊断** | 「服务端**大概**缩到了多大」 | :func:`estimate_model_input_from_tokens`（**±28 px 的盒子**） | 事后复盘 |
-| **闸门** | 「**能不能信**这次请求的坐标系」 | :func:`assert_server_kept_image_tokens`（**相等断言**） | 准入判定 |
+| **闸门** | 「**能不能信**这次请求的坐标系」 | :func:`assert_server_kept_image_tokens`（**相等断言**） | 准入判定（**唯一真值来源**） |
+| **诊断** | 「服务端**大概**缩到了多大」 | :func:`diagnose_server_model_input_from_tokens`（**±28 px 的盒子**） | 事后复盘（**证据**，不作准入依据） |
 
 **相等断言**：``observed_image_tokens == ceil(W/28) × ceil(H/28)``，
 容差 **±2**（本机端点每张图固定多记 2 个 token —— 网关记账，实测）。
 相等 ⇒ 服务端**没有**再缩；不等 ⇒ **该次请求的坐标系不可信**。
 
 ⚠️ **盒子的结果不能拿来当闸门**：它给的是「每边差 ≤ 28 px」的区间，
-区间落在声明尺寸附近**不代表**服务端没缩过。
+区间落在声明尺寸附近**不代表**服务端没缩过 → **盒子只是证据**。
+
+⚠️ **判据只有一份**：:func:`estimate_model_input_from_tokens`
+（服务端实际看到的那张图有多大）**委托**给
+:func:`assert_server_kept_image_tokens` —— 两处不许各写一套算法。
 """
 
 from __future__ import annotations
@@ -105,6 +109,7 @@ __all__ = [
     "EQUIVALENCE_DIVERGENT",
     "IMAGE_TOKEN_ASSERTION_TOLERANCE_TOKENS",
     "assert_server_kept_image_tokens",
+    "diagnose_server_model_input_from_tokens",
     "estimate_model_input_from_tokens",
     "estimate_model_input_from_log",
     "expected_image_tokens",
@@ -279,12 +284,12 @@ def _percentile(values: Sequence[float], fraction: float) -> float:
     return ordered[min(rank, len(ordered)) - 1]
 
 
-def estimate_model_input_from_tokens(
+def diagnose_server_model_input_from_tokens(
     observed_input_tokens: int | None,
     text_tokens: int | None,
     aspect_ratio: float,
 ) -> tuple[int, int] | None:
-    """用**图像 token 数**反查服务端实际看到的那张图有多大。
+    """**诊断**：服务端**大概**缩到了多大（**±28 px 的盒子**）。
 
     参数
     ----
@@ -296,8 +301,7 @@ def estimate_model_input_from_tokens(
         ``input_tokens`` 会小到几十（图像 token 进了缓存）→ 相减会算出
         **负的图像 token**。口径的唯一实现是
         :func:`minicode.model.request_log.total_input_tokens`
-        （= ``input + cache_read + cache_creation``）；
-        :func:`estimate_model_input_from_log` 直接吃请求日志，**用不会错**。
+        （= ``input + cache_read + cache_creation``）。
     text_tokens
         **文字部分**的 token 数（调用方量出来给）。未知 → ``None``。
     aspect_ratio
@@ -318,6 +322,11 @@ def estimate_model_input_from_tokens(
     最大尺寸，真实值每边差 ≤ 28 px）；**反查不出**（没有相容的格子、
     或有多个、或文本 token 数未知）→ 返回 ``None``（**如实标 unknown**，
     不猜、不返回「最接近的」）。
+
+    ⚠️ **它只是「证据」，不作准入依据**：盒子给的是**区间**，
+    区间落在声明尺寸附近**不代表**服务端没缩过 →
+    「能不能信这次请求的坐标系」由**相等断言**
+    （:func:`assert_server_kept_image_tokens`）判。
 
     ⚠️ **【二手】这条 28 px patch 规则来自 Anthropic**，
     **是否适用于本机用的 MiniMax 端点未验证** —— 它是**反查用的模型**，
@@ -352,12 +361,45 @@ def estimate_model_input_from_tokens(
     return matches[0]
 
 
+def estimate_model_input_from_tokens(
+    observed_input_tokens: int | None,
+    text_tokens: int | None,
+    declared_size: tuple[int, int],
+) -> tuple[int, int] | None:
+    """**服务端实际看到的那张图**（按**相等断言**口径判定）—— **唯一真值来源**。
+
+    判据只有一条：**观测图像 token == 期望图像 token**
+    （期望 = ``ceil(W/28) × ceil(H/28)``，容差 ±2）——
+    实现**委托**给 :func:`assert_server_kept_image_tokens`
+    （**判据只有那一份**，两处不许各写一套算法）。
+
+    * 相等 ⇒ 服务端**没有**再缩 ⇒ 那张图就是**声明的那张** →
+      返回**声明尺寸** ``(W, H)``；
+    * 不等 ⇒ 服务端缩过 ⇒ **该次请求的坐标系不可信** → 返回 ``None``；
+    * 量不出来（token 数未知）→ 返回 ``None``（**不猜**）。
+
+    ⚠️ **它不再是「±28 px 的盒子」**：盒子给的是**区间**，区间落在声明尺寸
+    附近**不代表**服务端没缩过 → 那个盒子降级为**诊断/证据**
+    （:func:`diagnose_server_model_input_from_tokens`），**不作准入依据**。
+
+    ⚠️ **观测值的口径**：``observed_input_tokens`` 必须是**总和**
+    （``input + cache_read + cache_creation``，见
+    :func:`minicode.model.request_log.total_input_tokens`）——
+    服务端开了提示词缓存时只看 ``input_tokens`` 会算出负的图像 token。
+    """
+    observed = observed_image_tokens(observed_input_tokens, text_tokens)
+    assertion = assert_server_kept_image_tokens(observed, declared_size)
+    if assertion.server_kept_size is not True:
+        return None
+    return (int(declared_size[0]), int(declared_size[1]))
+
+
 def estimate_model_input_from_log(
     record: RequestLog,
     text_tokens: int | None,
-    aspect_ratio: float,
+    declared_size: tuple[int, int],
 ) -> tuple[int, int] | None:
-    """用**请求日志**反查服务端实际看到的那张图有多大（**用总和**）。
+    """用**请求日志**判定服务端实际看到的那张图（**用总和**）。
 
     输入是 :class:`minicode.model.request_log.RequestLog`（请求日志那条记录），
     观测 token 数取 :attr:`minicode.model.request_log.RequestLog.total_input_tokens`
@@ -366,14 +408,14 @@ def estimate_model_input_from_log(
     只看 ``input_tokens`` 会小到几十 → 相减出负数）。
 
     其余语义与 :func:`estimate_model_input_from_tokens` 完全一致：
-    **反查不出就返回 ``None``**（不猜、不返回「最接近的」）。
+    **判不出来就返回 ``None``**（不猜、不返回「最接近的」）。
     """
     observed = total_input_tokens(
         record.input_tokens,
         record.cache_read_input_tokens,
         record.cache_creation_input_tokens,
     )
-    return estimate_model_input_from_tokens(observed, text_tokens, aspect_ratio)
+    return estimate_model_input_from_tokens(observed, text_tokens, declared_size)
 
 
 #: **相等断言**的容差（图像 token）。
@@ -457,7 +499,7 @@ def assert_server_kept_image_tokens(
     不等 ⇒ 服务端缩过 ⇒ **该次请求的坐标系不可信**。
 
     ⚠️ **这是闸门，不是诊断** —— 与
-    :func:`estimate_model_input_from_tokens` 的「±28 px 盒子」**是两件事**：
+    :func:`diagnose_server_model_input_from_tokens` 的「±28 px 盒子」**是两件事**：
 
     * **盒子**（诊断）回答「服务端**大概**缩到了多大」；
     * **相等断言**（闸门）回答「**能不能信**这次请求的坐标系」。

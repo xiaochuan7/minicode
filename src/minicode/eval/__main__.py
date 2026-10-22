@@ -633,7 +633,7 @@ def _server_scale_evidence(
 ) -> dict[str, Any]:
     """服务端实际看到的那张图：**盒子反查**（诊断）+ **相等断言**（闸门）。
 
-    * **盒子**（``±28 px``，:func:`minicode.calib.calibrate.estimate_model_input_from_tokens`）
+    * **盒子**（``±28 px``，:func:`minicode.calib.calibrate.diagnose_server_model_input_from_tokens`）
       = 「服务端**大概**缩到了多大」→ **诊断**；
     * **相等断言**（:func:`minicode.calib.calibrate.assert_server_kept_image_tokens`）
       = 「服务端**有没有**再缩」→ **闸门**：相等 ⇒ 该次请求的坐标系**可信**，
@@ -692,6 +692,29 @@ def _server_scale_evidence(
         "expected_image_tokens": expected,
         "image_token_assertion": assertion.to_dict(),
     }
+
+
+def _paired_line(item: dict) -> str:
+    """配对比较那一行（Δ / CI / **三个 p** / **MDE**）。
+
+    ⚠️ **主报是 mid-p**；普通精确二项与 χ²+连续性校正是**保守对照**
+    （施工清单第 ⑨ 条）。
+    ⚠️ **MDE** = 这个样本量下能判出的最小效应（百分点）——
+    「|Δ| ≥ MDE 即够」；达不到是**样本量不够**，不是「没效果」。
+    """
+    mde_pp = item.get("mde_pp")
+    mde_text = f"{mde_pp:.2f} pp" if mde_pp is not None else "unknown"
+    return (
+        f"Δ {item['delta_pp']:+.2f} pp"
+        f"｜95% CI [{item['delta_ci95_pp'][0]:+.2f}, {item['delta_ci95_pp'][1]:+.2f}] pp"
+        f"｜mid-p p={item['mcnemar_midp_p']:.4f}"
+        f"｜对照：精确二项 p={item['mcnemar_exact_p']:.4f}"
+        f"｜χ²+CC p={item['mcnemar_chisq_cc_p']:.4f}"
+        f"｜不一致对占比 {item['discordance'] * 100:.1f}%"
+        f"｜MDE {mde_text}"
+        f"｜Δ ≥ MDE：{'是' if item['delta_at_or_above_mde'] else '否'}"
+        f"｜CI 不跨 0：{'是' if item['ci_excludes_zero'] else '否'}"
+    )
 
 
 def _print_summary(report: dict, comparison: dict) -> None:
@@ -765,11 +788,7 @@ def _print_summary(report: dict, comparison: dict) -> None:
                 continue
             print(
                 f"  {item['left']} → {item['right']}（n={item['samples']}）"
-                f"：Δ {item['delta_pp']:+.2f} pp"
-                f"｜95% CI [{item['delta_ci95_pp'][0]:+.2f}, {item['delta_ci95_pp'][1]:+.2f}] pp"
-                f"｜mid-p p={item['mcnemar_midp_p']:.4f}"
-                f"｜不一致对占比 {item['discordance'] * 100:.1f}%"
-                f"｜CI 不跨 0：{'是' if item['ci_excludes_zero'] else '否'}"
+                f"：{_paired_line(item)}"
             )
     print("=== 那张 7 行表 ===")
     print(report["table_markdown"])
@@ -820,12 +839,7 @@ def _print_confirmation_split(report: dict) -> None:
         )
         print(f"  {label}：{rates}")
         for key, item in segment["paired"].items():
-            print(
-                f"    {key}（n={item['samples']}）：Δ {item['delta_pp']:+.2f} pp"
-                f"｜95% CI [{item['delta_ci95_pp'][0]:+.2f}, {item['delta_ci95_pp'][1]:+.2f}] pp"
-                f"｜mid-p p={item['mcnemar_midp_p']:.4f}"
-                f"｜CI 不跨 0：{'是' if item['ci_excludes_zero'] else '否'}"
-            )
+            print(f"    {key}（n={item['samples']}）：{_paired_line(item)}")
 
 
 if __name__ == "__main__":  # pragma: no cover
