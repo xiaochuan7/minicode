@@ -301,6 +301,20 @@ class GatePipelineTests(unittest.TestCase):
         self.assertTrue(result.fallback)
         self.assertEqual(result.fallback_cause, FallbackCause.OUT_OF_BOUNDS.value)
 
+    def test_both_stages_negative_is_a_failure_not_a_crash(self):
+        """**负出口**（施工清单第 ⑦ 条）：两级都答「图里没有」→ **报定位失败**。
+
+        ⚠️ 回归守卫：整屏第二遍原来直接取框中心，负出口的回答**没有框**
+        → 抛 ``GroundingParseError`` 崩在执行器里（wave1 的 W-1 就是这么失败的）。
+        """
+        negative = _text_reply('{"bbox": null, "text": ""}')
+        model = _StubModel(negative, negative)
+        grounder = _grounder(model)
+        result = grounder.locate(_request(_detail_frame(2560, 1600)))
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.landing_point)
+        self.assertIn("负出口", result.error_message)
+
     def test_refine_deviating_from_coarse_is_recorded_not_fallback(self):
         """精定位结果**明显偏离粗定位** → **只记录，不改落点**（施工清单第 ④ 条）。
 

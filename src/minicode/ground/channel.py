@@ -1180,16 +1180,33 @@ class TwoStageGrounder:
             )
         except Exception as exc:
             return self._failure(f"整屏第二遍失败：{exc}", echoes, model_calls, decision)
+        whole_center: tuple[float, float] | None = None
+        if not raw.negative:
+            try:
+                whole_center = box_center(raw)
+            except GroundingParseError:
+                whole_center = None
         echoes.append(
             GroundingEcho(
                 stage=STAGE_WHOLE_SCREEN,
-                raw_x=box_center(raw)[0],
-                raw_y=box_center(raw)[1],
+                raw_x=None if whole_center is None else whole_center[0],
+                raw_y=None if whole_center is None else whole_center[1],
                 sent_width=screen_frame.width,
                 sent_height=screen_frame.height,
                 image_source=_image_source(screen_frame),
+                raw_bbox=raw.bbox,
+                raw_text=raw.text,
             )
         )
+        if raw.negative:
+            # **负出口**（施工清单第 ⑦ 条）：模型说「这张图里没有对应的元素」。
+            # → **报定位失败**（粗定位本身不可用，**没有可回落的结果**）。
+            return self._failure(
+                "整屏第二遍也说这张图里没有对应的元素（负出口）",
+                echoes,
+                model_calls,
+                decision,
+            )
         try:
             point, _radius = self._coarse_physical(raw, geometry)
         except CoordinateError as exc:
