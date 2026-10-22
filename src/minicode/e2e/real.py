@@ -36,6 +36,7 @@ from minicode.browser.cdp import SCROLL_UNIT
 from minicode.reflection.handoff import build_handoff
 from minicode.reflection.stop import STOP_EXPECTATION_MET, STOP_REASON_TEXT, StopPolicy
 
+from .approval import AGENT_APPROVAL_REASON, agent_approval_gate
 from .checks import (
     TargetTruth,
     landing_note,
@@ -44,6 +45,7 @@ from .checks import (
     rect_distance_px,
     truth_from_rect,
 )
+from .playwright_shared import shared_playwright
 from .runner import StepOutcome
 from .tasks import Step
 from .visual import VisualChannel, merged_candidate_source
@@ -181,37 +183,7 @@ def scale_percent_from_text(text: str) -> str:
     return f"{match.group(1)}%" if match else ""
 
 
-#: **本进程共享的 Playwright 实例**。
-#:
-#: ⚠️ **为什么共享**（本机实测，2026-10-22）：Playwright 的 **sync API** 的
-#: 事件循环是**按线程**的 —— 同一个线程里 ``stop()`` 之后再 ``start()`` 会报
-#: **「Event loop is closed! Is Playwright already stopped?」**（实测：第二张
-#: 票的前置检查就这么崩了）→ **起一次，全轮共用**（每个任务开自己的
-#: 持久化上下文；一轮跑完再停）。
-_PLAYWRIGHT: dict[str, Any] = {}
-
-
-def shared_playwright() -> Any:
-    """本进程共享的 Playwright 实例（第一次调用时起；**不要 stop**）。"""
-    from playwright.sync_api import sync_playwright
-
-    instance = _PLAYWRIGHT.get("instance")
-    if instance is None:
-        instance = sync_playwright().start()
-        _PLAYWRIGHT["instance"] = instance
-    return instance
-
-
-def stop_shared_playwright() -> None:
-    """把共享的 Playwright 实例停掉（**一轮跑完时**调一次）。"""
-    instance = _PLAYWRIGHT.pop("instance", None)
-    if instance is None:
-        return
-    try:
-        instance.stop()
-    except Exception:  # noqa: BLE001 —— 停不掉也不许崩
-        pass
-
+#: **本进程共享的 Playwright 实例**（见 :mod:`minicode.e2e.playwright_shared`）。
 
 # ---------------------------------------------------------------------------
 # 真值：OCR 的**词框**当控件矩形真值（T9）
@@ -825,6 +797,12 @@ class WindowsDesktopExecutor:
         if tree_missing and step.truth_element:
             #: **树里没有那个控件的框** → 用 **OCR 的词框**当控件矩形真值
             #: （画面量的）。**没命中就仍然判不了**（不编真值）。
+            #:
+            #: ⚠️ **先把目标窗口置前**：OCR 读的是**整屏** —— 窗口被别的窗口
+            #: 挡住 → 画面上就没有那个词 → 真值读不到（本机实测：wave1 那一轮
+            #: W-1.2 的真值就是栽在这）。
+            _bring_to_front(int(getattr(wiring.anchor, "hwnd", 0) or 0))
+            time.sleep(0.3)
             ocr = self._ocr_truth(step.truth_element)
             if ocr is not None:
                 rect, source = ocr
@@ -900,6 +878,8 @@ class WindowsDesktopExecutor:
 
         ⚠️ **没改过就什么都不做**（返回空串 = 不用还原）。
         ⚠️ 还原走的是**同一条界面路径**（点开「缩放」→ 点原来那一档）。
+        ⚠️ **选项名是「150 ％ (推荐)」这种写法** → 目标用**数字**（「150」，
+        包含语义能命中 ✓；用「150%」反而匹配不上 ✗）。
         """
         original = str(self._context.get("scale_before_change") or "")
         if not original:
@@ -907,11 +887,12 @@ class WindowsDesktopExecutor:
         current = str(self._context.get("scale_value") or "")
         if current == original:
             return ""
+        digits = original.rstrip("%").strip()
         try:
             wiring = self._ensure_wiring("settings")
         except Exception as exc:  # noqa: BLE001 —— 还原不了就如实说
             return f"还原缩放失败（{type(exc).__name__}: {exc}）"
-        for target in ("缩放", original):
+        for target in ("缩放", digits):
             result = wiring.seam.run(
                 SeamRequest(
                     target_description=target,
@@ -923,7 +904,9 @@ class WindowsDesktopExecutor:
             if not result.ok:
                 return f"还原缩放失败：点「{target}」没成功（{result.result.error_message}）"
             time.sleep(1.0)
-        self._context["scale_restored_to"] = original
+        #: **还原完再读一遍**（画面量的）→ 记下到底还原上没有。
+        self._read_back_scale_from_screen()
+        self._context["scale_restored_to"] = self._context.get("scale_value") or ""
         return ""
 
     def _record_zoom(self, step: Step, trace: ActionTrace) -> None:
@@ -1124,12 +1107,18 @@ class WindowsDesktopExecutor:
             secure_desktop=WindowsSecureDesktopDetector(),
             # **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
             privacy_guard=windows_guard(),
+            #: **审批闸门：e2e 跑批这一侧注入「agent 代批」**（生产默认不动，
+            #: 见 :mod:`minicode.e2e.approval`）。
+            approval_gate=agent_approval_gate(),
         )
         wiring = _Wiring(anchor=anchor, seam=seam, sink=sink, capability=entry.availability.value)
         self._wiring[window] = wiring
         if window == "settings":
             self._context["capability"] = entry.availability.value
             self._context["capability_reason"] = entry.reason
+        #: **审批口径**（人读）：e2e 跑批这一侧是「**agent 代批**」，
+        #: **不是**「人工批准」（生产默认仍然是 fail-closed 的）。
+        self._context["approval_mode"] = AGENT_APPROVAL_REASON
         #: 标定的读数进上下文（报告里读得到）。
         self._context.update(self._visual.context)
         return wiring

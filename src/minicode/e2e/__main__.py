@@ -311,7 +311,7 @@ def main(argv=None) -> int:
             page.stop()
         #: **共享的 Playwright 实例**停掉（sync API 的事件循环按线程走：
         #: 停了就没法再起 —— 所以整轮共用一个，只在最后停）。
-        from .real import stop_shared_playwright
+        from .playwright_shared import stop_shared_playwright
 
         stop_shared_playwright()
 

@@ -44,6 +44,7 @@ from minicode.reflection.stop import (
     StopPolicy,
 )
 
+from .approval import AGENT_APPROVAL_REASON, agent_approval_gate
 from .checks import (
     TargetTruth,
     landing_note,
@@ -53,6 +54,7 @@ from .checks import (
     truth_from_rect,
 )
 from .modal import ModalFinding, detect_modal, enumerate_windows
+from .playwright_shared import shared_playwright
 from .runner import StepOutcome
 from .tasks import Step
 from .visual import VisualChannel
@@ -575,6 +577,9 @@ class NativeAppExecutor:
         )
         self._seam = self._build_seam()
         self._context.update(self._visual.context)
+        #: **审批口径**（人读）：e2e 跑批这一侧是「**agent 代批**」，
+        #: **不是**「人工批准」（生产默认仍然是 fail-closed 的）。
+        self._context["approval_mode"] = AGENT_APPROVAL_REASON
         return ""
 
     def execute(self, step: Step) -> StepOutcome:
@@ -998,6 +1003,9 @@ class NativeAppExecutor:
             secure_desktop=WindowsSecureDesktopDetector(),
             # **隐私闸门**（工单 M20）：敏感窗口**根本不许拍**（抓帧之前拦下）。
             privacy_guard=windows_guard(),
+            #: **审批闸门：e2e 跑批这一侧注入「agent 代批」**（生产默认不动，
+            #: 见 :mod:`minicode.e2e.approval`）。
+            approval_gate=agent_approval_gate(),
         )
 
     def _find_window(self) -> int:
@@ -1078,7 +1086,8 @@ class WeChatExecutor(NativeAppExecutor):
         if self.require_chat_list and self._at_login_screen():
             return (
                 "环境不可达：微信客户端停在**登录界面**"
-                "（要人在手机上确认登录 —— 属人工代确认，本轮不代劳）"
+                "（本机这个客户端没登录 —— 这是**环境原因**，"
+                "按口径记「环境不可达」，不是「人工代确认」项）"
             )
         self._picked = self._pick_contact()
         self._context["picked_contact"] = self._picked
@@ -1314,7 +1323,7 @@ class CcSwitchExecutor:
         from minicode.exec import dpi  # noqa: F401  (导入即声明 PMv2)
 
         try:
-            from playwright.sync_api import sync_playwright
+            import playwright.sync_api  # noqa: F401 —— 只是查「装没装」
         except ImportError:  # pragma: no cover - 可选依赖缺失
             return "环境不可达：没装 Playwright（浏览器通道的真机适配器需要它）"
 
@@ -1344,7 +1353,11 @@ class CcSwitchExecutor:
             self._context["capability_channel"] = "uia（读数）；本轮动作走 CDP 通道"
 
         try:
-            self._playwright = sync_playwright().start()
+            #: **本轮共享的 Playwright 实例**（见 :func:`minicode.e2e.real.shared_playwright`）：
+            #: sync API 的事件循环**按线程**走 —— 同一线程里 stop 之后再 start 会
+            #: 报「Event loop is closed / Sync API inside the asyncio loop」
+            #: （实测：跨应用那张票就是这么崩的）。
+            self._playwright = shared_playwright()
             self._browser = self._playwright.chromium.connect_over_cdp(
                 _ccswitch_debug_endpoint(), timeout=20000
             )
@@ -1956,16 +1969,13 @@ class CcSwitchExecutor:
         ⚠️ **只断连，不关 context / 不关 browser**：
         ``connect_over_cdp`` 连的是**人家进程里的 WebView2** ——
         关掉它等于把 cc-switch 的界面关掉（实测：关掉之后 cc-switch 整个退出了）。
+
+        ⚠️ **不停那个共享的 Playwright 实例**（事件循环按线程走：
+        停了就没法再起 —— 跨应用那张票的后半段还要用它）。
         """
         if self._hwnd and not self._was_visible:
             #: 收工时把它放回托盘（**别把用户的环境改坏了**）。
             _user32.ShowWindow(wintypes.HWND(self._hwnd), 0)  # SW_HIDE
-        stopper = getattr(self._playwright, "stop", None)
-        if stopper is not None:
-            try:
-                stopper()
-            except Exception:  # noqa: BLE001 —— 断不开也不许崩
-                pass
         self._browser = None
         self._playwright = None
 
@@ -2123,14 +2133,15 @@ class ElectronExecutor:
         from minicode.exec import dpi  # noqa: F401
 
         try:
-            from playwright.sync_api import sync_playwright
+            import playwright.sync_api  # noqa: F401 —— 只是查「装没装」
         except ImportError:  # pragma: no cover - 可选依赖缺失
             return "环境不可达：没装 Playwright（浏览器通道的真机适配器需要它）"
         if not Path(self.executable_path).exists():
             return f"环境不可达：找不到浏览器可执行文件 {self.executable_path}"
         #: **先记下已有的进程** —— 起来之后新出现的那几个才是我们这个实例的。
         before = _process_ids(self.process_name)
-        self._playwright = sync_playwright().start()
+        #: **本轮共享的 Playwright 实例**（见 :func:`minicode.e2e.real.shared_playwright`）。
+        self._playwright = shared_playwright()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         try:
             self._context = self._playwright.chromium.launch_persistent_context(
@@ -2239,11 +2250,14 @@ class ElectronExecutor:
         return artifact.to_dict()
 
     def close(self) -> None:
-        """关掉浏览器（不留下窗口）。"""
+        """关掉浏览器（不留下窗口）。
+
+        ⚠️ **不停那个共享的 Playwright 实例**（事件循环按线程走：
+        停了就没法再起 —— 整轮跑完由评测台统一停）。
+        """
         for closer in (
             getattr(self._context, "close", None),
             getattr(self._browser, "close", None),
-            getattr(self._playwright, "stop", None),
         ):
             if closer is None:
                 continue
