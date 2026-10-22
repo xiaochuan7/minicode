@@ -220,7 +220,8 @@ def crop_geometry_label() -> str:
     return (
         f"crop = 当前物理帧的 {int(CROP_LINEAR_FRACTION * 100)}% 线性尺寸"
         f"（绝对下限 {MIN_CROP_WIDTH_PX}×{MIN_CROP_HEIGHT_PX}、"
-        "以粗定位框为中心、贴边向内平移不缩小、原生像素 1:1）"
+        "以粗定位框为中心、贴边向内平移不缩小）"
+        "→ 1:1 裁出后**重采样放大**到目标表观像素 ≥ 30 px（图宽 ≤ 2016）"
     )
 
 
@@ -411,10 +412,14 @@ class TwoStageGrounder:
         2~3 个更具体的表述让它选）。
         **不给（默认）→ 不做规范化**（不花那次模型调用）。
     variants
-        **每一级采几次**（施工清单 T1 的 K；默认 **1** = 现状，一次一次）。
-        K > 1 时：粗定位换 **K 种措辞**各问一次；精定位换 **K 个固定偏移子区域**
-        各问一次（每次换措辞）。**同提示词重发无效**（本机实测：同图同提示词
-        10 次原文一致率只有 10%）→ 采样必须换窗口或换措辞。
+        **精定位那一级采几次**（施工清单 T1 的 K；默认 **1** = 现状，一次一次）。
+        K > 1 时：精定位换 **K 个固定偏移子区域**各问一次（每次换措辞），
+        并跑**标记图选择**（T4）。
+    coarse_variants
+        **粗定位那一级采几次**（施工清单 T1 的 K；默认 **1** = 现状）。
+        K > 1 时：粗定位换 **K 种措辞**各问一次（**变体 0 仍然是主用那一次**）。
+        ⚠️ 默认仍是 1 —— 粗定位多采样是**探针**用的（量 oracle-of-8），
+        不是生产默认（生产默认见 ``docs/00-现状.md``）。
     pool
         **采样池**（可空）—— 每次采样的**原文与落点**都记进去，
         **所有臂从同一份池子取**（否则臂间差异里混着模型随机性）。
@@ -451,6 +456,7 @@ class TwoStageGrounder:
         additional_candidate_source: CandidateSource | None = None,
         target_names: TargetNames | None = None,
         variants: int = 1,
+        coarse_variants: int = 1,
         pool: ResponsePool | None = None,
         upscale_target_px: float = 30.0,
         upscale_max_factor: float = 3.0,
@@ -478,8 +484,10 @@ class TwoStageGrounder:
         self.additional_candidate_source = additional_candidate_source
         #: **界面上真实存在的名字清单**（工单 B-4）。``None`` = 不做规范化。
         self.target_names = target_names
-        #: **每一级采几次**（施工清单 T1 的 K；1 = 现状）。
+        #: **精定位那一级采几次**（施工清单 T1 的 K；1 = 现状）。
         self.variants = max(1, int(variants))
+        #: **粗定位那一级采几次**（施工清单 T1 的 K；1 = 现状）。
+        self.coarse_variants = max(1, int(coarse_variants))
         #: **采样池**（施工清单 T1）—— ``None`` = 不记。
         self.pool = pool
         #: **目标表观像素的下限**（施工清单 T3；0 = 不放大）。
@@ -637,17 +645,46 @@ class TwoStageGrounder:
         # ⚠️ **这次模型调用发生了**（回答解析不出来**也是问过了**）→ 记 1 次。
         # ⚠️ 不记它 →「平均模型调用数/目标」这条验收线**少算**
         # （报出来的数是**下界** → 判在一个偏乐观的数上）。
-        model_calls += 1
         raw: CoarseTarget | None = None
-        try:
-            raw = parse_coarse_target(
-                self._ask_text(
-                    coarse_prompt(description, self.model_input_size), screen_frame
-                )
+        coarse_issue = ""
+        pool_key = frame.digest()
+        for coarse_variant in range(max(1, self.coarse_variants)):
+            model_calls += 1
+            prompt = coarse_prompt(
+                description, self.model_input_size, variant=coarse_variant
             )
-        except Exception as exc:
-            raw = None
-            coarse_issue = f"粗定位失败：{exc}"
+            try:
+                answer_text = self._ask_text(prompt, screen_frame)
+            except Exception as exc:
+                if coarse_variant == 0:
+                    raw = None
+                    coarse_issue = f"粗定位失败：{exc}"
+                continue
+            try:
+                answer = parse_coarse_target(answer_text)
+            except Exception as exc:
+                if coarse_variant == 0:
+                    raw = None
+                    coarse_issue = f"粗定位失败：{exc}"
+                continue
+            extra: dict[str, Any] = {"text": answer.text}
+            if not answer.negative:
+                try:
+                    extra["bbox_px"] = self._coarse_bbox_physical(answer, geometry)
+                except CoordinateError:
+                    pass
+            self._record_sample(
+                "coarse",
+                coarse_variant,
+                pool_key,
+                prompt,
+                answer_text,
+                None,
+                None,
+                extra,
+            )
+            if coarse_variant == 0:
+                raw = answer
         raw_center: tuple[float, float] | None = None
         #: 粗定位**模型自报的元素文字**（施工清单 T4 的再搜提示词要用它
         #: 「让模型避开那个候选」）。
@@ -920,9 +957,7 @@ class TwoStageGrounder:
                     failure_cause = FallbackCause.NO_OUTPUT.value
                     failure_reason = "模型说这张裁剪图里没有对应的元素（负出口）"
                 continue
-            self._record_sample(
-                "refine", variant, pool_key, prompt, raw_text, point, window
-            )
+            physical: tuple[float, float] | None = None
             try:
                 if window is None:
                     physical = self.adapter.to_screen(
@@ -937,6 +972,17 @@ class TwoStageGrounder:
                 if not failure_cause:
                     failure_cause = FallbackCause.OUT_OF_BOUNDS.value
                     failure_reason = f"精定位结果不可用：{exc}"
+            self._record_sample(
+                "refine",
+                variant,
+                pool_key,
+                prompt,
+                raw_text,
+                point,
+                window,
+                {"physical_point": list(physical) if physical else None},
+            )
+            if physical is None:
                 continue
             candidates.append(physical)
             echoes.append(
@@ -1143,6 +1189,7 @@ class TwoStageGrounder:
         raw_text: str,
         point: tuple[float, float] | None,
         window: tuple[int, int, int, int] | None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         """把一次采样**记进采样池**（施工清单 T1）—— 没给池子就不记。"""
         if self.pool is None:
@@ -1155,6 +1202,7 @@ class TwoStageGrounder:
             raw_text=raw_text,
             point=point,
             window=window,
+            extra=extra,
         )
 
     # ------------------------------------------------------------------

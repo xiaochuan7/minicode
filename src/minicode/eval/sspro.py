@@ -619,6 +619,7 @@ def run_arms(
     gate_params: Any = None,
     crop_size: tuple[int, int] | None = None,
     variants: int = 1,
+    coarse_variants: int = 1,
     pool: Any = None,
     upscale_target_px: float = 30.0,
     upscale_max_factor: float = 3.0,
@@ -665,6 +666,7 @@ def run_arms(
             gate_params=gate_params,
             crop_size=crop_size,
             variants=variants,
+            coarse_variants=coarse_variants,
             pool=pool,
             upscale_target_px=upscale_target_px,
             upscale_max_factor=upscale_max_factor,
@@ -683,6 +685,7 @@ def run_arms(
             gate_params=gate_params,
             crop_size=crop_size,
             variants=variants,
+            coarse_variants=coarse_variants,
             pool=pool,
             upscale_target_px=upscale_target_px,
             upscale_max_factor=upscale_max_factor,
@@ -702,6 +705,7 @@ def run_arms(
             coarse_only=True,
             crop_size=crop_size,
             variants=variants,
+            coarse_variants=coarse_variants,
             pool=pool,
             upscale_target_px=upscale_target_px,
             upscale_max_factor=upscale_max_factor,
@@ -722,8 +726,8 @@ def run_arms(
     else:
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for index, triple in enumerate(pool.map(run_sample, samples), start=1):
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for index, triple in enumerate(executor.map(run_sample, samples), start=1):
                 triples.append(triple)
                 if progress is not None:
                     progress(
@@ -821,6 +825,7 @@ def _run_one(
     coarse_only: bool = False,
     crop_size: tuple[int, int] | None = None,
     variants: int = 1,
+    coarse_variants: int = 1,
     pool: Any = None,
     upscale_target_px: float = 30.0,
     upscale_max_factor: float = 3.0,
@@ -843,6 +848,7 @@ def _run_one(
         crop_width=crop_size[0] if crop_size else None,
         crop_height=crop_size[1] if crop_size else None,
         variants=variants,
+        coarse_variants=coarse_variants,
         pool=pool,
         upscale_target_px=upscale_target_px,
         upscale_max_factor=upscale_max_factor,

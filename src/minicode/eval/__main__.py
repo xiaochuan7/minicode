@@ -109,6 +109,37 @@ class _LockedSink:
             self._inner.write(record)
 
 
+class _ThreadLocalModel:
+    """**每个线程一套**（模型客户端 + 请求记录器）。
+
+    **为什么**：标定那一段要读 ``sink.last``（**刚刚那一条请求**的 token 数）
+    与 ``client.last_prompt`` —— 两者**都是线程局部的**
+    （:class:`RecordingSink` 的说明里写明「``last`` 不是线程安全的」）。
+    标定**按图像尺寸并行**之后，如果共用一个记录器，``sink.last`` 会被别的
+    尺寸的请求覆盖 → **token 断言会判错**。
+
+    共享的只有**落盘的请求日志**（它有自己的锁）。
+    """
+
+    def __init__(self, config, log):
+        self._config = config
+        self._log = log
+        self._local = threading.local()
+
+    def pair(self):
+        """**本线程**的 ``(客户端, 记录器)``。"""
+        holder = getattr(self._local, "holder", None)
+        if holder is None:
+            sink = RecordingSink(_LockedSink(self._log))
+            holder = (PromptCapturingCaller(ModelClient(self._config, sink)), sink)
+            self._local.holder = holder
+        return holder
+
+    def complete(self, *args, **kwargs):
+        """把调用转给**本线程**的客户端（形状与 :class:`ModelCaller` 一致）。"""
+        return self.pair()[0].complete(*args, **kwargs)
+
+
 def main(argv=None) -> int:
     _reconfigure_output()
     parser = argparse.ArgumentParser(
@@ -210,6 +241,16 @@ def main(argv=None) -> int:
         ),
     )
     parser.add_argument(
+        "--coarse-variants",
+        type=int,
+        default=1,
+        help=(
+            "**粗定位那一级采几次**（施工清单 T1 的 K；默认 1 = 现状）。"
+            "K > 1 时换 K 种措辞各问一次（变体 0 仍是主用那一次）—— "
+            "这是**量 oracle-of-8** 的探针用的，不是生产默认"
+        ),
+    )
+    parser.add_argument(
         "--upscale-target-px",
         type=float,
         default=30.0,
@@ -302,27 +343,57 @@ def main(argv=None) -> int:
         f"=== 档位：{tier_width}×{tier_height}（整屏模型输入上界）"
         f"{'｜生产档' if not args.model_input else '｜对照臂'} ==="
     )
-    #: 请求日志：落盘 + **记住最后一条**（反查服务端实际尺寸要用）。
-    sink = RecordingSink(_LockedSink(JsonlRequestLog(out_dir / "model-requests.jsonl")))
-    #: 模型调用端口：**记住最后一次用的提示词**（反查时要逐字相同）。
-    client = PromptCapturingCaller(ModelClient(config, sink))
+    #: 请求日志：落盘（**线程安全**）；每个线程一套（客户端 + 记录器）。
+    model = _ThreadLocalModel(
+        config, JsonlRequestLog(out_dir / "model-requests.jsonl")
+    )
     #: **应答记忆端口**（施工清单第 ⑨ 条）：记忆缓存**落盘**，
     #: 跨进程的两轮（例如「只换 crop 尺寸」）共用同一次上游回答 → 那一对**真配对**。
     memoized = MemoizingModelCaller(
-        client, cache_path=args.memo_cache or None
+        model, cache_path=args.memo_cache or None
     )
     #: **采样池**（施工清单 T1）—— 所有臂从同一份池子取。
     pool = ResponsePool(args.pool) if args.pool else None
 
     # -- 标定：每个图像尺寸各标一次（真调模型）--------------------------
+    #: ⚠️ **按尺寸并行**（墙钟优化，**不改变任何判定**）：
+    #: 标定是 11 个尺寸 × 21 轮（T6 之后）= 264 次请求，串行要一小时以上。
     sizes = sorted({sample.image_size for sample in chosen})
     scale_by_size: dict[tuple[int, int], Any] = {}
     model_input_by_size: dict[tuple[int, int], tuple[int, int]] = {}
     calibrations: list[dict[str, object]] = []
-    for width, height in sizes:
-        record = _calibrate(
-            memoized, sink, config.model, width, height, args, (tier_width, tier_height)
-        )
+    if args.workers > 1 and len(sizes) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(args.workers, len(sizes))) as pool_ex:
+            records = list(
+                pool_ex.map(
+                    lambda size: _calibrate(
+                        memoized,
+                        model,
+                        config.model,
+                        size[0],
+                        size[1],
+                        args,
+                        (tier_width, tier_height),
+                    ),
+                    sizes,
+                )
+            )
+    else:
+        records = [
+            _calibrate(
+                memoized,
+                model,
+                config.model,
+                width,
+                height,
+                args,
+                (tier_width, tier_height),
+            )
+            for width, height in sizes
+        ]
+    for (width, height), record in zip(sizes, records, strict=True):
         scale_by_size[(width, height)] = record["scale"]
         #: **声明的模型输入尺寸** = 坐标换算的分母（两臂共用同一个）。
         model_input_by_size[(width, height)] = tuple(record["declared_model_input_size"])
@@ -365,6 +436,7 @@ def main(argv=None) -> int:
         gate_params=gate_params,
         crop_size=crop_size,
         variants=args.variants,
+        coarse_variants=args.coarse_variants,
         pool=pool,
         upscale_target_px=args.upscale_target_px,
         upscale_max_factor=args.upscale_max_factor,
@@ -596,7 +668,13 @@ def _confirmation_split_report(
 
 
 def _calibrate(
-    client, sink, model_id: str, width: int, height: int, args, tier: tuple[int, int]
+    client,
+    model,
+    model_id: str,
+    width: int,
+    height: int,
+    args,
+    tier: tuple[int, int],
 ) -> dict[str, object]:
     """给一个图像尺寸跑一次标定（真调模型）。
 
@@ -644,7 +722,10 @@ def _calibrate(
     #: **准入判定**（A-1 的真闸门：等价族分歧 ≤ 4 px **且** K 轮命中率 ≥ 0.6）。
     admission = CalibrationAdmission(outcome).admit()
     #: **服务端实际看到的那张图**：盒子反查（**诊断**）+ 相等断言（**闸门**）。
-    server = _server_scale_evidence(client, sink, declared, args)
+    #: ⚠️ ``client`` / ``sink`` 取**本线程**的那一套（``last_prompt`` 与
+    #: ``sink.last`` 是线程局部的 —— 并行标定时不能串）。
+    local_client, sink = model.pair()
+    server = _server_scale_evidence(local_client, sink, declared, args)
     server_input = server["server_model_input_size"]
     kept = server["image_token_assertion"]["server_kept_size"]
     print(
