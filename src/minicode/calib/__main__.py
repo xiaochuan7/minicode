@@ -5,7 +5,7 @@
 **两条调用路径各标定一次**（工单 M5 AC 9）：图像调用（发探针图）与
 文本调用（只发文字描述），两条路径的**标度**各自独立、互不借用。
 
-**每次标定问 K 轮**（A-1：K = 5，``--rounds`` 可改）：每轮是**另一次问**
+**每次标定问 K 轮**（K = 21，``--rounds`` 可改）：每轮是**另一次问**
 （提示词随轮次轮换 —— 逐字重发在确定性模型下会拿到同一答案）。
 ``--session`` 让不同次独立标定会话的**轮换起点不同** → 6 次会话**相互独立**。
 
@@ -77,6 +77,8 @@ def _describe(outcome, admission) -> str:
     for candidate in outcome.candidates:
         lines.append(
             f"  {candidate.scale.value:<22} max_err={candidate.max_error_px:12.2f} px"
+            f"｜中位 {candidate.median_error_px:8.2f} px"
+            f"｜p90 {candidate.p90_error_px:8.2f} px"
             f"{'（越界）' if candidate.out_of_bounds else ''}"
         )
     return "\n".join(lines)

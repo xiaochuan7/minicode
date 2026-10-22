@@ -58,6 +58,8 @@ def visual_channel_available(
     equivalence_tolerance_px: float,
     hit_rate: float,
     min_hit_rate: float,
+    median_error_px: float | None = None,
+    hit_radius_px: float | None = None,
 ) -> bool:
     """**硬闸门的一条规则**（准入判定与取标度的地方共用这一处）。
 
@@ -71,11 +73,27 @@ def visual_channel_available(
     两条路径的「替代标度」都指**落点等价族**（探针排除不掉、且落点分歧
     在容差内的那些标度），不是全部候选：否则 0~999 这种永远存在的候选
     会让视觉通道永远不可用。
+
+    ⚠️ **闸门用的落点误差统计是**百分位（中位），**不是 max**
+    （:paramref:`median_error_px` / 命中半径 :paramref:`hit_radius_px`）：
+    **max 口径下，一个野答（几十~几百 px 的错答）就能把整轮标定判死** ——
+    那就是 M15 记的「标定是抽签」（1.06 / 2.66 / 68.00 / 68.81 px）。
+    这一条**不收紧也不放宽**闸门：命中率 ≥ 0.6 意味着**至少 60% 的预测
+    落在方块内** → **中位必然也在方块内**（它是命中率那条的**蕴含**）；
+    它只是把闸门用的误差统计**钉在中位口径上**，不再留 max 口径的口子。
     """
     worst, _ = _family_divergence(equivalent_scales, divergences_px)
     if worst > equivalence_tolerance_px:
         return False
-    return hit_rate >= min_hit_rate
+    if hit_rate < min_hit_rate:
+        return False
+    if (
+        median_error_px is not None
+        and hit_radius_px is not None
+        and median_error_px > hit_radius_px
+    ):
+        return False
+    return True
 
 
 def visual_channel_reason(
@@ -86,13 +104,26 @@ def visual_channel_reason(
     hit_rate: float,
     min_hit_rate: float,
     rounds: int = 0,
+    median_error_px: float | None = None,
+    p90_error_px: float | None = None,
+    hit_radius_px: float | None = None,
 ) -> str:
     """人可读的理由（放行与拒绝都给）。
 
-    例：「候选标度分歧 2.87 px ≤ 4 px，但 5 轮命中率 0.4 < 0.6」。
+    例：「候选标度分歧 2.87 px ≤ 4 px，但 21 轮命中率 0.4 < 0.6」。
+
+    ⚠️ **落点误差报的是中位 / p90（稳健统计），不是 max** —— 报 max 会让人
+    以为「一个野答就判死」，实际判的是中位口径。
     """
     worst, worst_name = _family_divergence(equivalent_scales, divergences_px)
     rounds_text = f"{rounds} 轮" if rounds else "本轮"
+    error_text = ""
+    if median_error_px is not None:
+        error_text = f"｜落点误差 中位 {median_error_px:.2f} px"
+        if p90_error_px is not None:
+            error_text += f" / p90 {p90_error_px:.2f} px"
+        if hit_radius_px is not None:
+            error_text += f"（命中半径 {hit_radius_px:.0f} px）"
     if worst > equivalence_tolerance_px:
         return (
             f"存在使物理落点分歧 {worst:.2f} px > 落点等价容差 "
@@ -103,11 +134,13 @@ def visual_channel_reason(
         return (
             f"候选标度分歧 {worst:.2f} px ≤ {equivalence_tolerance_px:.1f} px，"
             f"但 {rounds_text}命中率 {hit_rate:.2f} < {min_hit_rate:.2f}"
+            f"{error_text}"
             f" —— 视觉通道不可用"
         )
     return (
         f"落点等价族最大分歧 {worst:.2f} px ≤ {equivalence_tolerance_px:.1f} px"
         f"｜{rounds_text}命中率 {hit_rate:.2f} ≥ {min_hit_rate:.2f}"
+        f"{error_text}"
         f" —— 视觉通道可用"
     )
 
@@ -142,6 +175,8 @@ class CalibrationAdmission:
             equivalence_tolerance_px=outcome.equivalence_tolerance_px,
             hit_rate=outcome.hit_rate,
             min_hit_rate=self.min_hit_rate,
+            median_error_px=outcome.median_error_px,
+            hit_radius_px=outcome.hit_radius_px or None,
         )
         reason = visual_channel_reason(
             equivalent_scales=equivalent,
@@ -150,6 +185,9 @@ class CalibrationAdmission:
             hit_rate=outcome.hit_rate,
             min_hit_rate=self.min_hit_rate,
             rounds=outcome.rounds,
+            median_error_px=outcome.median_error_px,
+            p90_error_px=outcome.p90_error_px,
+            hit_radius_px=outcome.hit_radius_px or None,
         )
         if not available:
             return VisualAdmission(available=False, reason=reason, **base)

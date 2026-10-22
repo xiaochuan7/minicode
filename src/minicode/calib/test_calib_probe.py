@@ -322,7 +322,7 @@ class TestToleranceIndependence(unittest.TestCase):
         """A-1 的四个新常量与既有的两个**互不共用**。"""
         self.assertEqual(SCALE_EQUIVALENCE_TOLERANCE_PX, 4.0)
         self.assertEqual(PROBE_HIT_RADIUS_PX, 48)
-        self.assertEqual(CALIBRATION_ROUNDS, 5)
+        self.assertEqual(CALIBRATION_ROUNDS, 21)
         self.assertEqual(CALIBRATION_MIN_HIT_RATE, 0.6)
         for value in (
             SCALE_EQUIVALENCE_TOLERANCE_PX,
@@ -689,6 +689,98 @@ class TestVisualAdmission(unittest.TestCase):
         self.assertTrue(traced.available)
         self.assertEqual(traced.landing_equivalence, "equivalent")
         self.assertTrue(traced.equivalent_scales)
+
+
+class _WildFirstRoundModel(_StubModel):
+    """**第一轮答得很野**（偏 28 个模型单位 ≈ 71.7 物理 px），其余轮次答得很准。
+
+    复现 M15 记的「标定是抽签」：**一次野答**能把 max 顶到天上
+    （71.7 px ≫ 命中半径 48 px），但**中位与 p90 动不了**
+    （野答只占 84 个预测里的 4 个）→ **闸门不该被它判死**。
+    """
+
+    def complete(self, prompt, **kwargs):
+        index = len(self.calls)
+        original = self.shift
+        if index == 0:
+            self.shift = (28.0, 0.0)
+        try:
+            return super().complete(prompt, **kwargs)
+        finally:
+            self.shift = original
+
+
+class TestGateStatisticIsPercentileBased(unittest.TestCase):
+    """T6：闸门用的落点误差统计是**百分位（中位 / p90）**，不是 max。
+
+    旧口径「最大误差 ≤ 1 px」下**一个野答就判死整轮标定** ——
+    那就是 M15 记的「四连抽签 1.06 / 2.66 / 68.00 / 68.81 px」。
+    """
+
+    def test_gate_is_not_blocked_by_a_wild_max_error(self):
+        """max 顶到 900 px，但**中位**很小 → 放行（抗抽签）。"""
+        ok = visual_channel_available(
+            equivalent_scales=("relative_0_1000",),
+            divergences_px={"relative_0_1000": 0.0},
+            equivalence_tolerance_px=SCALE_EQUIVALENCE_TOLERANCE_PX,
+            hit_rate=0.95,
+            min_hit_rate=CALIBRATION_MIN_HIT_RATE,
+            median_error_px=3.0,
+            hit_radius_px=48.0,
+        )
+        self.assertTrue(ok)
+
+    def test_gate_blocks_when_the_median_is_outside_the_hit_radius(self):
+        """**中位**超出命中半径 → 拒绝（这条判据不是摆设）。"""
+        self.assertFalse(
+            visual_channel_available(
+                equivalent_scales=("relative_0_1000",),
+                divergences_px={"relative_0_1000": 0.0},
+                equivalence_tolerance_px=SCALE_EQUIVALENCE_TOLERANCE_PX,
+                hit_rate=0.95,
+                min_hit_rate=CALIBRATION_MIN_HIT_RATE,
+                median_error_px=60.0,
+                hit_radius_px=48.0,
+            )
+        )
+
+    def test_one_wild_round_does_not_kill_the_calibration(self):
+        """整轮跑一遍：21 轮里**一轮**答得很野 → 闸门照样放行。
+
+        断言三件事：max 确实被顶上天了（野答确实发生了）、
+        **中位与 p90 没被它带偏**、闸门放行。
+        """
+        spec = _spec()
+        stub = _WildFirstRoundModel(
+            ModelScale.RELATIVE_0_1000, spec, model_input_size=(SURFACE_W, SURFACE_H)
+        )
+        probe = CalibrationProbe(
+            stub,
+            spec=spec,
+            model_input_size=(SURFACE_W, SURFACE_H),
+            call_path="image",
+            model_id="stub-model",
+            rounds=CALIBRATION_ROUNDS,
+        )
+        outcome = probe.run()
+        winner = outcome.candidate(outcome.detected_scale)
+        self.assertGreater(winner.max_error_px, PROBE_HIT_RADIUS_PX)
+        self.assertLessEqual(outcome.median_error_px, PROBE_HIT_RADIUS_PX)
+        self.assertLessEqual(outcome.p90_error_px, PROBE_HIT_RADIUS_PX)
+        self.assertGreaterEqual(outcome.hit_rate, CALIBRATION_MIN_HIT_RATE)
+        self.assertTrue(CalibrationAdmission(outcome).admit().available)
+
+    def test_the_outcome_carries_the_hit_radius(self):
+        """命中半径**跟着探针几何走**，闸门判「落点准不准」用的是这一条。"""
+        outcome, _ = _run(ModelScale.RELATIVE_0_1000)
+        self.assertAlmostEqual(outcome.hit_radius_px, PROBE_HIT_RADIUS_PX)
+
+    def test_the_reason_reports_the_percentiles(self):
+        """闸门理由里报的是**中位 / p90**（稳健读数），不是 max。"""
+        outcome, _ = _run(ModelScale.RELATIVE_0_1000, shift=(5.0, 0.0))
+        reason = CalibrationAdmission(outcome).admit().reason
+        self.assertIn("中位", reason)
+        self.assertIn("p90", reason)
 
 
 class TestRecord(unittest.TestCase):

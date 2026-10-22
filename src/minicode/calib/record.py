@@ -72,6 +72,9 @@ class CalibrationRecord:
     median_error_px: float = 0.0
     #: 同上：**p90**。
     p90_error_px: float = 0.0
+    #: **命中半径**（物理像素）：预测落点距目标中心 ≤ 它 → 命中。
+    #: 旧记录没有 → 0.0（**不猜**：闸门这时跳过中位那条，读数只报不判）。
+    hit_radius_px: float = 0.0
     #: **落点等价容差**（物理像素）。旧记录没有 → 用当时的默认值。
     equivalence_tolerance_px: float = SCALE_EQUIVALENCE_TOLERANCE_PX
     #: **落点等价判定**（``"equivalent"`` / ``"divergent"``）。
@@ -131,6 +134,7 @@ class CalibrationRecord:
             hit_rate=outcome.hit_rate,
             median_error_px=outcome.median_error_px,
             p90_error_px=outcome.p90_error_px,
+            hit_radius_px=outcome.hit_radius_px,
             equivalence_tolerance_px=outcome.equivalence_tolerance_px,
             scale_equivalence_verdict=outcome.scale_equivalence_verdict,
             denominator_pair_divergence_px=outcome.denominator_pair_divergence_px,
@@ -162,6 +166,7 @@ class CalibrationRecord:
             "hit_rate": self.hit_rate,
             "median_error_px": self.median_error_px,
             "p90_error_px": self.p90_error_px,
+            "hit_radius_px": self.hit_radius_px,
             "equivalence_tolerance_px": self.equivalence_tolerance_px,
             "scale_equivalence_verdict": self.scale_equivalence_verdict,
             "denominator_pair_divergence_px": self.denominator_pair_divergence_px,
@@ -205,6 +210,7 @@ class CalibrationRecord:
             hit_rate=float(data.get("hit_rate", 0.0)),
             median_error_px=float(data.get("median_error_px", 0.0)),
             p90_error_px=float(data.get("p90_error_px", 0.0)),
+            hit_radius_px=float(data.get("hit_radius_px", 0.0)),
             equivalence_tolerance_px=float(
                 data.get("equivalence_tolerance_px", SCALE_EQUIVALENCE_TOLERANCE_PX)
             ),
@@ -331,6 +337,8 @@ class CalibrationStore:
             equivalence_tolerance_px=record.equivalence_tolerance_px,
             hit_rate=record.hit_rate,
             min_hit_rate=CALIBRATION_MIN_HIT_RATE,
+            median_error_px=record.median_error_px or None,
+            hit_radius_px=record.hit_radius_px or None,
         ):
             return None
         return ModelScale(record.detected_scale)
@@ -362,6 +370,8 @@ def session_verdicts(
                 equivalence_tolerance_px=record.equivalence_tolerance_px,
                 hit_rate=record.hit_rate,
                 min_hit_rate=min_hit_rate,
+                median_error_px=record.median_error_px or None,
+                hit_radius_px=record.hit_radius_px or None,
             )
         verdicts.append(
             {

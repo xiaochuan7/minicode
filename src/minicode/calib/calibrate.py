@@ -144,6 +144,16 @@ class CandidateEvaluation:
     landing_points: tuple[tuple[float, float], ...] = ()
     #: 该标度下的**总误差**（物理像素，跨全部轮次与目标）—— 判定标度用它。
     total_error_px: float = 0.0
+    #: 该标度下的**中位误差**（物理像素，最近秩）—— **抗抽签的稳健统计**。
+    #:
+    #: ⚠️ **口径**：最近秩（第 ``⌈n/2⌉`` 小的那一个），与
+    #: :attr:`CalibrationOutcome.median_error_px` **同一个实现**
+    #: （:func:`_percentile`）→ 同一个词、**同一个口径**。
+    #: **它替代的是 max 口径**：一个野答（几十~几百 px 的错答）会把
+    #: :attr:`max_error_px` 顶上天，但**动不了中位与 p90**。
+    median_error_px: float = 0.0
+    #: 同上：**p90**（最近秩）。
+    p90_error_px: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -193,6 +203,12 @@ class CalibrationOutcome:
     median_error_px: float = 0.0
     #: 同上：**p90**（最近秩）。
     p90_error_px: float = 0.0
+    #: **命中半径**（物理像素）：判定标度下的预测落点距目标中心 ≤ 它 → 命中。
+    #:
+    #: 它**跟着探针几何走**（默认按探针自己的方块边长算），
+    #: 所以准入闸门判「落点准不准」时用的是**这一条**，
+    #: 不是写死的 48 px。
+    hit_radius_px: float = 0.0
     #: **落点等价判定**（与 :attr:`landing_equivalence` 同一个结论的新名字）。
     #:
     #: ⚠️ 同 :attr:`calibration_ok`：**它在新口径下恒为 ``"equivalent"``**
@@ -698,6 +714,12 @@ class CalibrationProbe:
         hits = sum(1 for error in best_errors if error <= self.hit_radius_px)
         total_predictions = self.rounds * len(self.spec.targets)
         hit_rate = (hits / total_predictions) if total_predictions else 0.0
+        # ⚠️ **闸门用的误差统计是百分位（中位 / p90），不是 max**：
+        #: max 口径下**一个野答**（几十~几百 px 的错答）就能把整轮标定判死
+        #: —— 那就是 M15 记的「标定是抽签」（1.06 / 2.66 / 68.00 / 68.81 px）。
+        #: 中位与 p90 **动不了**（野答只占分母的一小撮）。
+        median_error_px = _percentile(best_errors, 0.5)
+        p90_error_px = _percentile(best_errors, 0.9)
 
         return CalibrationOutcome(
             detected_scale=best.scale,
@@ -712,8 +734,9 @@ class CalibrationProbe:
             calibration_ok=landing_equivalence == EQUIVALENCE_EQUIVALENT,
             rounds=self.rounds,
             hit_rate=hit_rate,
-            median_error_px=_percentile(best_errors, 0.5),
-            p90_error_px=_percentile(best_errors, 0.9),
+            median_error_px=median_error_px,
+            p90_error_px=p90_error_px,
+            hit_radius_px=self.hit_radius_px,
             scale_equivalence_verdict=landing_equivalence,
             denominator_pair_divergence_px=_denominator_pair_divergence(
                 self.spec, frame
@@ -795,6 +818,8 @@ class CalibrationProbe:
             out_of_bounds=out_of_bounds,
             landing_points=tuple(landing),
             total_error_px=total,
+            median_error_px=_percentile(errors, 0.5),
+            p90_error_px=_percentile(errors, 0.9),
         )
 
     def _evaluate(
