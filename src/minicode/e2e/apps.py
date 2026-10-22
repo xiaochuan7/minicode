@@ -1042,6 +1042,18 @@ class NativeAppExecutor:
         return list(result.elements)
 
 
+def _strip_emoji(text: str) -> str:
+    """去掉 **emoji**（代理对里的那些字符）—— OCR 认不准它们。
+
+    ⚠️ **emoji 的正确性另有精确的一条**（控件的值，逐字读）。
+    """
+    return "".join(
+        char
+        for char in (text or "")
+        if not (0x1F300 <= ord(char) <= 0x1FAFF or 0x2600 <= ord(char) <= 0x27BF)
+    )
+
+
 class WeChatExecutor(NativeAppExecutor):
     """**微信**上的真机执行器（门控 + 模态弹窗）。
 
@@ -1125,7 +1137,60 @@ class WeChatExecutor(NativeAppExecutor):
             )
         outcome = super()._execute(step)
         self._context["window_title"] = self._read_window_title()
+        #: **agent 代确认**（施工清单 T10）：原来需要人工代确认的步骤 →
+        #: agent **自己读回**自己刚做的那一步。
+        if step.action_kind is ActionKind.TYPE:
+            self._read_back_typed_text(step)
+        elif step.action_kind is ActionKind.KEY:
+            self._read_back_sent_message(step)
         return outcome
+
+    def _read_back_typed_text(self, step: Step) -> None:
+        """**读回刚输入的文本**（控件的值；UIA 的 Value 属性）。
+
+        ⚠️ **值是逐字读的** → emoji（代理对）也验得到（工单 M15 的 WX-2.A）。
+        """
+        expected = str(step.params.get("text", ""))
+        actual = self._read_control_value(step.target, step.control_type)
+        self._context["typed_text"] = expected
+        self._context["unicode_injection_ok"] = bool(expected) and expected in actual
+        self._context["unicode_injection_note"] = (
+            f"控件「{step.target}」的值读回：{actual!r}"
+        )
+
+    def _read_back_sent_message(self, step: Step) -> None:
+        """**读回自己发出去的那条消息**（重新抓图 + OCR）。
+
+        ⚠️ 本机微信的**聊天区不在可访问性树里**（工单 M15 的现实 ①）
+        → 只能从**画面**上读（工单 M27 的 OCR 那一路）。
+        ⚠️ **比对的正文不含 emoji**：OCR 认不准 emoji（代理对的读数另有一条
+        精确的：**控件的值**）→ 正文认得到才算「消息在会话里」。
+        """
+        from minicode.action.capture import CapturePort
+        from minicode.action.windows import WindowsCaptureSource
+        from minicode.verification.ocr_windows import WindowsOcrPort
+
+        expected = str(self._context.get("typed_text") or "")
+        core = _strip_emoji(expected).replace(" ", "").replace("　", "")
+        frame = CapturePort([WindowsCaptureSource()]).screenshot()
+        if frame.is_empty:
+            self._context["message_visible"] = False
+            self._context["message_note"] = "抓不到画面（0×0）→ 读不回"
+            return
+        try:
+            read = WindowsOcrPort().read(frame)
+        except Exception as exc:  # noqa: BLE001 —— OCR 读不出来 = 判不了
+            self._context["message_visible"] = False
+            self._context["message_note"] = (
+                f"OCR 读不出来（{type(exc).__name__}: {exc}）→ 读不回"
+            )
+            return
+        haystack = read.replace(" ", "").replace("　", "")
+        self._context["message_visible"] = bool(core) and core in haystack
+        self._context["message_count"] = haystack.count(core) if core else 0
+        self._context["message_note"] = (
+            f"画面量的（重新抓图 + Windows 自带 OCR；比对的正文 {core!r}）"
+        )
 
     def _detect_modal(self) -> ModalFinding | None:
         """这个窗口上面有模态弹窗吗。"""
@@ -2690,6 +2755,10 @@ ul.jobs li {{ line-height: 32px; }}
 <script>
 var DATA = [{data}];
 var currentCity = "";
+/* ⚠️ **别恢复上次的滚动位置**：浏览器会把同一个 URL 的滚动位置恢复回来
+   → 页面一开始就在中段 → 「滚下去才出现」的那条断言就废了。 */
+if ('scrollRestoration' in history) {{ history.scrollRestoration = 'manual'; }}
+window.scrollTo(0, 0);
 function setLevel(value) {{
   document.getElementById('level').textContent = '思考档位：' + value;
 }}

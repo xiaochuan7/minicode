@@ -29,6 +29,7 @@ UFO² ``ASK_QUESTION=False``；AndroidWorld 声明 FAIL 后可行任务 = 0 分�
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -192,6 +193,9 @@ class TaskOutcome:
     handoff: Mapping[str, Any] | None = None
     #: 撞到的**停止原因**（合规停手那一类；空串 = 没撞停止条件）。
     stop_reason: str = ""
+    #: **任务级上下文**（能力表取值、读到的缩放值、滚动读数…）——
+    #: 验收条款就是读它判的 → **落进报告**（证据可查）。
+    context: Mapping[str, Any] = field(default_factory=dict)
     #: 这张票的口径说明（工单级；报告里带出去）。
     note: str = ""
 
@@ -208,6 +212,7 @@ class TaskOutcome:
             "stop_reason": self.stop_reason,
             "steps": [step.to_dict() for step in self.steps],
             "clauses": [clause.to_dict() for clause in self.clauses],
+            "context": dict(self.context),
             "note": self.note,
         }
 
@@ -268,9 +273,13 @@ class TaskRunner:
                 human_confirm=task.human_confirm,
                 skip_reason=task.skip_reason,
             )
-        # **人工代确认**：任务级或**步级**标了都不自动执行。
+        # **「人工代确认」→ agent 代确认**（施工清单 T10）：
+        # 步骤**照跑**，agent 自己读回验收 —— **不写成阻塞项，也不计入失败**。
+        # ⚠️ **人真的代跑过了**（``--manual`` 带进来的结果）→ 仍按那条结果记
+        # （工单口径：人工代跑单独统计，不混进自动通过率）。
         manual_steps = [step.id for step in task.steps if step.human_confirm]
-        if task.human_confirm or manual_steps:
+        agent_confirm = bool(task.human_confirm or manual_steps)
+        if agent_confirm and task.id in self.manual_results:
             return self._pending_human(task, manual_steps)
         # -- 前置检查：**异常也要兜住** -------------------------------------
         # ⚠️ 回归守卫（2026-10-22 实测）：浏览器的 ``preflight`` 会在页面
@@ -280,14 +289,17 @@ class TaskRunner:
         try:
             blocked = self.executor.preflight()
         except Exception as exc:  # noqa: BLE001 —— 前置检查的异常一律兜住
-            blocked = f"前置检查失败（{type(exc).__name__}: {exc}）"
+            blocked = (
+                f"前置检查失败（{type(exc).__name__}: {exc}）"
+                f"｜{traceback.format_exc(limit=3).strip().splitlines()[-1]}"
+            )
         if blocked:
             return TaskOutcome(
                 task_id=task.id,
                 title=task.title,
                 verdict=VERDICT_SKIP,
                 reason=blocked,
-                human_confirm=task.human_confirm,
+                human_confirm=agent_confirm,
                 skip_reason=blocked,
             )
 
@@ -335,6 +347,8 @@ class TaskRunner:
             clauses=clauses,
             handoff=self.executor.handoff() if stopped else None,
             stop_reason=stopped,
+            human_confirm=agent_confirm,
+            context=context,
             note=task.note,
         )
 

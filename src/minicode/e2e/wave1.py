@@ -135,17 +135,34 @@ W1 = Task(
 
 W2 = Task(
     id="W-2",
-    title="把缩放从当前值改成 125%（改系统设置 → 人工代确认）",
+    title="把缩放从当前值改成 125%（改系统设置 → agent 代确认：自己改 + 自己读回）",
     app="Windows 设置",
+    #: ⚠️ **原来这张票是「人工代确认」**（不改系统设置）→
+    #: 施工清单 T10 之后改成 **agent 代确认**：agent **自己改 + 自己读回**
+    #: （**不写成阻塞项，也不计入失败**）。
+    #:
+    #: ⚠️ **与工单 M14 的 AC 有冲突**：那张 AC 写着「任何情况下不得修改系统显示
+    #: 缩放」——那是**上一轮**的策略（人工代确认）。本轮按用户的授权改成
+    #: agent 代确认；**工单文本一个字没动**（改 AC 要等 agent 停下后由人做）。
     human_confirm=True,
     steps=(
         Step(
             id="W-2.1",
-            description="在显示设置里选 125% 那一档",
-            target="125%",
+            description="点开「缩放」那一下拉（选项要出来）",
+            target="缩放",
             expectation=_text("125%"),
+            window="settings",
+        ),
+        Step(
+            id="W-2.2",
+            description="选 125% 那一档（改完**自己重新抓图**读回）",
+            target="125%",
+            #: **结构断言 = agent 自己重新抓图 + OCR 读回的缩放值**
+            #: （工单 M14 的 W-2.A：「改动后重新抓图能读到 125%」）。
+            expect_context=("scale_value", "125%"),
             truth_element="125%",
             human_confirm=True,
+            window="settings",
         ),
     ),
     clauses=(

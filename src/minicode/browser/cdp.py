@@ -206,6 +206,11 @@ def find_browser_window(title_contains: str) -> int:
     """按标题找**浏览器窗口**的句柄（找不到返回 0）。
 
     枚举顶层窗口，按「类名是 Chromium 系 + 标题里有给定的片段」挑一个。
+
+    ⚠️ **最小化的窗口不算**（本机实测，2026-10-22）：Windows 把最小化的窗口
+    摆在 ``(-32000, -32000)`` → 拿它换算物理坐标会得到**离谱的负数**
+    （实测落点 ``(-32398, -32613)`` → 动作被判「越出虚拟桌面」）。
+    → **跳过矩形明显不在桌面上的窗口**（最小化 / 离屏的残留窗口）。
     """
     user32 = _user32()
     found: list[int] = []
@@ -222,7 +227,12 @@ def find_browser_window(title_contains: str) -> int:
         return True
 
     user32.EnumWindows(_callback, 0)
-    return found[0] if found else 0
+    for hwnd in found:
+        left, top, _right, _bottom = window_rect(hwnd)
+        #: 最小化的窗口 = ``(-32000, -32000)``；离屏的残留窗口同理。
+        if left > -30000 and top > -30000:
+            return hwnd
+    return 0
 
 
 def find_browser_window_by_pid(pids: set[int]) -> int:
@@ -533,33 +543,32 @@ class ChromiumPage:
         delta = float(lines) * per_line
         result["delta_css_px"] = delta
 
-        # -- 3. 发 wheel ----------------------------------------------------
-        self.cdp.send(
-            "Input.dispatchMouseEvent",
-            {
-                "type": "mouseWheel",
-                "x": x,
-                "y": y,
-                "deltaX": 0.0,
-                "deltaY": delta,
-                "pointerType": "mouse",
-            },
-        )
-
-        # -- 4. 等滚动停住 + 读位置 ------------------------------------------
+        # -- 3. 先读当前位置（**必须在 wheel 之前**）--------------------------
         before = self._scroll_state(backend_id)
         result["scroll_y_before"] = before[0]
         result["element_scroll_before"] = before[1]
+
+        # -- 4. 发 wheel ----------------------------------------------------
+        self._wheel(x, y, delta)
+
+        # -- 5. 等滚动停住 + 读位置 ------------------------------------------
         after, stable = self._wait_scroll_stable(backend_id)
+        scrolled = max(after[0] - before[0], after[1] - before[1], 0.0)
+        if scrolled <= 0.0:
+            #: **再试一次**（第一次的 wheel 事件可能被页面刚做完布局吞掉了：
+            #: 实测过一次「滚不动」→ 重来一次就动了）。
+            self._wheel(x, y, delta)
+            after, stable = self._wait_scroll_stable(backend_id)
+            scrolled = max(after[0] - before[0], after[1] - before[1], 0.0)
         result["scroll_y_after"] = after[0]
         result["element_scroll_after"] = after[1]
         result["stable"] = stable
 
-        # -- 5. 校验；Δ = 0 → 退 scrollBy -----------------------------------
-        scrolled = max(after[0] - before[0], after[1] - before[1], 0.0)
+        # -- 6. 校验；Δ = 0 → 退 scrollBy -----------------------------------
         if scrolled <= 0.0:
             result["fallback_used"] = True
-            self._scroll_by(backend_id, delta)
+            fallback = self._scroll_by(backend_id, delta)
+            result["fallback_readback"] = fallback
             after, stable = self._wait_scroll_stable(backend_id)
             result["scroll_y_after"] = after[0]
             result["element_scroll_after"] = after[1]
@@ -572,8 +581,23 @@ class ChromiumPage:
             result["error"] = (
                 "滚了之后位置没变（wheel 事件可能被页面 handler 吃掉了，"
                 "scrollBy 兜底也没动）"
+                + (f"；CDP 错误：{self.last_error}" if self.last_error else "")
             )
         return result
+
+    def _wheel(self, x: float, y: float, delta: float) -> None:
+        """发一次 ``mouseWheel``（**浏览器自己的输入通道**）。"""
+        self.cdp.send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseWheel",
+                "x": x,
+                "y": y,
+                "deltaX": 0.0,
+                "deltaY": delta,
+                "pointerType": "mouse",
+            },
+        )
 
     # -- 能力探测 ---------------------------------------------------------
 
@@ -806,9 +830,12 @@ class ChromiumPage:
                 time.sleep(interval_s)
         return (last or self._scroll_state(backend_id)), False
 
-    def _scroll_by(self, backend_id: int, delta: float) -> None:
-        """兜底：直接让元素（不行就让窗口）滚 ``delta`` 个 CSS 像素。"""
-        self._call_on_element(
+    def _scroll_by(self, backend_id: int, delta: float) -> dict | None:
+        """兜底：直接让元素（不行就让窗口）滚 ``delta`` 个 CSS 像素。
+
+        返回兜底之后的读数（**读不到就是 ``None``** —— 不假装成功）。
+        """
+        return self._call_on_element(
             backend_id,
             f"""
 function(){{

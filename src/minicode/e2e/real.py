@@ -170,6 +170,49 @@ def _percent_of(value: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def scale_percent_from_text(text: str) -> str:
+    """从**画面文字**（OCR 读到的）里取缩放百分比，归一成「125%」。
+
+    ⚠️ 中文界面上的百分号是**全角**的（「150 ％」），OCR 读出来还可能带空格
+    → 先归一再取（**不许**拿没归一的串去比）。
+    """
+    normalized = (text or "").replace("％", "%").replace(" ", "").replace("　", "")
+    match = re.search(r"(\d{2,3})%", normalized)
+    return f"{match.group(1)}%" if match else ""
+
+
+#: **本进程共享的 Playwright 实例**。
+#:
+#: ⚠️ **为什么共享**（本机实测，2026-10-22）：Playwright 的 **sync API** 的
+#: 事件循环是**按线程**的 —— 同一个线程里 ``stop()`` 之后再 ``start()`` 会报
+#: **「Event loop is closed! Is Playwright already stopped?」**（实测：第二张
+#: 票的前置检查就这么崩了）→ **起一次，全轮共用**（每个任务开自己的
+#: 持久化上下文；一轮跑完再停）。
+_PLAYWRIGHT: dict[str, Any] = {}
+
+
+def shared_playwright() -> Any:
+    """本进程共享的 Playwright 实例（第一次调用时起；**不要 stop**）。"""
+    from playwright.sync_api import sync_playwright
+
+    instance = _PLAYWRIGHT.get("instance")
+    if instance is None:
+        instance = sync_playwright().start()
+        _PLAYWRIGHT["instance"] = instance
+    return instance
+
+
+def stop_shared_playwright() -> None:
+    """把共享的 Playwright 实例停掉（**一轮跑完时**调一次）。"""
+    instance = _PLAYWRIGHT.pop("instance", None)
+    if instance is None:
+        return
+    try:
+        instance.stop()
+    except Exception:  # noqa: BLE001 —— 停不掉也不许崩
+        pass
+
+
 # ---------------------------------------------------------------------------
 # 真值：OCR 的**词框**当控件矩形真值（T9）
 # ---------------------------------------------------------------------------
@@ -230,54 +273,65 @@ def default_chrome_user_data_dir() -> str:
     return str(path) if path.is_dir() else ""
 
 
-#: **复制 profile 时不复制的那几样**（缓存 —— 复制的唯一目的是拿登录态）。
-_PROFILE_COPY_SKIP = frozenset(
-    {
-        "Cache",
-        "Code Cache",
-        "GPUCache",
-        "DawnCache",
-        "GrShaderCache",
-        "ShaderCache",
-        "Service Worker",
-        "blob_storage",
-        "Crashpad",
-        "component_crx_cache",
-        "optimization_guide_model_store",
-    }
+#: **复制 profile 时要带的那几样**（登录态要用的）—— 别的一概不复制。
+#:
+#: * ``Local State`` —— **cookie 的加密密钥**在里面（app-bound encryption）；
+#: * ``Default/Preferences`` —— Chrome 的启动设置；
+#: * ``Default/Network/Cookies`` —— **登录态本体**（cookie）；
+#: * ``Default/Local Storage`` / ``Session Storage`` —— 有的站点把登录态放这儿。
+_PROFILE_COPY_FILES = (
+    "Local State",
+    "Default/Preferences",
+    "Default/Network/Cookies",
+    "Default/Network/Cookies-journal",
+    "Default/Login Data",
 )
+_PROFILE_COPY_DIRS = ("Default/Local Storage", "Default/Session Storage")
+
+#: **复制出来的 profile 放在哪儿**（仓库的临时区；同一轮里多个任务共用一份）。
+_PROFILE_COPY_ROOT = Path(__file__).resolve().parents[3] / ".scratch" / "chrome-profile-copy"
+
+#: **复制出来的 profile 缓存**（源目录 → 复制出来的目录）。
+#:
+#: ⚠️ **同一轮里只复制一次**（复制一次几秒钟；三个任务各复制一次就白等十几分钟）。
+_PROFILE_COPY_CACHE: dict[str, str] = {}
 
 
 def copy_chrome_profile(source: str, *, dest: str | None = None) -> str:
-    """把 Chrome 的用户数据目录**复制**一份（默认 profile 被占着时的退路）。
+    """把 Chrome 的用户数据目录里**登录态要用的那几样**复制一份。
 
-    * 复制 ``Local State``（cookie 的加密密钥在里面）+ ``Default``
-      （cookie / local storage / preferences）—— **缓存不复制**；
+    ⚠️ **为什么必须复制**（本机实测，2026-10-22）：Chrome **拒绝**在**默认**
+    用户数据目录上开远程调试（stderr：``DevTools remote debugging requires a
+    non-default data directory``）→ 直接指过去根本起不来（等 180 s 超时）。
+    → 复制一份到别的目录再指过去（**登录态跟着 cookie 走**）。
+
+    * **只复制登录态要用的那几样**（缓存、GPU 缓存、会话恢复**都不复制**）
+      —— 整个 ``Default`` 有 1.1 GB，全复制要好几分钟；
+    * **不复制** ``Default/Sessions`` → Chrome 不会弹「恢复上次会话」的气泡
+      （那个气泡会盖住页面右上角 → 挡住点击）；
     * 返回复制出来的目录（失败 → 空串，**不假装成功**）。
-
-    ⚠️ **这是执行细节，不是阻塞项**（Playwright 文档：默认 profile 被正在运行的
-    Chrome 锁住时起不来 → 复制一份再指过去）。
     """
     import shutil
 
     if not source or not Path(source).is_dir():
         return ""
-    target = Path(dest) if dest else Path(source).parent / f"{Path(source).name}-copy"
+    target = Path(dest) if dest else _PROFILE_COPY_ROOT
     if target.exists():
         shutil.rmtree(target, ignore_errors=True)
     try:
         target.mkdir(parents=True, exist_ok=True)
-        local_state = Path(source) / "Local State"
-        if local_state.is_file():
-            shutil.copy2(local_state, target / "Local State")
-        default = Path(source) / "Default"
-        if default.is_dir():
-            shutil.copytree(
-                default,
-                target / "Default",
-                ignore=shutil.ignore_patterns(*_PROFILE_COPY_SKIP),
-                dirs_exist_ok=True,
-            )
+        for relative in _PROFILE_COPY_FILES:
+            origin = Path(source) / relative
+            if not origin.is_file():
+                continue
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(origin, destination)
+        for relative in _PROFILE_COPY_DIRS:
+            origin = Path(source) / relative
+            if not origin.is_dir():
+                continue
+            shutil.copytree(origin, target / relative, dirs_exist_ok=True)
     except OSError:
         shutil.rmtree(target, ignore_errors=True)
         return ""
@@ -506,6 +560,11 @@ class WindowsDesktopExecutor:
             self._record_zoom(step, trace)
         if step.window == "settings":
             self._record_scale(wiring)
+        #: **agent 代确认**（施工清单 T10）：这一步原来需要人工代确认 →
+        #: agent **自己重新抓图**读回（工单 M14 的 W-2.A：
+        #: 「改动后重新抓图能读到 125%」—— 树里没有那个百分比，只能从画面读）。
+        if step.human_confirm:
+            self._read_back_scale_from_screen()
         landing = result.final_point
         if landing is not None:
             self._last_landing = landing
@@ -523,6 +582,12 @@ class WindowsDesktopExecutor:
             step.expectation.describe() if step.expectation is not None else ""
         )
         detail = verification.get("diff") or verification.get("observed") or ""
+        #: **任务级读数的断言**（``expect_context``）：读数由上面的**回读**给出
+        #: （agent 代确认那一路）。
+        extra_ok, extra_detail = self._judge_context_expectation(step)
+        if extra_ok is not None:
+            satisfied = extra_ok if satisfied is None else (satisfied is True and extra_ok)
+            detail = "；".join(part for part in (detail, extra_detail) if part)
         if step.action_kind is ActionKind.ZOOM:
             # **放大是观察型动作**：它没有「界面状态」可断言，
             # 它的结构断言是**坐标结构**（回答落在放大区域里）。
@@ -740,6 +805,83 @@ class WindowsDesktopExecutor:
             )
             return None
 
+    def _read_back_scale_from_screen(self) -> None:
+        """**agent 代确认**：自己**重新抓图** + OCR，把缩放值从画面上读回来。
+
+        工单 M14 的 W-2.A：「改动后重新抓图能读到 125%」——
+        这一条**只能由画面判**（UWP 的树里没有那个百分比）。
+
+        ⚠️ **来源如实记**（``scale_source`` = 「画面量的…」）——
+        读数是从画面上量的，不是从注册表/系统状态来的。
+        """
+        from minicode.action.capture import CapturePort
+        from minicode.action.windows import WindowsCaptureSource
+        from minicode.verification.ocr_windows import WindowsOcrPort
+
+        frame = CapturePort([WindowsCaptureSource()]).screenshot()
+        if frame.is_empty:
+            self._context["scale_ocr_note"] = "抓不到画面（0×0）→ 画面读数判不了"
+            return
+        try:
+            text = WindowsOcrPort().read(frame)
+        except Exception as exc:  # noqa: BLE001 —— OCR 读不出来 = 判不了
+            self._context["scale_ocr_note"] = (
+                f"OCR 读不出来（{type(exc).__name__}: {exc}）→ 画面读数判不了"
+            )
+            return
+        value = scale_percent_from_text(text)
+        self._context["scale_ocr_value"] = value
+        self._context["scale_ocr_note"] = "画面量的（重新抓图 + Windows 自带 OCR）"
+        if value:
+            self._context["scale_value"] = value
+            self._context["scale_source"] = (
+                "画面量的（agent 重新抓图 + Windows 自带 OCR 读到的那个百分比）"
+            )
+
+    def _judge_context_expectation(self, step: Step) -> tuple[bool | None, str]:
+        """判**任务级读数**的断言（``expect_context``）。
+
+        没有这条断言时返回 ``(None, "")``（上层不判）。
+        """
+        key, expected = step.expect_context
+        if not key:
+            return None, ""
+        actual = self._context.get(key)
+        if actual == expected:
+            return True, f"{key} = {actual!r}"
+        return False, f"{key} 是 {actual!r}，不是 {expected!r}"
+
+    def restore(self) -> str:
+        """把**系统缩放**改回原值（改了人家配置要还回去 —— 评测台的既有约定）。
+
+        ⚠️ **没改过就什么都不做**（返回空串 = 不用还原）。
+        ⚠️ 还原走的是**同一条界面路径**（点开「缩放」→ 点原来那一档）。
+        """
+        original = str(self._context.get("scale_before_change") or "")
+        if not original:
+            return ""
+        current = str(self._context.get("scale_value") or "")
+        if current == original:
+            return ""
+        try:
+            wiring = self._ensure_wiring("settings")
+        except Exception as exc:  # noqa: BLE001 —— 还原不了就如实说
+            return f"还原缩放失败（{type(exc).__name__}: {exc}）"
+        for target in ("缩放", original):
+            result = wiring.seam.run(
+                SeamRequest(
+                    target_description=target,
+                    action_kind=ActionKind.CLICK,
+                    params={},
+                    expectation=None,
+                )
+            )
+            if not result.ok:
+                return f"还原缩放失败：点「{target}」没成功（{result.result.error_message}）"
+            time.sleep(1.0)
+        self._context["scale_restored_to"] = original
+        return ""
+
     def _record_zoom(self, step: Step, trace: ActionTrace) -> None:
         """记下放大的证据（回源重抓 / 回答是不是整屏坐标）。"""
         region = tuple(int(v) for v in step.params.get("region", ()))
@@ -773,6 +915,8 @@ class WindowsDesktopExecutor:
             self._context["scale_value"] = value
             self._context["scale_percent"] = _percent_of(value)
             self._context["scale_source"] = source
+            #: **第一次读到的那个值 = 改之前的值**（还原要用）。
+            self._context.setdefault("scale_before_change", value)
             return
         reading = read_scale_from_registry() or read_scale_from_system_dpi()
         if reading is not None:
@@ -780,6 +924,7 @@ class WindowsDesktopExecutor:
             self._context["scale_value"] = value
             self._context["scale_percent"] = _percent_of(value)
             self._context["scale_source"] = source
+            self._context.setdefault("scale_before_change", value)
             self._context["scale_note"] = (
                 "缩放值在树里读不到（UWP 的树里既没有那个百分比，"
                 "「缩放」下拉框的值也是空的）→ 改读**系统状态**"
@@ -1011,10 +1156,9 @@ class ChromeExecutor:
         from minicode.exec import dpi  # noqa: F401
 
         try:
-            from playwright.sync_api import sync_playwright
+            self._playwright = shared_playwright()
         except ImportError:  # pragma: no cover - 可选依赖缺失
             return "环境不可达：没装 Playwright（浏览器通道的真机适配器需要它）"
-        self._playwright = sync_playwright().start()
         blocked = self._launch_persistent()
         if blocked:
             self.close()
@@ -1022,6 +1166,9 @@ class ChromeExecutor:
         self._page = (
             self._context.pages[0] if self._context.pages else self._context.new_page()
         )
+        if self._page is None:
+            self.close()
+            return "环境不可达：持久化上下文里没有页面（浏览器刚起来就退了）"
         try:
             self._page.goto(self.url, timeout=45000)
         except Exception as exc:  # noqa: BLE001 —— 网络不通
@@ -1043,6 +1190,13 @@ class ChromeExecutor:
 
         self._cdp = self._context.new_cdp_session(self._page)
         hwnd = find_browser_window(self._page.title() or "")
+        if not hwnd:
+            #: **拿不到窗口矩形** → 物理坐标没法换算（落点会是离谱的数）。
+            self.close()
+            return (
+                f"环境不可达：找不到这个页面的浏览器窗口"
+                f"（标题：{self._page.title()!r}）—— 物理坐标换不出来"
+            )
         self._source = ChromiumPage(self._page, self._cdp, hwnd)
         table = BrowserCapabilityTable(ChromiumCapabilityProbe(self._source))
         anchor = WindowAnchor(
@@ -1067,56 +1221,76 @@ class ChromeExecutor:
         ⚠️ **为什么不是 ``launch() + new_context()``**：那是一个**全新会话**
         → 真实站点一律被重定向到登录页 → 那三张票永远 SKIP。
 
-        ⚠️ **默认 profile 被正在运行的 Chrome 锁住** → 起不来；
-        这时**复制一份 profile** 再指过去（执行细节，**不是阻塞项**）。
+        ⚠️ **为什么一定要复制一份 profile**（本机实测，2026-10-22）：Chrome
+        **拒绝**在**默认**用户数据目录上开远程调试（stderr：``DevTools remote
+        debugging requires a non-default data directory``）→ 直接指过去起不来
+        （等满 180 s 才超时）→ **复制一份**再指过去（登录态跟着 cookie 走）。
         """
-        candidates: list[tuple[str, str]] = []
-        if self.profile_dir:
-            candidates.append((self.profile_dir, "指定的 profile"))
-        else:
-            detected = default_chrome_user_data_dir()
-            if detected:
-                candidates.append((detected, "本机 Chrome 的默认用户数据目录"))
-        notes: list[str] = []
-        for path, label in candidates:
-            context = self._launch_context(path)
+        source = self.profile_dir or default_chrome_user_data_dir()
+        if not source:
+            return "环境不可达：找不到本机 Chrome 的用户数据目录（拿不到登录态）"
+        default_dir = default_chrome_user_data_dir()
+        if default_dir and Path(source) == Path(default_dir):
+            #: **默认目录** → 复制一份（只复制登录态要用的那几样，几秒钟）。
+            copied = _PROFILE_COPY_CACHE.get(source) or ""
+            if not copied or not Path(copied).is_dir():
+                copied = copy_chrome_profile(source)
+                if copied:
+                    _PROFILE_COPY_CACHE[source] = copied
+            if not copied:
+                return "环境不可达：复制不出 Chrome 的登录态（profile 复制失败）"
+            context = self._launch_context(copied)
             if context is None:
-                notes.append(f"{label}（{path}）起不来")
-                continue
+                return (
+                    "环境不可达：起不来持久化浏览器上下文"
+                    "（复制出来的 profile 也起不来）"
+                )
             self._context = context
             self._browser = None
-            self._context_data["browser_profile"] = path
-            self._context_data["browser_profile_source"] = label
+            self._context_data["browser_profile"] = copied
+            self._context_data["browser_profile_source"] = (
+                "复制出来的 profile（Chrome 不许在默认目录上开远程调试）"
+            )
             return ""
-        copied = copy_chrome_profile(candidates[0][0]) if candidates else ""
-        if copied:
-            context = self._launch_context(copied)
-            if context is not None:
-                self._context = context
-                self._browser = None
-                self._context_data["browser_profile"] = copied
-                self._context_data["browser_profile_source"] = (
-                    "复制出来的 profile（原目录被占着）"
-                )
-                return ""
-            notes.append(f"复制出来的 profile（{copied}）起不来")
-        return "环境不可达：起不来持久化浏览器上下文（" + "；".join(notes) + "）"
+        context = self._launch_context(source)
+        if context is None:
+            return f"环境不可达：起不来持久化浏览器上下文（profile：{source}）"
+        self._context = context
+        self._browser = None
+        self._context_data["browser_profile"] = source
+        self._context_data["browser_profile_source"] = "指定的 profile"
+        return ""
 
     def _launch_context(self, user_data_dir: str):
-        """按用户数据目录起持久化上下文（起不来 → ``None``，**不假装成功**）。"""
-        try:
-            return self._playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                channel="chrome",
-                headless=False,
-                no_viewport=True,
-                args=["--window-size=1280,900", "--window-position=120,80"],
-            )
-        except Exception as exc:  # noqa: BLE001 —— 起不来就换下一条路
-            self._context_data["browser_profile_error"] = (
-                f"{type(exc).__name__}: {exc}"
-            )
-            return None
+        """按用户数据目录起持久化上下文（起不来 → ``None``，**不假装成功**）。
+
+        ⚠️ **同一个 profile 目录连着起两次会撞锁**（上一个浏览器还在退出
+        —— 实测：第二张票的前置检查就栽在这）→ **重试几次**。
+        """
+        last = ""
+        for attempt in range(4):
+            try:
+                return self._playwright.chromium.launch_persistent_context(
+                    user_data_dir=user_data_dir,
+                    channel="chrome",
+                    headless=False,
+                    no_viewport=True,
+                    timeout=60000,
+                    args=[
+                        "--window-size=1280,900",
+                        "--window-position=120,80",
+                        #: **别弹「恢复上次会话」的气泡** —— 那个气泡盖在页面
+                        #: 右上角 → 挡住点击。
+                        "--hide-crash-restore-bubble",
+                        "--disable-session-crashed-bubble",
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001 —— 起不来就换下一条路
+                last = f"{type(exc).__name__}: {exc}"
+                self._context_data["browser_profile_error"] = last
+                if attempt < 3:
+                    time.sleep(2.0)
+        return None
 
     def _browser_version(self) -> str:
         """浏览器版本（**CDP 读到的**；读不到 → 空串）。"""
@@ -1162,13 +1336,16 @@ class ChromeExecutor:
         return dict(self._context_data)
 
     def close(self) -> None:
-        """关掉浏览器（不留下窗口）。"""
+        """关掉浏览器（不留下窗口）。
+
+        ⚠️ **不停 Playwright 本身** —— 它是**本进程共享**的（sync API 的事件
+        循环按线程走：停了就没法再起，见 :func:`shared_playwright`）。
+        """
         for closer in (
             #: ⚠️ **持久化上下文**下浏览器**就是那个上下文** → 先关它
             #: （``self._browser`` 是 ``None``，关浏览器由上下文代劳）。
             getattr(self._context, "close", None),
             getattr(self._browser, "close", None),
-            getattr(self._playwright, "stop", None),
         ):
             if closer is None:
                 continue
@@ -1178,7 +1355,11 @@ class ChromeExecutor:
                 pass
         self._context = None
         self._browser = None
-        self._playwright = None
+        self._page = None
+        self._cdp = None
+        self._source = None
+        self._channel = None
+        self._anchor = None
 
     # -- 内部 -------------------------------------------------------------
 
@@ -1371,6 +1552,10 @@ class ChromeExecutor:
         """读回**结果列表**（结构断言）。
 
         工单口径：「提交后结果列表每条含该关键词，**或**页面明确显示「无结果」」。
+
+        ⚠️ **没有可见文本的列表项不算**（**不拿它充数**）：可访问性树里偶尔
+        会出现**没有名字**的列表项节点（实测有）—— 它**没有文本**可比，
+        也不许被当成「一条不含关键词的结果」。
         """
         keyword = str(self._context_data.get("input_value") or "")
         page_text = "\n".join(self._page_names())
@@ -1380,15 +1565,18 @@ class ChromeExecutor:
                 f"页面明确显示「无结果」（关键词「{keyword}」）"
             )
             return
-        items = self._list_item_names()
+        all_items = self._list_item_names()
+        items = tuple(item for item in all_items if item)
         if not items:
             self._context_data["search_results_ok"] = False
             self._context_data["search_results_note"] = "结果列表是空的（也没有「无结果」）"
             return
         missing = [item for item in items if keyword and keyword not in item]
+        unnamed = len(all_items) - len(items)
         self._context_data["search_results_ok"] = not missing
         self._context_data["search_results_note"] = (
             f"结果 {len(items)} 条，每条都含「{keyword}」：{not missing}"
+            f"（另有 {unnamed} 个没有可见文本的列表项，不计）"
             + (f"；不含的有：{missing[:3]}" if missing else "")
         )
 

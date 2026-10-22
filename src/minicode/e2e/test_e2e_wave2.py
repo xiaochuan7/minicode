@@ -122,12 +122,16 @@ class Wave2ShapeTests(unittest.TestCase):
 class Wave2RunnerTests(unittest.TestCase):
     """**判定口径**：人工代确认短路、跳过不算通过。"""
 
-    def test_the_human_confirm_ticket_is_never_executed(self):
+    def test_the_human_confirm_ticket_is_executed_by_the_agent(self):
+        """**「人工代确认」→ agent 代确认**（施工清单 T10）：不再阻塞、不计失败。"""
         task = task_by_id("WX-2")
         executor = _FakeExecutor()
         outcome = TaskRunner(executor).run(task)
-        self.assertEqual(outcome.verdict, VERDICT_PENDING_HUMAN)
-        self.assertEqual(executor.executed, [])
+        self.assertNotEqual(outcome.verdict, VERDICT_PENDING_HUMAN)
+        #: 步骤**照跑**（agent 自己执行 + 自己读回验收）。
+        self.assertEqual(executor.executed, ["WX-2.1", "WX-2.2"])
+        #: 原来需要人工代确认这一事实**留着**（报告里单列统计）。
+        self.assertTrue(outcome.human_confirm)
 
     def test_the_unreachable_environment_is_a_skip(self):
         task = task_by_id("E-1")
@@ -408,17 +412,26 @@ class Wave2ScoringTests(unittest.TestCase):
         self.assertTrue(all(clause.ok for clause in outcome.clauses))
 
     def test_the_handoff_is_counted_apart_from_the_manual_run(self):
-        """「人工代跑」（WX-2）与「合规停手」（WX-3）是**两个计数**。"""
+        """「agent 代确认」（WX-2）与「合规停手」（WX-3）是**两个计数**。"""
         manual = TaskRunner(_FakeExecutor()).run(task_by_id("WX-2"))
         executor = _FakeExecutor(stop="modal_dialog", context=dict(self._MODAL_CONTEXT))
         handoff = TaskRunner(executor).run(task_by_id("WX-3"))
         report = build_report([manual, handoff])
-        self.assertEqual(report["human_confirm"]["count"], 1)
+        #: **人工代跑**（人真的代跑过、带 ``--manual`` 结果）才进这个桶。
+        self.assertEqual(report["human_confirm"]["count"], 0)
+        #: **agent 代确认**（原来需要人工代确认、这轮 agent 自己做的）单列。
+        self.assertEqual(report["agent_confirm"]["count"], 1)
+        self.assertEqual(report["agent_confirm"]["ids"], ["WX-2"])
         self.assertEqual(report["handoff"]["count"], 1)
+        #: 假执行器没有回读读数 → WX-2 的条款不成立 → **失败**（不是通过）。
         self.assertEqual(report["auto"]["passed"], 0)
-        #: 合规停手进分母（0 分）；人工代跑不进分母。
-        self.assertEqual(report["auto"]["denominator"], 1)
+        self.assertEqual(report["auto"]["failed"], 1)
+        #: 合规停手进分母（0 分）；agent 代确认的票**进分母**（它真的跑了）。
+        self.assertEqual(report["auto"]["denominator"], 2)
         self.assertEqual(report["auto"]["pass_rate"], 0.0)
+        #: **主口径**（剔除 agent 代确认的票）：只剩合规停手那一票 → 0/1。
+        self.assertEqual(report["auto"]["denominator_main"], 1)
+        self.assertEqual(report["auto"]["pass_rate_main"], 0.0)
 
 
 class Wave2LandingRuleTests(unittest.TestCase):

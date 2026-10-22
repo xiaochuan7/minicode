@@ -208,22 +208,27 @@ def test_failing_clause_fails_the_task():
     assert "差 3 px" in outcome.reason
 
 
-def test_human_confirm_task_is_not_executed():
-    """**人工代确认的任务不自动执行**。"""
+def test_human_confirm_task_is_executed_by_the_agent():
+    """**「人工代确认」→ agent 代确认**（施工清单 T10）：**不再阻塞**。
+
+    步骤**照跑**（agent 自己执行 + 自己读回验收）→ 这张票**不再**记
+    「待人工确认」，也**不计入失败**。
+    """
     executor = FakeExecutor()
     outcome = TaskRunner(executor).run(_task(human_confirm=True))
-    assert outcome.verdict == VERDICT_PENDING_HUMAN
-    assert executor.executed == []
+    assert outcome.verdict == VERDICT_PASS
+    assert executor.executed == ["S-1"]
+    #: 原来需要人工代确认这一事实**留着**（报告里单列统计）。
+    assert outcome.human_confirm is True
 
 
-def test_step_level_human_confirm_is_not_executed():
-    """**步级**的人工代确认同样不执行（不许只拦任务级）。"""
+def test_step_level_human_confirm_is_executed_by_the_agent():
+    """**步级**的「人工代确认」同样不再阻塞。"""
     executor = FakeExecutor()
     task = _task(steps=(_step(step_id="S-1", human_confirm=True),))
     outcome = TaskRunner(executor).run(task)
-    assert outcome.verdict == VERDICT_PENDING_HUMAN
-    assert executor.executed == []
-    assert "S-1" in outcome.reason
+    assert outcome.verdict == VERDICT_PASS
+    assert executor.executed == ["S-1"]
 
 
 def test_manual_result_is_recorded_but_never_counted_as_auto_pass():
@@ -976,15 +981,22 @@ def test_every_wave1_step_has_a_structural_assertion():
     for task in WAVE1_TASKS:
         assert task.steps, task.id
         for step in task.steps:
-            assert step.expectation is not None, f"{task.id}/{step.id}"
+            #: **四种结构断言的任一种**都算（工单 M15 补了三种）。
+            assert step.has_structural_assertion, f"{task.id}/{step.id}"
 
 
 def test_w2_is_human_confirm():
-    """改系统缩放那张票是**人工代确认**（不许自动执行）。"""
+    """改系统缩放那张票**原来**是人工代确认 → 现在**agent 代确认**（照跑）。"""
     task = task_by_id("W-2")
     assert task.human_confirm is True
-    assert task.steps[0].human_confirm is True
-    assert TaskRunner(FakeExecutor()).run(task).verdict == VERDICT_PENDING_HUMAN
+    #: **改的那一步**标着「原来要人工代确认」→ agent 代确认那一路（自己读回）。
+    assert any(step.human_confirm for step in task.steps)
+    #: **不再阻塞**：步骤照跑（agent 自己执行 + 自己读回验收）。
+    executor = FakeExecutor()
+    outcome = TaskRunner(executor).run(task)
+    assert outcome.verdict != VERDICT_PENDING_HUMAN
+    assert executor.executed
+    assert outcome.human_confirm is True
 
 
 def test_w3_zoom_step_uses_the_zoom_action_and_a_region():

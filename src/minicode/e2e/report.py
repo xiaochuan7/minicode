@@ -90,6 +90,20 @@ def build_report(outcomes: Sequence[TaskOutcome], *, title: str = "") -> dict[st
     #: （OSWorld / WAA 口径：环境不可达进分母；交人 = 0 分，不是通过）。
     #: **人工代跑不进分母**（口径规定不自动执行 → agent 从未尝试）。
     denominator = len(passed) + len(failed) + len(infeasible) + len(handoff)
+    #: **agent 代确认**（施工清单 T10）：原来需要人工代确认的票，这轮由
+    #: **agent 自己执行 + 自己读回**（不再是阻塞项，也不计入失败）。
+    agent_confirm = [
+        outcome
+        for outcome in outcomes
+        if outcome.human_confirm and outcome.verdict != VERDICT_PENDING_HUMAN
+    ]
+    #: **主口径**：**剔除** agent 代确认的票（施工清单 T10 的口径：
+    #: 「主口径 = 沿用上一轮，剔除人工代确认票」）。
+    main_ids = {outcome.task_id for outcome in agent_confirm}
+    main_passed = [o for o in passed if o.task_id not in main_ids]
+    main_denominator = denominator - len(
+        [o for o in agent_confirm if o.verdict in (VERDICT_PASS, VERDICT_FAIL)]
+    )
     return {
         "title": title,
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -106,6 +120,16 @@ def build_report(outcomes: Sequence[TaskOutcome], *, title: str = "") -> dict[st
             "denominator_note": (
                 "分母 = 自动通过 + 自动失败 + 环境不可达(infeasible) "
                 "+ 合规停手(handoff)；人工代跑不进分母"
+            ),
+            #: **主口径**（剔除 agent 代确认的票）。
+            "passed_main": len(main_passed),
+            "denominator_main": main_denominator,
+            "pass_rate_main": (
+                (len(main_passed) / main_denominator) if main_denominator else None
+            ),
+            "denominator_main_note": (
+                "主口径 = 剔除 agent 代确认的票（原来需要人工代确认、"
+                "这轮 agent 自己执行 + 自己读回的那些）"
             ),
         },
         "human_confirm": {
@@ -125,6 +149,17 @@ def build_report(outcomes: Sequence[TaskOutcome], *, title: str = "") -> dict[st
                 for outcome in manual
                 if outcome.manual
             ],
+        },
+        "agent_confirm": {
+            "count": len(agent_confirm),
+            "ids": [outcome.task_id for outcome in agent_confirm],
+            "verdicts": {
+                outcome.task_id: str(outcome.verdict) for outcome in agent_confirm
+            },
+            "note": (
+                "agent 代确认（原来需要人工代确认的票）：agent 自己执行 + 自己读回"
+                "—— 不是阻塞项，也不计入失败；主口径里剔除"
+            ),
         },
         "handoff": {
             "count": len(handoff),
