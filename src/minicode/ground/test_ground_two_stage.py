@@ -385,6 +385,24 @@ class FallbackTests(unittest.TestCase):
         self.assertIsNotNone(result.landing_point)
         self.assertAlmostEqual(result.landing_point[0], result.coarse_point[0], places=6)
 
+    def test_a_truncated_refine_answer_falls_back_to_coarse(self):
+        """**截断 = 0 分**：精定位的回答被截断 → **不抢救** → 回落到粗定位点。
+
+        ⚠️ 截断的回答**不许**被抢救成一个坐标（那会把「没答完」当成
+        「答了」—— 落点偏在别处还不报错）。
+        """
+        result = self._locate(
+            _reply(390.625, 500.0),
+            _text_reply('{"x": 10, "y": 20} {"x": 30'),
+        )
+        self.assertTrue(result.fallback)
+        self.assertTrue(result.fallback_reason)
+        self.assertIsNotNone(result.landing_point)
+        # 落点是**粗定位点**（不是那个被抢救出来的 (10, 20)）。
+        self.assertAlmostEqual(result.landing_point[0], result.coarse_point[0], places=6)
+        self.assertAlmostEqual(result.landing_point[1], result.coarse_point[1], places=6)
+        self.assertEqual(result.landing_source, "coarse")
+
     def test_refine_out_of_bounds_falls_back_to_coarse(self):
         result = self._locate(_reply(390.625, 500.0), _reply(9000.0, 9000.0))
         self.assertTrue(result.fallback)
@@ -572,6 +590,47 @@ class CoarseBoxTests(unittest.TestCase):
 
         self.assertIs(ground_prompt.answer_line_payload, answer_text.answer_line_payload)
         self.assertIs(ground_prompt.is_truncated, answer_text.is_truncated)
+
+    def test_a_truncated_answer_is_not_rescued_into_a_point(self):
+        """**截断 = 0 分**：括号不配对的回答**不抢救** → 显式失败。
+
+        ⚠️ 失败是**抛错**，不是返回 ``None`` —— ``None`` 的语义是
+        「模型说这张图里没有那个元素」（负出口），截断不是那个意思。
+        """
+        from minicode.ground.prompt import GroundingParseError, parse_optional_point
+
+        with self.assertRaises(GroundingParseError):
+            parse_optional_point('{"x": 10, "y": 20} {"x": 30')
+
+    def test_a_non_json_answer_line_falls_back_to_scanning_the_whole_text(self):
+        """答案行**存在但不是 JSON** → **回落扫全文**（不直接放弃）。
+
+        「答案行优先」管的是「答案行**有 JSON** 时只读那一行」。
+        """
+        from minicode.ground.prompt import parse_coarse_target
+
+        target = parse_coarse_target(
+            '答案是这个按钮。\n答案：这个按钮大概在左边一点\n{"bbox": [10, 20, 30, 40]}'
+        )
+        self.assertEqual(target.bbox, (10.0, 20.0, 30.0, 40.0))
+
+    def test_a_non_json_answer_line_also_recovers_the_official_array_form(self):
+        """官方协议那种顶层数组 ``[[x0, y0, x1, y1]]`` 同样回落扫全文。"""
+        from minicode.ground.prompt import parse_coarse_target
+
+        target = parse_coarse_target(
+            "答案：这个按钮大概在左边一点\n[[10, 20, 30, 40]]"
+        )
+        self.assertEqual(target.bbox, (10.0, 20.0, 30.0, 40.0))
+
+    def test_a_json_answer_line_is_still_read_first(self):
+        """答案行**有 JSON** 时**只读那一行**（不扫全文）。"""
+        from minicode.ground.prompt import parse_coarse_target
+
+        target = parse_coarse_target(
+            '答案：{"bbox": [1, 2, 3, 4]}\n{"bbox": [10, 20, 30, 40]}'
+        )
+        self.assertEqual(target.bbox, (1.0, 2.0, 3.0, 4.0))
 
     def test_the_landing_is_the_box_center(self):
         """**落点取框中心**（框 → 点的换算在通道里，只做一处）。"""

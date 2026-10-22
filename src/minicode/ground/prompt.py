@@ -442,8 +442,20 @@ def parse_optional_point(text: str) -> tuple[float, float] | None:
     * ``{"x": null, "y": null}`` —— 元素不在这张图里 → ``None``；
     * 别的读不出来 → :class:`GroundingParseError`（**显式失败**，不猜）。
 
-    ⚠️ **截断 = 0 分**：括号不配对的回答**不抢救** → 显式失败。
+    ⚠️ **截断 = 0 分**：括号不配对的回答**不抢救** → **显式失败**
+    （抛 :class:`GroundingParseError`）。
+
+    ⚠️ **截断不是 ``None``**：``None`` 的语义是「**模型说这张图里没有那个
+    元素**」（负出口）；截断是「**没读完**」—— 两者不是一回事，
+    混起来就把「没答完」说成了「没有这个元素」。
+    调用方据此**干净回落到粗定位**（不落一个抢救出来的假点）。
     """
+    body = answer_line_body(text)
+    segment = body if body is not None else text
+    if is_truncated(segment):
+        raise GroundingParseError(
+            f"模型回答被截断（括号不配对），按 0 分处理：{text[:160]!r}"
+        )
     payload = answer_line_payload(text)
     if payload is None:
         payload = json_payload(text)
@@ -505,6 +517,8 @@ def parse_coarse_target(text: str) -> CoarseTarget:
     一手：https://github.com/modelscope/evalscope/blob/main/evalscope/benchmarks/screenspot_pro/screenspot_pro_adapter.py）：
 
     * **答案行优先** —— 有 ``Answer:`` / ``答案：`` 那一行就只读那一行；
+    * **答案行不是 JSON → 回落扫全文** —— 那一行上没有可读的东西时，
+      **扫整段回答**（不直接放弃）；
     * **截断 = 0 分** —— 括号不配对的回答**不抢救** → 显式失败；
     * **松散写法仅在答案行接受** —— ``x: .., y: ..`` 这种只在答案行上认。
 
@@ -551,7 +565,12 @@ def parse_coarse_target(text: str) -> CoarseTarget:
         if point is not None:
             return CoarseTarget(point=point)
     # 顶层的方括号数组（前面可能还有一句话）。
-    array = json_array(segment)
+    # ⚠️ **扫全文**（不是只扫答案行）：答案行**存在但不是 JSON** 时，
+    # 那一行上没有可读的东西 → **回落扫全文**（官方协议那种
+    # ``[[x1, y1, x2, y2]]`` 也在全文里）。
+    # 「答案行优先」管的是「答案行**有 JSON** 时只读那一行」——
+    # 答案行里没有 JSON 时，不该直接放弃。
+    array = json_array(text)
     if array is not None:
         inner = array[0] if len(array) == 1 and isinstance(array[0], list) else array
         bbox = _box_of(inner)
