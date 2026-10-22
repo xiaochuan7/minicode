@@ -1,12 +1,13 @@
 """仓库配置：**凭据的唯一来源**。
 
-本项目只从**仓库里的 ``.env``** 读端点、密钥、模型、会话标识与两个头
-（``user-agent`` 与 ``x-opencode-client``）。
+本项目只从**仓库里的 ``.env``** 读端点、密钥、模型、会话标识、两个头
+（``user-agent`` 与 ``x-opencode-client``）与**采样温度**。
 用户目录下的凭据文件**不是**任何主链路代码的输入 —— 换机器、换人只改配置不改代码。
 
 三条硬口径：
 
 * **配置项缺失或为空 → 显式报错并点名缺哪一项**，不静默回退默认值；
+  （唯一例外：``MINICODE_TEMPERATURE`` 是**可选**的 —— 缺省 0，见下）
 * **免费档只能走带 ``/go`` 后缀的那条通道**（仓库配置模板里两条地址都在，
   「选哪条」因此必须是**可测行为**，不是靠人记）；
 * **只认仓库根目录下那一个 ``.env``** —— 不从当前工作目录向上找，
@@ -15,13 +16,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import ModelConfigError
 
 __all__ = [
+    "DEFAULT_TEMPERATURE",
     "FREE_TIER_PATH_SUFFIX",
+    "OPTIONAL_CONFIG_KEYS",
     "REQUIRED_CONFIG_KEYS",
     "ModelConfig",
     "find_env_file",
@@ -43,6 +47,18 @@ REQUIRED_CONFIG_KEYS: dict[str, str] = {
     "client_header": "MINICODE_HTTP_CLIENT",
 }
 
+#: **可选**配置项名 → 仓库 ``.env`` 里的键名（缺项 → 用缺省值，不报错）。
+OPTIONAL_CONFIG_KEYS: dict[str, str] = {
+    "temperature": "MINICODE_TEMPERATURE",
+}
+
+#: 采样温度的缺省值（**关采样**）。
+#:
+#: ⚠️ **为什么必须是 0**：不显式给就走服务端缺省（常见缺省 1.0）→ 有采样 →
+#: 同图同提示词两次回答可能不同（本仓 183 条那轮的跨运行命中翻转 16.7%~26.2%，
+#: 见 ``docs/research/vision-root-cause.md``）。
+DEFAULT_TEMPERATURE = 0.0
+
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
 
@@ -56,6 +72,12 @@ class ModelConfig:
     session_id: str
     user_agent: str
     client_header: str
+    #: **采样温度**（请求体里显式带上；缺省 0 = 关采样）。
+    #:
+    #: 可由 ``.env`` 的 ``MINICODE_TEMPERATURE`` 覆盖（**可选**，缺省 0）。
+    #: 0 之外的值是**故意留的逃生口**（服务端若不支持 temperature=0，可临时调高），
+    #: 但**缺省必须关采样** —— 否则同图同提示词的两次回答可能不同。
+    temperature: float = DEFAULT_TEMPERATURE
     #: 配置来源文件路径（写进请求日志，便于事后追溯是哪份配置）。
     source: str = ""
 
@@ -154,8 +176,27 @@ def load_config(env_file: Path | None = None) -> ModelConfig:
         session_id=values[REQUIRED_CONFIG_KEYS["session_id"]].strip(),
         user_agent=values[REQUIRED_CONFIG_KEYS["user_agent"]].strip(),
         client_header=values[REQUIRED_CONFIG_KEYS["client_header"]].strip(),
+        temperature=_temperature_of(values, path),
         source=str(path),
     )
     # 通道对不对，装载时就判一次（别等到发请求才发现指错了）。
     resolve_endpoint(config.base_url)
     return config
+
+
+def _temperature_of(values: Mapping[str, str], path: Path) -> float:
+    """采样温度：**可选**，缺省 0（关采样）；给了就必须是数字。
+
+    给了但不是数字 → :class:`ModelConfigError`（**不静默回退** ——
+    悄悄按 0 跑会让「配置到底生效没有」这个问题永远查不出来）。
+    """
+    key = OPTIONAL_CONFIG_KEYS["temperature"]
+    raw = values.get(key, "").strip()
+    if not raw:
+        return DEFAULT_TEMPERATURE
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ModelConfigError(
+            f"仓库配置 {path} 的 {key}={raw!r} 不是数字（缺省应为 {DEFAULT_TEMPERATURE}）"
+        ) from exc

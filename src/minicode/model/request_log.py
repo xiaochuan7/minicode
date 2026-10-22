@@ -3,6 +3,11 @@
 字段（工单 M1 要求的那几项一个不少）：档位、模型、端点、HTTP 状态、耗时、
 输入 token、输出 token、思考 token 数。
 
+**形态字段**（回答可不可用）：``stop_reason`` / ``content_block_types`` /
+``text_len`` / ``parse_ok`` —— 前两个来自**响应体**（只有响应体里有），
+后两个让「这次回答能不能用」从**推断**变成**直读**。
+它们**默认可空**（``None`` = 不知道 / 没人给），不改变既有字段的语义。
+
 「档位字段值是五档之一且非空」是**可判定**的：扫全部日志，
 未显式设档位的调用数必须是 0（见 :func:`count_unset_effort`）。
 """
@@ -62,6 +67,23 @@ class RequestLog:
     cache_read_input_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
     error: str | None = None
+    #: 响应体里的 ``stop_reason``（Anthropic 协议字段：``end_turn`` / ``max_tokens`` …）。
+    #:
+    #: **形态判定直读它** —— 以前只能用 ``output_tokens == max_tokens`` 反推
+    #: 「这次没有文本输出」（反推有误差，且认不出「正常结束但文本为空」）。
+    stop_reason: str | None = None
+    #: 响应体 ``content[]`` 里各块的 ``type``（按顺序，如 ``["thinking"]``）。
+    #:
+    #: 只有 ``thinking`` 块 → 思考链吃光了预算 → **这次没有文本**。
+    content_block_types: tuple[str, ...] = ()
+    #: 回答文本的**长度**：0 = 没有文本；``None`` = 不知道（没拿到回答）。
+    text_len: int | None = None
+    #: 这次回答**是否解析得出坐标**。
+    #:
+    #: **由调用方给** —— 客户端层不知道解析规则（那是 ground 层的事）→ 缺省 ``None``。
+    #: ``None`` 是**合法值**：``text_len > 0`` 且 ``parse_ok is None`` 照样落盘
+    #: （「有文本但没人判定过能不能解析」与「解析失败」是两件事）。
+    parse_ok: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -118,9 +140,23 @@ class JsonlRequestLog:
         self.path = Path(path)
 
     def write(self, record: RequestLog) -> None:
+        """追加一条日志：**整行一次写 + 立刻 flush**（单次 write + flush）。
+
+        ⚠️ **为什么要显式 flush**：一行日志可以很长（``error`` 里可能带整段响应体），
+        文本模式的写缓冲会把它切成几块**分次**写出去 —— 两个进程同时写同一个文件时，
+        行与行就会**交错**（本仓历史上 5259 条里撕过 1 条，差 1 就是因此）。
+        这里把**整行**先拼成一个字符串，再**一次** ``write`` 出去并立刻 ``flush``
+        → 一行要么完整落盘，要么没落。
+
+        ⚠️ **不要改成二进制写**：本机实测（8 线程 × 20 行 × 100 KB，同一个文件）
+        二进制追加**丢整行**丢得更多（96/160 行，其中还有 2 行撕裂），
+        文本追加是 156/160 行 —— Windows 上 ``O_APPEND`` 在两种模式下的语义不一样。
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record.to_dict(), ensure_ascii=False) + "\n"
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+            handle.write(line)
+            handle.flush()
 
 
 def estimate_image_tokens(width: int, height: int, *, patch_px: int = IMAGE_PATCH_PX) -> int:
@@ -164,6 +200,10 @@ def build_request_log(
     image_tokens: int | None = None,
     cache_read_input_tokens: int | None = None,
     cache_creation_input_tokens: int | None = None,
+    stop_reason: str | None = None,
+    content_block_types: tuple[str, ...] = (),
+    text_len: int | None = None,
+    parse_ok: bool | None = None,
     error: str | None = None,
 ) -> RequestLog:
     """构造一条请求日志（纯函数）。"""
@@ -180,6 +220,10 @@ def build_request_log(
         cache_read_input_tokens=cache_read_input_tokens,
         cache_creation_input_tokens=cache_creation_input_tokens,
         error=error,
+        stop_reason=stop_reason,
+        content_block_types=content_block_types,
+        text_len=text_len,
+        parse_ok=parse_ok,
     )
 
 

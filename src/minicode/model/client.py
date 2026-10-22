@@ -1,12 +1,14 @@
 """模型客户端：主链路**唯一**的模型调用入口。
 
-三件事：
+四件事：
 
 1. **凭据单一来源**：请求头、端点、模型、会话标识全部来自仓库配置
    （见 :mod:`minicode.model.config`），客户端内不存在第二个凭据来源；
 2. **思考预算（effort）显式**：调用入口必须给档位（五档），省略即报错，
    绝不悄悄按服务端缺省（最高档）跑；
-3. **失败如实回传**：模型侧错误原样带回；HTTP 200 但**没有文本输出**判显式失败，
+3. **采样温度显式**（缺省 0）：不显式给就走服务端缺省（常见缺省 1.0）→ 有采样 →
+   同图同提示词两次回答可能不同（见 :func:`build_request_body`）；
+4. **失败如实回传**：模型侧错误原样带回；HTTP 200 但**没有文本输出**判显式失败，
    不呈现成「成功但坐标为空」。
 
 **模型坐标原样透传**：客户端不解释模型给的数值 —— 不乘分母、不按数值大小猜量纲、
@@ -27,7 +29,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .config import ModelConfig
+from .config import DEFAULT_TEMPERATURE, ModelConfig
 from .effort import EFFORT_VALUES, Effort
 from .errors import (
     EffortRequiredError,
@@ -49,9 +51,11 @@ __all__ = [
     "ModelClient",
     "build_headers",
     "build_request_body",
+    "content_block_types_of",
     "image_tokens_of",
     "parse_response",
     "require_effort",
+    "stop_reason_of",
     "text_of",
     "usage_of",
 ]
@@ -60,7 +64,7 @@ __all__ = [
 ANTHROPIC_VERSION = "2023-06-01"
 
 #: 请求超时（秒）。
-DEFAULT_TIMEOUT_S = 120.0
+DEFAULT_TIMEOUT_S = 180.0
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,15 @@ class ModelReply:
     cache_read_input_tokens: int | None = None
     cache_creation_input_tokens: int | None = None
     raw_content: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    #: 响应体里的 ``stop_reason``（Anthropic 协议字段：``end_turn`` / ``max_tokens`` …）。
+    #:
+    #: **只在响应体里有** —— 请求日志靠它把「输出预算被吃光」（``max_tokens``）
+    #: 与「正常结束」分开（不再靠 ``output_tokens == max_tokens`` 反推）。
+    stop_reason: str | None = None
+    #: 响应体 ``content[]`` 里各块的 ``type``（按顺序，如 ``("thinking", "text")``）。
+    #:
+    #: 形态判定直读它：只有 ``thinking`` 块 → 思考链吃光了预算（**无文本**）。
+    content_block_types: tuple[str, ...] = ()
 
     def json_payload(self) -> Any:
         """从文本里取出第一个 JSON 对象；**数值原样返回**，不乘任何分母。
@@ -160,6 +173,7 @@ def build_request_body(
     image_base64: str | None = None,
     images_base64: Sequence[str] = (),
     thinking_disabled: bool = False,
+    temperature: float = DEFAULT_TEMPERATURE,
 ) -> dict[str, Any]:
     """构造请求体（纯函数）。
 
@@ -168,7 +182,10 @@ def build_request_body(
     * ``effort=None`` 时**不带** ``output_config`` —— 这是「省略档位」的形态，
       只给诊断用的回归脚本用；客户端的调用入口不允许走到这里；
     * ``thinking_disabled=True`` 会带上 ``{"thinking": {"type": "disabled"}}``，
-      **只为回归坑③存在**（服务端会回 HTTP 400，客户端必须如实回传）。
+      **只为回归坑③存在**（服务端会回 HTTP 400，客户端必须如实回传）；
+    * **``temperature`` 显式写进请求体**（缺省 0）—— 不写就走服务端缺省
+      （常见缺省 1.0 → 有采样）：同一张图 + 逐字相同的提示词，两次回答可能不同。
+      官方通用 API grounding 协议也是这么做的（``models/gpt4x.py``：temperature 0）。
 
     **图片可以有多张**（工单 M10 的上下文窗口要把最近几张完整图一起带上）：
     ``image_base64`` 是那张主图，``images_base64`` 是追加的那几张，
@@ -188,6 +205,7 @@ def build_request_body(
     content.append({"type": "text", "text": prompt})
     body["model"] = model
     body["max_tokens"] = max_tokens
+    body["temperature"] = temperature
     body["messages"] = [{"role": "user", "content": content}]
     if effort is not None:
         body["output_config"] = {"effort": str(effort)}
@@ -202,6 +220,45 @@ def text_of(data: Mapping[str, Any]) -> str:
     return "\n".join(
         str(block.get("text", "")) for block in blocks if block.get("type") == "text"
     ).strip()
+
+
+def stop_reason_of(data: Mapping[str, Any]) -> str | None:
+    """响应体里的 ``stop_reason``。**读取的唯一一处。**
+
+    没有这个字段 → ``None``（**不猜**、不拿 ``output_tokens`` 反推）。
+    """
+    value = data.get("stop_reason")
+    return None if value is None else str(value)
+
+
+def content_block_types_of(data: Mapping[str, Any]) -> tuple[str, ...]:
+    """响应体 ``content[]`` 里各块的 ``type``（按顺序）。**读取的唯一一处。**
+
+    形态判定直读它：只有 ``thinking`` 块 → 思考链吃光了预算（**没有文本**）。
+    """
+    blocks = data.get("content") or []
+    return tuple(
+        str(block.get("type"))
+        for block in blocks
+        if isinstance(block, Mapping) and block.get("type")
+    )
+
+
+def _response_shape(body_bytes: bytes) -> tuple[str | None, tuple[str, ...]]:
+    """从**原始响应体**里取 ``(stop_reason, content_block_types)``。
+
+    只用在**失败路径**上（成功路径由 :func:`parse_response` 直接填进
+    :class:`ModelReply`）—— 失败路径上响应体照样带着这两个字段：
+    「思考链吃光预算 → 没有文本」那类形态正是靠 ``stop_reason=max_tokens``
+    看出来的。读不出来 → ``(None, ())``（**不猜**）。
+    """
+    try:
+        data = json.loads(body_bytes.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None, ()
+    if not isinstance(data, Mapping):
+        return None, ()
+    return stop_reason_of(data), content_block_types_of(data)
 
 
 def usage_of(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -313,6 +370,8 @@ def parse_response(
         cache_read_input_tokens=usage["cache_read_input_tokens"],
         cache_creation_input_tokens=usage["cache_creation_input_tokens"],
         raw_content=tuple(blocks),
+        stop_reason=stop_reason_of(data),
+        content_block_types=content_block_types_of(data),
     )
 
 
@@ -347,10 +406,14 @@ class ModelClient:
         image_base64: str | None = None,
         images_base64: Sequence[str] = (),
         thinking_disabled: bool = False,
+        parse_ok: bool | None = None,
     ) -> ModelReply:
         """发一次请求并返回结果。
 
         ``effort`` **必须显式给**；省略直接报错（不按服务端缺省的最高档跑）。
+
+        ``parse_ok``（这次回答是否解析得出坐标）**由调用方给**：客户端层
+        **不知道解析规则** → 缺省 ``None``，如实落盘（不猜）。
         """
         selected = require_effort(effort)
         endpoint = self.config.endpoint
@@ -363,6 +426,7 @@ class ModelClient:
             image_base64=image_base64,
             images_base64=images_base64,
             thinking_disabled=thinking_disabled,
+            temperature=self.config.temperature,
         )
 
         started = self._clock()
@@ -376,6 +440,7 @@ class ModelClient:
                 http_status=None,
                 latency_ms=(self._clock() - started) * 1000.0,
                 image_tokens=image_tokens,
+                parse_ok=parse_ok,
                 error=str(exc),
             )
             raise
@@ -392,6 +457,9 @@ class ModelClient:
             )
         except (ModelSideError, NoTextOutputError) as exc:
             usage = exc.usage or {}
+            # 失败路径上响应体**照样带着**这两个字段 —— 「思考链吃光预算 →
+            # 没有文本」那类形态正是靠它们看出来的（成功路径由 parse_response 填）。
+            stop_reason, block_types = _response_shape(raw)
             self._log(
                 effort=selected,
                 endpoint=endpoint,
@@ -403,6 +471,11 @@ class ModelClient:
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
                 image_tokens=image_tokens,
+                stop_reason=stop_reason,
+                content_block_types=block_types,
+                # 「没有文本输出」是**确知的 0**；其它失败形态不知道 → ``None``。
+                text_len=0 if isinstance(exc, NoTextOutputError) else None,
+                parse_ok=parse_ok,
                 error=exc.message,
             )
             raise
@@ -418,6 +491,10 @@ class ModelClient:
             cache_read_input_tokens=reply.cache_read_input_tokens,
             cache_creation_input_tokens=reply.cache_creation_input_tokens,
             image_tokens=image_tokens,
+            stop_reason=reply.stop_reason,
+            content_block_types=reply.content_block_types,
+            text_len=len(reply.text),
+            parse_ok=parse_ok,
             error=None,
         )
         # 图像 token 数回灌进回复（调用方要能直接读到，不必去翻日志）。
@@ -463,6 +540,10 @@ class ModelClient:
         image_tokens: int | None = None,
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
+        stop_reason: str | None = None,
+        content_block_types: tuple[str, ...] = (),
+        text_len: int | None = None,
+        parse_ok: bool | None = None,
         error: str | None = None,
     ) -> None:
         self.request_log.write(
@@ -478,6 +559,10 @@ class ModelClient:
                 image_tokens=image_tokens,
                 cache_read_input_tokens=cache_read_input_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
+                stop_reason=stop_reason,
+                content_block_types=content_block_types,
+                text_len=text_len,
+                parse_ok=parse_ok,
                 error=error,
             )
         )
