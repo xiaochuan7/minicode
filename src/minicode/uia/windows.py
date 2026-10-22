@@ -120,6 +120,47 @@ UIA_HELP_TEXT_PROPERTY_ID = 30013
 #: ⚠️ 头文件里常见的那个号（30022）在本机读出来**恒为 False**（是别的属性）。
 UIA_IS_ENABLED_PROPERTY_ID = 30010
 
+# ---------------------------------------------------------------------------
+# 模式（pattern）与它们的 vtable 下标
+# ---------------------------------------------------------------------------
+#
+# ⚠️ **模式 id 与属性 id 是两套号**（``UIAutomationClient.h``）：
+# ``UIA_PATTERN_ID`` 从 10000 起，``UIA_PROPERTY_ID`` 从 30000 起。
+# ⚠️ **Selection = 10001**（10006 是 Grid —— 别照抄错值）。
+
+#: ``SelectionPattern``（**容器**的选中项）。
+UIA_SELECTION_PATTERN_ID = 10001
+#: ``TextPattern``。
+UIA_TEXT_PATTERN_ID = 10014
+#: ``LegacyIAccessiblePattern``（老控件的值兜底）。
+UIA_LEGACY_IACCESSIBLE_PATTERN_ID = 10018
+
+#: ``IUIAutomationSelectionPattern::GetCurrentSelection`` 的 vtable 下标：
+#: IUnknown 占 0~2，它是该接口的**第一个**方法 → **3**。
+_SELECTION_GET_SELECTION_INDEX = 3
+#: ``IUIAutomationElementArray``：``get_Length`` = **3**、``GetElement`` = **4**
+#: （与冻结原型 ``exec/uia.py`` 的 ``find_all`` 用法自洽）。
+_ELEMENT_ARRAY_LENGTH_INDEX = 3
+_ELEMENT_ARRAY_GET_ELEMENT_INDEX = 4
+#: ``IUIAutomationLegacyIAccessiblePattern::get_CurrentValue`` 的下标：
+#: Select=3 / DoDefaultAction=4 / SetValue=5 / get_CurrentChildId=6 /
+#: get_CurrentName=7 / **get_CurrentValue=8**。
+_LEGACY_GET_VALUE_INDEX = 8
+#: ``IUIAutomationTextPattern::get_DocumentRange`` 的下标：
+#: RangeFromPoint=3 / RangeFromChild=4 / GetSelection=5 / GetVisibleRanges=6 /
+#: **get_DocumentRange=7**。
+_TEXT_GET_DOCUMENT_RANGE_INDEX = 7
+#: ``IUIAutomationTextRange::GetText`` 的下标：
+#: Clone=3 / Compare=4 / CompareEndpoints=5 / ExpandToEnclosingUnit=6 /
+#: FindAttribute=7 / FindText=8 / GetAttributeValue=9 / GetBoundingRectangles=10 /
+#: GetEnclosingElement=11 / **GetText=12**。
+_TEXT_RANGE_GET_TEXT_INDEX = 12
+#: ``IUIAutomationElement::get_CurrentName`` 的下标
+#: （与冻结原型 ``exec/uia.py`` 的 ``Element.name`` 自洽）。
+_ELEMENT_GET_NAME_INDEX = 23
+#: ``TextRange.GetText`` 一次最多读多少个字符（读多了没意义，且会撑大 BSTR）。
+_TEXT_MAX_LENGTH = 512
+
 
 def _get_property(ptr: int, property_id: int):
     """读一个 UIA 属性。失败抛 ``OSError``（HRESULT 带上）。"""
@@ -172,11 +213,177 @@ def _read_is_password(element) -> bool | None:
 
 
 def _read_value(element) -> str:
+    """控件的值：**兜底链**（按顺序，读到第一个非空就停）。
+
+    1. **选中项的 Name**（``SelectionPattern.GetSelection()``）——
+       下拉框读出来就是「**当前选中的那一项**」（如「150 ％ (推荐)」）。
+       ⚠️ ``SelectionItemPattern`` **本身没有数值**，有数值的是**容器**的
+       ``SelectionPattern``（先取回选中项，再读它的 Name）。
+    2. **ValuePattern 的值**（属性 30045）—— 编辑框正文那些。
+    3. **LegacyIAccessiblePattern.Value** —— 老控件的值。
+    4. **TextPattern.DocumentRange.GetText()** —— 文本类控件的正文。
+
+    读不到就是空串（**读不到 ≠ 没有值**，调用方自己决定怎么记）。
+    """
+    for reader in (
+        _read_selection_name,
+        _read_value_property,
+        _read_legacy_value,
+        _read_text_value,
+    ):
+        try:
+            value = reader(element)
+        except Exception:
+            value = ""
+        if value:
+            return value
+    return ""
+
+
+def _read_value_property(element) -> str:
+    """ValuePattern 的值（属性 30045）。"""
     try:
         value = _get_property(_element_ptr(element), UIA_VALUE_PROPERTY_ID)
     except OSError:
         return ""
     return value if isinstance(value, str) else ""
+
+
+def _read_element_name(ptr: int) -> str:
+    """读一个元素的 Name（``IUIAutomationElement::get_CurrentName``）。"""
+    out = ctypes.c_void_p()
+    hr = _method(
+        ptr,
+        _ELEMENT_GET_NAME_INDEX,
+        ctypes.c_long,
+        ctypes.POINTER(ctypes.c_void_p),
+    )(ptr, ctypes.byref(out))
+    if hr < 0 or not out.value:
+        return ""
+    try:
+        return ctypes.wstring_at(out.value)
+    finally:
+        oleaut32.SysFreeString(out.value)
+
+
+def _read_selection_name(element) -> str:
+    """**选中项的 Name**（容器走 ``SelectionPattern``）。
+
+    ⚠️ ``SelectionItemPattern`` **没有数值** —— 有数值的是**容器**的
+    ``SelectionPattern.GetSelection()``：取回选中项，再读它的 Name。
+    下拉框（ComboBox）读出来就是「当前选中的那一项」的文字。
+    """
+    pattern = _get_pattern(element, UIA_SELECTION_PATTERN_ID)
+    if not pattern:
+        return ""
+    try:
+        array = ctypes.c_void_p()
+        hr = _method(
+            pattern,
+            _SELECTION_GET_SELECTION_INDEX,
+            ctypes.c_long,
+            ctypes.POINTER(ctypes.c_void_p),
+        )(pattern, ctypes.byref(array))
+        if hr < 0 or not array.value:
+            return ""
+        try:
+            length = ctypes.c_int()
+            hr = _method(
+                array.value,
+                _ELEMENT_ARRAY_LENGTH_INDEX,
+                ctypes.c_long,
+                ctypes.POINTER(ctypes.c_int),
+            )(array.value, ctypes.byref(length))
+            if hr < 0 or length.value <= 0:
+                return ""
+            item = ctypes.c_void_p()
+            hr = _method(
+                array.value,
+                _ELEMENT_ARRAY_GET_ELEMENT_INDEX,
+                ctypes.c_long,
+                ctypes.c_int,
+                ctypes.POINTER(ctypes.c_void_p),
+            )(array.value, 0, ctypes.byref(item))
+            if hr < 0 or not item.value:
+                return ""
+            try:
+                return _read_element_name(item.value)
+            finally:
+                _release(item.value)
+        finally:
+            _release(array.value)
+    finally:
+        _release(pattern)
+
+
+def _read_legacy_value(element) -> str:
+    """``LegacyIAccessiblePattern`` 的 Value（老控件的值兜底）。"""
+    pattern = _get_pattern(element, UIA_LEGACY_IACCESSIBLE_PATTERN_ID)
+    if not pattern:
+        return ""
+    try:
+        out = ctypes.c_void_p()
+        hr = _method(
+            pattern,
+            _LEGACY_GET_VALUE_INDEX,
+            ctypes.c_long,
+            ctypes.POINTER(ctypes.c_void_p),
+        )(pattern, ctypes.byref(out))
+        if hr < 0 or not out.value:
+            return ""
+        try:
+            return ctypes.wstring_at(out.value)
+        finally:
+            oleaut32.SysFreeString(out.value)
+    finally:
+        _release(pattern)
+
+
+def _read_text_value(element) -> str:
+    """``TextPattern`` 的 ``DocumentRange.GetText()``（文本类控件的正文）。"""
+    pattern = _get_pattern(element, UIA_TEXT_PATTERN_ID)
+    if not pattern:
+        return ""
+    try:
+        rng = ctypes.c_void_p()
+        hr = _method(
+            pattern,
+            _TEXT_GET_DOCUMENT_RANGE_INDEX,
+            ctypes.c_long,
+            ctypes.POINTER(ctypes.c_void_p),
+        )(pattern, ctypes.byref(rng))
+        if hr < 0 or not rng.value:
+            return ""
+        try:
+            out = ctypes.c_void_p()
+            hr = _method(
+                rng.value,
+                _TEXT_RANGE_GET_TEXT_INDEX,
+                ctypes.c_long,
+                ctypes.c_int,
+                ctypes.POINTER(ctypes.c_void_p),
+            )(rng.value, _TEXT_MAX_LENGTH, ctypes.byref(out))
+            if hr < 0 or not out.value:
+                return ""
+            try:
+                return ctypes.wstring_at(out.value)
+            finally:
+                oleaut32.SysFreeString(out.value)
+        finally:
+            _release(rng.value)
+    finally:
+        _release(pattern)
+
+
+def _get_pattern(element, pattern_id: int) -> int:
+    """取一个模式的 COM 指针（**没有就是 0**）。
+
+    样板沿用冻结原型 ``exec/uia.py`` 的 ``get_pattern``（**不引入新依赖**）。
+    """
+    try:
+        return int(element.get_pattern(pattern_id) or 0)
+    except Exception:
+        return 0
 
 
 def _read_help_text(element) -> str:
@@ -227,6 +434,48 @@ def _name_matches(element_name: str, condition: str | None) -> bool:
     return name_matches(element_name, condition)
 
 
+def _root_walk_by_pid(pid: int) -> list:
+    """**桌面根遍历** → **按 PID 过滤**（XAML island 的兜底）。
+
+    Windows 设置、计算器这类 **CoreWindow** 应用的 XAML 树
+    **注册在桌面根上**（与窗口**同 PID**），**不在窗口句柄下** ——
+    窗口那条路读到的树是空的（工单 M14 的 W-1.1 / W-1.2 就栽在这里）。
+
+    ⚠️ **只用单条件**（``TrueCondition``）：冻结原型的 ``build_condition``
+    两个条件并存会走 ``CreateAndCondition``，**在本机崩** access violation
+    （``docs/01-现状.md`` §6 第 6 条）。
+    ⚠️ **先按 PID 过滤，再进 Python 侧的名字匹配**（桌面树巨大，
+    过滤必须在 Python 侧做完，不能带着整棵树去问名字）。
+
+    返回的是**该进程的元素**（调用方负责 :meth:`release`）。
+    """
+    from minicode.exec import uia
+
+    controller = uia.UIA()
+    try:
+        root = controller.root()
+        try:
+            condition = controller.build_condition()
+            try:
+                elements = list(root.find_all(condition, uia.TreeScope_Descendants))
+            finally:
+                _release(condition)
+        finally:
+            root.release()
+        mine: list = []
+        for element in elements:
+            try:
+                if element.process_id == pid:
+                    mine.append(element)
+                    continue
+            except Exception:
+                pass
+            element.release()
+        return mine
+    finally:
+        del controller
+
+
 # ---------------------------------------------------------------------------
 # 超时
 # ---------------------------------------------------------------------------
@@ -263,6 +512,8 @@ class WindowsUiaQueryPort:
     * 只发**带属性条件**的查询；无条件查询直接拒绝；
     * 精确名字条件查不到时，退到「控件类型条件 + 名字包含」的扫描
       （仍然带属性条件，不是全树 dump）；
+    * **窗口那条路查不到时**走**桌面根遍历兜底**（XAML island 的树不在
+      窗口句柄下）—— 见 :meth:`_find_root_walk`；
     * 每次观测**重新生成**元素 id（上次观测的 id 不解析）。
     """
 
@@ -282,12 +533,29 @@ class WindowsUiaQueryPort:
         if not request.has_condition:
             raise UnconditionalQueryError("无条件全树查询被拒绝（只做定点查询）")
         started = time.perf_counter()
-        elements, unmatched = _with_deadline(lambda: self._find(request), self.timeout_s)
+        elements, unmatched = self._find_bounded(request)
         elapsed = (time.perf_counter() - started) * 1000.0
         self.last_query_ms = elapsed
         return UiaFindResult(
             elements=elements, elapsed_ms=elapsed, unmatched_count=unmatched
         )
+
+    def _find_bounded(self, request: UiaFindRequest) -> tuple[tuple[UiaElement, ...], int]:
+        """窗口那条路 →（**没查到时**）**桌面根遍历兜底**。
+
+        ⚠️ 两段**各有自己的超时预算**：桌面根遍历很慢（桌面树巨大），
+        不能跟窗口查询抢同一个 5 s（方案 §8.2 第 8 条）。
+        """
+        elements, unmatched = _with_deadline(lambda: self._find(request), self.timeout_s)
+        if elements:
+            return elements, unmatched
+        try:
+            walked, walked_unmatched = _with_deadline(
+                lambda: self._find_root_walk(request), self.timeout_s
+            )
+        except UiaQueryTimeout:
+            return elements, unmatched
+        return walked, unmatched + walked_unmatched
 
     def has_nodes(self, anchor: WindowAnchor) -> bool:
         """树里有没有节点（取第一个节点，不是全树遍历）。"""
@@ -385,6 +653,70 @@ class WindowsUiaQueryPort:
         finally:
             _release(condition)
 
+    # -- 桌面根遍历兜底 ---------------------------------------------------
+
+    def _find_root_walk(
+        self, request: UiaFindRequest
+    ) -> tuple[tuple[UiaElement, ...], int]:
+        """**桌面根遍历**兜底：XAML island 的树不在窗口句柄下。
+
+        ⚠️ 请求**仍然必须带属性条件**（C-09 的禁令不变）：这里的全树遍历是
+        **有条件请求的兜底**，且**按 PID 过滤**后只把那个进程的控件拿进匹配。
+        """
+        pid = _process_id(request.anchor.hwnd)
+        if not pid:
+            return (), 0
+        elements = _root_walk_by_pid(pid)
+        if not elements:
+            return (), 0
+        matched, unmatched = self._filter(elements, request)
+        # **窗口标题**取锚定窗口的（XAML island 那些元素自己没有窗口句柄）。
+        anchor_title = _window_title(request.anchor.hwnd)
+        return self._publish(matched, anchor_title), unmatched
+
+    def _filter(self, elements: list, request: UiaFindRequest) -> tuple[list, int]:
+        """**复用现有名字过滤**（Python 侧）—— 判据与 :meth:`_query` 同一套。
+
+        桌面上取回来的是**这个进程的全部元素**（单条件遍历的必然结果），
+        所以「自动化标识 / 精确名字 / 控件类型」三条退路都在 Python 侧做，
+        **名字过滤的口径不变**（:func:`_name_matches`）。
+        """
+        attempts: list = []
+        if request.automation_id:
+            attempts.append(
+                lambda element: element.automation_id == request.automation_id
+            )
+        if request.name:
+            attempts.append(lambda element: (element.name or "") == request.name)
+        type_id = _control_type_id(request.control_type)
+        if type_id is not None:
+            attempts.append(lambda element: element.control_type == type_id)
+        unmatched = 0
+        matched: list = []
+        for predicate in attempts:
+            found = []
+            for element in elements:
+                try:
+                    if predicate(element):
+                        found.append(element)
+                except Exception:
+                    continue
+            candidates = [
+                element
+                for element in found
+                if _name_matches(element.name or "", request.name)
+            ]
+            unmatched += len(found) - len(candidates)
+            if candidates:
+                matched = candidates
+                break
+        # **只留下对上的那些**，其余的释放掉（别把整棵桌面树攥在手里）。
+        keep = {id(element) for element in matched}
+        for element in elements:
+            if id(element) not in keep:
+                element.release()
+        return matched, unmatched
+
     def _publish(self, elements: list, anchor_title: str = "") -> tuple[UiaElement, ...]:
         """把 COM 元素转成读数，并**重新生成**元素 id。"""
         for old in self._live.values():
@@ -452,6 +784,22 @@ class WindowsUiaQueryPort:
 # ---------------------------------------------------------------------------
 
 
+def _better_assessment(
+    window: TreeAssessment, walked: TreeAssessment
+) -> TreeAssessment:
+    """两遍读数（窗口那一遍 / 桌面根那一遍）取**更好的那一遍**。
+
+    「更好」= 能力表的判定更高（完全可用 > 部分覆盖）；
+    同档时取**可用控件更多**的那一遍（桌面根那一遍看得到更多）。
+    """
+
+    def _rank(assessment: TreeAssessment) -> tuple[int, int]:
+        usable = 1 if (assessment.usable_controls and not assessment.name_collisions) else 0
+        return (usable, assessment.usable_controls)
+
+    return window if _rank(window) >= _rank(walked) else walked
+
+
 class WindowsCapabilityProbe:
     """可用性探测：**递归子窗口 + 看 UIA ClassName**（不数候选数）。
 
@@ -461,15 +809,40 @@ class WindowsCapabilityProbe:
 
     * 动作路径（:class:`~minicode.uia.ports.UiaQueryPort`）**永远**带属性条件；
     * 探测每个「应用 + 版本」只跑一次（静态缓存），且**不参与动作路径**。
+
+    **桌面根兜底**：窗口那一遍没判成「完全可用」时，再走一遍**桌面根遍历**
+    （XAML island 的树注册在桌面根上、与窗口同 PID —— Windows 设置就属这类），
+    两遍读数取**更好的那一遍**。
     """
 
     def __init__(self, timeout_s: float = DEFAULT_TIMEOUT_S):
         self.timeout_s = float(timeout_s)
 
     def assess(self, anchor: WindowAnchor) -> TreeAssessment:
-        return _with_deadline(lambda: self._assess(anchor), self.timeout_s)
+        window = _with_deadline(lambda: self._assess(anchor, ()), self.timeout_s)
+        if window.usable_controls and not window.name_collisions:
+            # 已经判「完全可用」→ 不必再遍历桌面（省一次昂贵的桌面根遍历）。
+            return window
+        # **兜底：桌面根遍历**（XAML island 的树注册在桌面根上、与窗口同 PID）。
+        # ⚠️ 它**自己一次超时预算**（桌面树巨大），不与窗口遍历抢同一个 5 s。
+        pid = _process_id(anchor.hwnd)
+        if not pid:
+            return window
+        try:
+            extra = _with_deadline(lambda: _root_walk_by_pid(pid), self.timeout_s)
+        except UiaQueryTimeout:
+            return window
+        if not extra:
+            return window
+        try:
+            walked = _with_deadline(
+                lambda: self._assess(anchor, tuple(extra)), self.timeout_s
+            )
+        except UiaQueryTimeout:
+            return window
+        return _better_assessment(window, walked)
 
-    def _assess(self, anchor: WindowAnchor) -> TreeAssessment:
+    def _assess(self, anchor: WindowAnchor, extra: tuple = ()) -> TreeAssessment:
         from minicode.exec import uia
 
         windows = [anchor.hwnd, *_child_windows(anchor.hwnd)]
@@ -480,55 +853,69 @@ class WindowsCapabilityProbe:
         usable_controls = 0
         has_automation_id = False
         has_tree = False
+
+        def _consume(element) -> None:
+            """一个元素的读数（**去重集合是同一个** → 不重复计数）。"""
+            nonlocal usable_controls, has_automation_id
+            try:
+                class_name = element.class_name or ""
+                if class_name and class_name not in class_names:
+                    class_names.append(class_name)
+                if element.control_type in uia.INTERACTIVE_CONTROL_TYPES:
+                    if class_name and class_name not in interactive:
+                        interactive.append(class_name)
+                    name = element.name or ""
+                    # 同一个元素会**同时**出现在父窗口与子窗口的子树里，
+                    # 不去重就会把「同名撞车」数虚（父窗口数一遍、子窗口再数一遍）。
+                    key = (
+                        int(element.native_window_handle),
+                        name,
+                        element.bounding_rect.left,
+                        element.bounding_rect.top,
+                    )
+                    if name and key not in seen:
+                        seen.add(key)
+                        names.append(name)
+                    # **裸外壳只有 3 个边框按钮**的情形就是靠这一关判出来的：
+                    # 边框按钮过不了 is_usable（有名字或自动化标识 + 类名非空 +
+                    # 控件框有面积 + 在屏幕上 + 属于可交互控件类型）。
+                    usable, _ = uia.is_usable(element, interactive_only=True)
+                    if usable:
+                        usable_controls += 1
+                if element.automation_id:
+                    has_automation_id = True
+            except Exception:
+                pass
+            finally:
+                element.release()
+
         controller = uia.UIA()
         try:
-            for hwnd in windows:
-                try:
-                    root = controller.element_from_handle(hwnd)
-                except Exception:
-                    continue
-                if root is None:
-                    continue
-                condition = controller.build_condition()
-                try:
-                    elements = list(root.find_all(condition, uia.TreeScope_Descendants))
-                except Exception:
-                    continue
-                finally:
-                    _release(condition)
-                has_tree = has_tree or bool(elements)
-                for element in elements:
+            if extra:
+                # **桌面根那一遍**已经是该进程的**全部**元素
+                # （桌面根的后代包含窗口子树）→ **不再走窗口那一遍**，
+                # 否则同一个元素会被数两遍。
+                has_tree = bool(extra)
+                for element in extra:
+                    _consume(element)
+            else:
+                for hwnd in windows:
                     try:
-                        class_name = element.class_name or ""
-                        if class_name and class_name not in class_names:
-                            class_names.append(class_name)
-                        if element.control_type in uia.INTERACTIVE_CONTROL_TYPES:
-                            if class_name and class_name not in interactive:
-                                interactive.append(class_name)
-                            name = element.name or ""
-                            # 同一个元素会**同时**出现在父窗口与子窗口的子树里，
-                            # 不去重就会把「同名撞车」数虚（父窗口数一遍、子窗口再数一遍）。
-                            key = (
-                                int(element.native_window_handle),
-                                name,
-                                element.bounding_rect.left,
-                                element.bounding_rect.top,
-                            )
-                            if name and key not in seen:
-                                seen.add(key)
-                                names.append(name)
-                            # **裸外壳只有 3 个边框按钮**的情形就是靠这一关判出来的：
-                            # 边框按钮过不了 is_usable（有名字或自动化标识 + 类名非空 +
-                            # 控件框有面积 + 在屏幕上 + 属于可交互控件类型）。
-                            usable, _ = uia.is_usable(element, interactive_only=True)
-                            if usable:
-                                usable_controls += 1
-                        if element.automation_id:
-                            has_automation_id = True
+                        root = controller.element_from_handle(hwnd)
+                    except Exception:
+                        continue
+                    if root is None:
+                        continue
+                    condition = controller.build_condition()
+                    try:
+                        elements = list(root.find_all(condition, uia.TreeScope_Descendants))
                     except Exception:
                         continue
                     finally:
-                        element.release()
+                        _release(condition)
+                    has_tree = has_tree or bool(elements)
+                    for element in elements:
+                        _consume(element)
         finally:
             del controller
         collisions = sum(
