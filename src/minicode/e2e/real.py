@@ -218,19 +218,63 @@ def stop_shared_playwright() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _strip_spaces(text: str) -> str:
+    """去掉所有空白（OCR 的词里常有空格；比对时不该被空格卡住）。"""
+    return "".join((text or "").split())
+
+
+def find_text_boxes(words: Sequence[Any], target: str) -> list[tuple[int, int, int, int]] | None:
+    """在 OCR 的**词框**里找出**拼出**那个名字的那几个框。
+
+    ⚠️ **中文的「词」常常是单个字**（本机实测，2026-10-22：Windows OCR 把
+    「系统」读成「系」「统」**两个词**、「150 ％」读成「150」「％」）→
+    **不能只找「文本等于那个名字」的词**，要找**连续几个词拼起来**的那一段。
+
+    三条口径（按顺序）：
+
+    1. **一个词**就等于那个名字（英文 / 数字的常见情形）；
+    2. **连续的词**拼起来等于那个名字（中文的常见情形）；
+    3. 一个词的文本**包含**那个名字。
+
+    找不到 → ``None``（**不编真值**）。
+    """
+    needle = _strip_spaces(target)
+    if not needle:
+        return None
+    texts = [(_strip_spaces(word.text), word.box) for word in words]
+    for text, box in texts:
+        if text == needle:
+            return [box]
+    for start in range(len(texts)):
+        joined = ""
+        boxes: list[tuple[int, int, int, int]] = []
+        for text, box in texts[start : start + len(needle) + 2]:
+            if not text:
+                break
+            joined += text
+            boxes.append(box)
+            if joined == needle:
+                return boxes
+            if not needle.startswith(joined):
+                break
+    for text, box in texts:
+        if needle in text:
+            return [box]
+    return None
+
+
 def ocr_word_rect(
     element_name: str, *, language: str = "zh-Hans-CN"
 ) -> tuple[tuple[int, int, int, int], str] | None:
     """用 **OCR 的词框**当控件矩形真值（**画面量的**）。
 
     树里读不到那个控件的框时 → 取当前帧 → Windows 自带 OCR 的**词级框** →
-    在词框里找**文本等于/包含**那个名字的词 → 它的框就是控件矩形真值。
+    在词框里找**拼出**那个名字的那几个框 → 它们的**并集**就是控件矩形真值。
 
     * 词框是**喂进去那张 PNG 的像素**（= 原始物理分辨率，1 像素 = 1 物理像素）
       → **加上帧的原点**才是物理表面坐标（口径见
       ``verification/ocr_windows.py::OcrWord``）；
     * **没命中就返回 ``None``** —— **不编真值**（上层据此记 ``undecidable``）；
-    * 多个命中时取**最小**的那个（最贴近那个词本身）；
     * OCR 后端读不出来会**抛异常**（上层据此判「判不了」）。
     """
     from minicode.action.capture import CapturePort
@@ -241,16 +285,16 @@ def ocr_word_rect(
     if frame.is_empty:
         return None
     words = WindowsOcrPort(language).read_words(frame)
-    exact = [word for word in words if word.text.strip() == element_name]
-    contains = [word for word in words if element_name in word.text]
-    matches = exact or contains
-    if not matches:
+    boxes = find_text_boxes(words, element_name)
+    if not boxes:
         return None
-    word = min(matches, key=lambda item: item.w * item.h)
-    left = frame.left + word.x
-    top = frame.top + word.y
-    rect = (left, top, left + word.w, top + word.h)
-    return rect, f"OCR 量的（画面里那个词的框：「{word.text}」）"
+    left = min(box[0] for box in boxes) + frame.left
+    top = min(box[1] for box in boxes) + frame.top
+    right = max(box[2] for box in boxes) + frame.left
+    bottom = max(box[3] for box in boxes) + frame.top
+    return (left, top, right, bottom), (
+        f"OCR 量的（画面里那个词的框：「{element_name}」）"
+    )
 
 
 # ---------------------------------------------------------------------------

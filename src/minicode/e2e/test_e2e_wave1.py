@@ -18,6 +18,7 @@ from minicode.e2e import real as real_module
 from minicode.e2e.apps import VerificationPage
 from minicode.e2e.real import (
     WindowsDesktopExecutor,
+    find_text_boxes,
     read_scale_from_registry,
     scale_percent_from_log_pixels,
 )
@@ -869,6 +870,53 @@ def test_the_truth_stays_undecidable_when_the_ocr_reading_fails(tmp_path):
     assert truth.rect is None
     assert "系统" in truth.missing
     assert "OCR 读不出来" in executor.task_context()["ocr_truth_note"]
+
+
+def test_the_ocr_words_are_assembled_from_consecutive_characters():
+    """**中文的「词」常常是单个字**（本机实测：「系统」→ 「系」「统」两个词）。
+
+    → 真值要由**连续几个词拼出来**的那一段给出（**不许只找「文本等于」**）。
+    """
+    words = [
+        SimpleNamespace(text="系", box=(10, 20, 30, 40)),
+        SimpleNamespace(text="统", box=(30, 20, 50, 40)),
+        SimpleNamespace(text="别", box=(60, 20, 80, 40)),
+    ]
+    assert find_text_boxes(words, "系统") == [
+        (10, 20, 30, 40),
+        (30, 20, 50, 40),
+    ]
+    #: 拼不出来 → **不编**（返回 ``None``）。
+    assert find_text_boxes(words, "系统设置") is None
+    assert find_text_boxes(words, "") is None
+
+
+def test_the_ocr_truth_is_the_union_of_the_matched_word_boxes(tmp_path):
+    """真值 = **那几个词框的并集**（加帧原点 → 物理表面坐标）。"""
+    words = [
+        SimpleNamespace(text="系", box=(10, 20, 30, 40)),
+        SimpleNamespace(text="统", box=(30, 20, 50, 40)),
+    ]
+
+    def _ocr(element_name):
+        boxes = find_text_boxes(words, element_name)
+        if not boxes:
+            return None
+        left = min(box[0] for box in boxes)
+        top = min(box[1] for box in boxes)
+        right = max(box[2] for box in boxes)
+        bottom = max(box[3] for box in boxes)
+        return (left, top, right, bottom), "OCR 量的（画面里那个词的框：「系统」）"
+
+    executor = WindowsDesktopExecutor(out_dir=tmp_path, ocr_truth_source=_ocr)
+    executor._port = _FakeUiaPort(
+        [SimpleNamespace(name="别的控件", rect=(0, 0, 10, 10), automation_id="")]
+    )
+    step = _step(truth_element="系统", truth_control_type="ListItem")
+    truth = executor._resolve_truth(step, SimpleNamespace(anchor=None))
+    assert truth.rect == (10, 20, 50, 40)
+    assert truth.center == (30, 30)
+    assert "OCR 量的" in truth.source
 
 
 def test_landing_rule_summary_reports_the_version_and_the_distribution():
