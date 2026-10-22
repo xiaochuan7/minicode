@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import ctypes
-import math
 import os
 import sqlite3
 import subprocess
@@ -45,6 +44,14 @@ from minicode.reflection.stop import (
     StopPolicy,
 )
 
+from .checks import (
+    TargetTruth,
+    landing_note,
+    landing_tier,
+    missing_truth,
+    rect_distance_px,
+    truth_from_rect,
+)
 from .modal import ModalFinding, detect_modal, enumerate_windows
 from .runner import StepOutcome
 from .tasks import Step
@@ -121,12 +128,12 @@ def _landing_error_px(
     不是元素矩形中心 → 「到元素中心的距离」不再是这条通道的判据
     （扁平 DOM 上元素框是整行宽，两者能差几百 px）。
     **「落点落在目标矩形里」**这条仍然成立，且才是这里有信息量的检查。
+
+    ⚠️ **这条就是「真机侧与浏览器侧统一的那条口径」**
+    （真机侧原来算的是「到中心的距离」→ 两条口径不可比；
+    实现见 :func:`minicode.e2e.checks.rect_distance_px`）。
     """
-    x, y = float(landing[0]), float(landing[1])
-    left, top, right, bottom = (float(value) for value in rect)
-    dx = max(left - x, 0.0, x - right)
-    dy = max(top - y, 0.0, y - bottom)
-    return math.hypot(dx, dy)
+    return rect_distance_px(landing, rect)
 
 
 def alt_bring_to_front(hwnd: int) -> bool:
@@ -621,13 +628,14 @@ class NativeAppExecutor:
                 error_code="executor_error",
                 error_message="缝还没建起来（preflight 没跑？）",
             )
-        truth, truth_source = self._resolve_truth(step)
+        truth = self._resolve_truth(step)
+        self._record_landing_truth(step, truth)
         if step.action_kind is ActionKind.INSPECT:
-            return self._execute_inspect(step, truth_source)
+            return self._execute_inspect(step, truth.source)
         if step.action_kind is ActionKind.KEY:
-            return self._execute_key(step, truth, truth_source)
+            return self._execute_key(step, truth)
         if step.action_kind is ActionKind.TYPE and step.params.get("focus_target"):
-            return self._execute_focused_type(step, truth, truth_source)
+            return self._execute_focused_type(step, truth)
         request = SeamRequest(
             target_description=step.target,
             action_kind=step.action_kind,
@@ -641,7 +649,7 @@ class NativeAppExecutor:
         traces = self._sink.traces[before:]
         trace = traces[-1] if traces else None
         self._policy.observe_round()
-        return self._outcome(step, result, trace, truth, truth_source)
+        return self._outcome(step, result, trace, truth)
 
     def _execute_inspect(self, step: Step, truth_source: str) -> StepOutcome:
         """**读控件树**（观察型动作：不改任何东西）。
@@ -681,8 +689,7 @@ class NativeAppExecutor:
     def _execute_key(
         self,
         step: Step,
-        truth: tuple[int, int] | None,
-        truth_source: str,
+        truth: TargetTruth,
     ) -> StepOutcome:
         """**按键**动作（协议里没有落点，直接走动作执行器）。"""
         combo = tuple(str(part) for part in step.params.get("combo", ()))
@@ -703,15 +710,14 @@ class NativeAppExecutor:
             expectation_met=None,
             expectation=(step.expectation.describe() if step.expectation else ""),
             execute_verify_ms=elapsed,
-            truth_source=truth_source,
+            truth_source=truth.source,
             note=("；".join(result.notes or ())),
         )
 
     def _execute_focused_type(
         self,
         step: Step,
-        truth: tuple[int, int] | None,
-        truth_source: str,
+        truth: TargetTruth,
     ) -> StepOutcome:
         """**往输入框里输入文本**：先点一下目标（给它焦点），再注入文字。
 
@@ -729,7 +735,7 @@ class NativeAppExecutor:
         clicked = self._seam.run(focus)
         self._dispatched += 1
         if not clicked.ok:
-            return self._outcome(step, clicked, None, truth, truth_source)
+            return self._outcome(step, clicked, None, truth)
         type_request = SeamRequest(
             target_description=step.target,
             action_kind=ActionKind.TYPE,
@@ -742,23 +748,24 @@ class NativeAppExecutor:
         traces = self._sink.traces[before:]
         trace = traces[-1] if traces else None
         self._policy.observe_round()
-        return self._outcome(step, typed, trace, truth, truth_source)
+        return self._outcome(step, typed, trace, truth)
 
     def _outcome(
         self,
         step: Step,
         result: Any,
         trace: Any,
-        truth: tuple[int, int] | None,
-        truth_source: str,
+        truth: TargetTruth,
     ) -> StepOutcome:
         """把一次动作的结果整理成**外部可观察**的那些字段。"""
         landing = result.final_point
+        #: **落点偏差 = 到矩形的距离（框内 = 0）**（与浏览器侧同一条口径）。
         error = (
-            math.dist((float(landing[0]), float(landing[1])), truth)
-            if landing is not None and truth is not None
+            rect_distance_px(landing, truth.rect)
+            if landing is not None and truth.rect is not None
             else None
         )
+        verdict = landing_tier(landing, truth.rect, truth.center)
         verification = (trace.verification_result or {}) if trace is not None else {}
         satisfied = verification.get("satisfied")
         detail = verification.get("diff") or verification.get("observed") or ""
@@ -784,8 +791,8 @@ class NativeAppExecutor:
             execute_verify_ms=(trace.execute_verify_ms if trace else 0.0),
             landing_point=landing,
             landing_error_px=error,
-            truth_source=truth_source,
-            note=("；".join(result.result.notes or ())),
+            truth_source=truth.source,
+            note=landing_note(verdict, result.result.notes or ()),
         )
 
     def _expectation_text(self, step: Step) -> str:
@@ -865,11 +872,29 @@ class NativeAppExecutor:
             return ""
         return result.elements[0].value if result.elements else ""
 
-    def _resolve_truth(self, step: Step) -> tuple[tuple[int, int] | None, str]:
-        """真值：命令行覆盖 > 树里查控件框中心 > 写死的常量。"""
+    def _resolve_truth(self, step: Step) -> TargetTruth:
+        """真值：**中心点 + 控件矩形**（物理像素）。
+
+        来源优先级：命令行覆盖 > 树里查控件框 > 工单里写死的常量。
+
+        ⚠️ **树里没有那个控件的框 → 不编**：只记 ``missing``
+        （**缺哪条真值**）→ 落点判据据此记 ``undecidable``。
+        """
         override = self.truth_overrides.get(step.id)
         if override is not None:
-            return override, "命令行给的"
+            center = (int(override[0]), int(override[1]))
+            if step.truth_rect is not None:
+                return TargetTruth(
+                    center=center,
+                    rect=step.truth_rect,
+                    source="命令行给的中心点 + 工单里写死的矩形",
+                )
+            return TargetTruth(
+                center=center,
+                source="命令行给的（只有中心点）",
+                missing="缺目标控件矩形（bbox）真值",
+            )
+        tree_missing = ""
         if step.truth_element:
             from minicode.action.text import name_matches
             from minicode.uia.ports import UiaFindRequest
@@ -896,13 +921,29 @@ class NativeAppExecutor:
             for element in elements:
                 rect = element.rect
                 if rect[2] > rect[0] and rect[3] > rect[1]:
-                    return (
-                        (rect[0] + rect[2]) // 2,
-                        (rect[1] + rect[3]) // 2,
-                    ), f"树里的控件框「{element.name}」"
+                    return truth_from_rect(
+                        tuple(int(value) for value in rect),
+                        f"树里的控件框「{element.name}」",
+                    )
+            tree_missing = f"树里没有「{step.truth_element}」的控件框"
+        if step.truth_rect is not None:
+            return truth_from_rect(step.truth_rect, "画面量的")
         if step.truth is not None:
-            return step.truth, "画面量的"
-        return None, "（没有真值）"
+            return TargetTruth(
+                center=step.truth,
+                source="画面量的中心点（没有控件矩形）",
+                missing="缺目标控件矩形（bbox）真值",
+            )
+        return missing_truth(
+            tree_missing or "树里没有那个控件的框，工单里也没写死"
+        )
+
+    def _record_landing_truth(self, step: Step, truth: TargetTruth) -> None:
+        """把这一步的**真值（中心点 + 控件矩形）**记进任务级上下文
+        —— 验收条款要读它来判三档（``checks.landing_in_target_rect``）。"""
+        truths = dict(self._context.get("landing_truths") or {})
+        truths[step.id] = truth.to_dict()
+        self._context["landing_truths"] = truths
 
     def _query_port(self):
         from minicode.uia.windows import WindowsUiaQueryPort
@@ -1552,12 +1593,20 @@ class CcSwitchExecutor:
         if not verified:
             self._context["verification_failure"] = "execution_failed"
         #: 真值 = **那张卡片**的矩形（物理表面空间）；落点落在它里面 → 偏差 0 px。
-        truth = card.rect
+        target_truth = truth_from_rect(
+            card.rect, "页面结构里那张卡片的矩形（物理表面空间）"
+        )
+        truth = target_truth.rect
         error = (
             _landing_error_px(landing, truth)
             if landing is not None and truth is not None
             else None
         )
+        verdict = landing_tier(landing, target_truth.rect, target_truth.center)
+        #: **真值（中心点 + 控件矩形）**记进任务级上下文（验收条款判三档要读它）。
+        truths = dict(self._context.get("landing_truths") or {})
+        truths[step.id] = target_truth.to_dict()
+        self._context["landing_truths"] = truths
         satisfied = verified
         detail = (
             f"「{name}」的卡片上写着「{self.CURRENT_BUTTON}」"
@@ -1593,8 +1642,10 @@ class CcSwitchExecutor:
             expectation_detail=detail,
             landing_point=landing,
             landing_error_px=error,
-            truth_source="页面结构里那张卡片的矩形（物理表面空间）",
-            note="动作走 CDP：浏览器自己的输入通道（零模型调用、零标定）",
+            truth_source=target_truth.source,
+            note=landing_note(
+                verdict, ("动作走 CDP：浏览器自己的输入通道（零模型调用、零标定）",)
+            ),
         )
 
     def _inspect(self, step: Step) -> StepOutcome:
@@ -2214,12 +2265,17 @@ class ElectronExecutor:
         self._context_data["setting_value"] = self._page_setting()
         self._record_coordinate_window(step, trace)
         landing = result.final_point
-        truth, truth_source = self._landing_truth(step, trace)
+        truth = self._landing_truth(step, trace)
         error = (
-            _landing_error_px(landing, truth)
-            if landing is not None and truth is not None
+            _landing_error_px(landing, truth.rect)
+            if landing is not None and truth.rect is not None
             else None
         )
+        verdict = landing_tier(landing, truth.rect, truth.center)
+        #: **真值（中心点 + 控件矩形）**记进任务级上下文（验收条款判三档要读它）。
+        truths = dict(self._context_data.get("landing_truths") or {})
+        truths[step.id] = truth.to_dict()
+        self._context_data["landing_truths"] = truths
         satisfied = verification.get("satisfied")
         detail = verification.get("diff") or verification.get("observed") or ""
         if step.expect_context[0]:
@@ -2248,13 +2304,11 @@ class ElectronExecutor:
             execute_verify_ms=(trace.execute_verify_ms if trace else 0.0),
             landing_point=result.final_point,
             landing_error_px=error,
-            truth_source=truth_source,
-            note=("；".join(result.result.notes or ())),
+            truth_source=truth.source,
+            note=landing_note(verdict, result.result.notes or ()),
         )
 
-    def _landing_truth(
-        self, step: Step, trace: Any
-    ) -> tuple[tuple[int, int, int, int] | None, str]:
+    def _landing_truth(self, step: Step, trace: Any) -> TargetTruth:
         """浏览器通道的**真值**：页面结构里那个元素的矩形（物理表面空间）。
 
         ⚠️ 工单 **M28** 起，浏览器通道的落点取的是**可见文本的实际区域中心**，
@@ -2266,11 +2320,11 @@ class ElectronExecutor:
         """
         selected = getattr(trace, "selected", None) if trace is not None else None
         if selected is None:
-            return None, "（没有真值）"
+            return missing_truth("这一步没有选中任何元素（页面结构里没有目标）")
         rect = selected.rect
         if rect[2] <= rect[0] or rect[3] <= rect[1]:
-            return None, "（元素矩形不合法）"
-        return (
+            return missing_truth("元素矩形不合法")
+        return truth_from_rect(
             (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])),
             "页面结构里的元素矩形（落点必须落在它里面）",
         )

@@ -9,6 +9,10 @@ from __future__ import annotations
 import unittest
 
 from minicode.e2e.checks import (
+    LANDING_ERROR_PX_VERSION,
+    LANDING_HIT_RULE,
+    LANDING_NEAR_MISS_PX,
+    TargetTruth,
     capability_usable_or_cut_visual,
     channel_and_failure_readable,
     coordinates_stayed_in_window,
@@ -415,6 +419,52 @@ class Wave2ScoringTests(unittest.TestCase):
         #: 合规停手进分母（0 分）；人工代跑不进分母。
         self.assertEqual(report["auto"]["denominator"], 1)
         self.assertEqual(report["auto"]["pass_rate"], 0.0)
+
+
+class Wave2LandingRuleTests(unittest.TestCase):
+    """**落点三档**（A 命中 / B 近失 / C 错选）+ **口径版本**。"""
+
+    def _evidence(self, landing, rect=(100, 100, 200, 200)):
+        truth = TargetTruth(center=(150, 150), rect=rect, source="页面结构里的元素矩形")
+        return TaskEvidence(
+            task=task_by_id("E-1"),
+            steps=(
+                StepOutcome(
+                    step_id="E-1.1", landing_point=landing, channel="browser"
+                ),
+            ),
+            context={"landing_truths": {"E-1.1": truth.to_dict()}},
+        )
+
+    def test_the_landing_clause_is_the_three_tier_one(self):
+        """框内 → 判过；出框很远 → 判失败。"""
+        clause = next(c for c in task_by_id("E-1").clauses if c.id == "E-1.A")
+        ok, detail = clause.check(self._evidence((120, 130)))
+        self.assertTrue(ok)
+        self.assertIn("A 命中", detail)
+        ok, detail = clause.check(self._evidence((300, 150)))
+        self.assertFalse(ok)
+        self.assertIn("C 错选", detail)
+
+    def test_a_near_miss_is_not_judged_dead(self):
+        """**B 近失只记档**（不判死）。"""
+        clause = next(c for c in task_by_id("CC-1").clauses if c.id == "CC-1.B")
+        ok, detail = clause.check(self._evidence((230, 150)))
+        self.assertTrue(ok)
+        self.assertIn("B 近失", detail)
+
+    def test_without_a_control_rect_the_clause_is_undecidable(self):
+        """**没有控件矩形 → 判不了**（并写清缺哪条真值）。"""
+        clause = next(c for c in task_by_id("E-1").clauses if c.id == "E-1.A")
+        ok, detail = clause.check(self._evidence((120, 130), rect=None))
+        self.assertFalse(ok)
+        self.assertIn("判不了", detail)
+        self.assertIn("缺目标控件矩形", detail)
+
+    def test_the_wave2_landing_constants(self):
+        self.assertEqual(LANDING_HIT_RULE, "bbox")
+        self.assertEqual(LANDING_NEAR_MISS_PX, 36.0)
+        self.assertTrue(LANDING_ERROR_PX_VERSION)
 
 
 class ModalDetectionTests(unittest.TestCase):

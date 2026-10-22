@@ -70,6 +70,12 @@ class Step:
     control_type: str = ""
     #: **真值**：目标控件中心（物理像素）。给了才能算落点偏差。
     truth: tuple[int, int] | None = None
+    #: **真值**：目标控件的**矩形**（物理像素；``(left, top, right, bottom)``）。
+    #:
+    #: ⚠️ **落点那一条是三档**（框内 = 命中；出框 ≤ 36 px = 近失；更远 = 错选）
+    #: —— **没有矩形就判不了**（不许拿中心点硬凑一个框）。
+    #: 中心点取**包围盒中心**（不是语义中心）。
+    truth_rect: tuple[int, int, int, int] | None = None
     #: **真值从树里取**时的控件名（跑之前按名字查一次控件框，取它的中心）。
     #: 比写死像素更稳（控件挪了位也不失效）。
     truth_element: str = ""

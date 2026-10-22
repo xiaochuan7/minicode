@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import ctypes
-import math
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -36,6 +35,14 @@ from minicode.action.seam import ActionExecutionSeam, SeamRequest, SeamResult
 from minicode.reflection.handoff import build_handoff
 from minicode.reflection.stop import STOP_EXPECTATION_MET, STOP_REASON_TEXT, StopPolicy
 
+from .checks import (
+    TargetTruth,
+    landing_note,
+    landing_tier,
+    missing_truth,
+    rect_distance_px,
+    truth_from_rect,
+)
 from .runner import StepOutcome
 from .tasks import Step
 from .visual import VisualChannel, merged_candidate_source
@@ -333,9 +340,10 @@ class WindowsDesktopExecutor:
         wiring = self._ensure_wiring(step.window)
         #: **当前这一步的窗口**（候选源按它读树；控件框是那个窗口的）。
         self._current_window = step.window
-        truth, truth_source = self._resolve_truth(step, wiring)
+        truth = self._resolve_truth(step, wiring)
+        self._record_landing_truth(step, truth)
         if step.use_previous_landing:
-            return self._execute_at_previous_landing(step, wiring, truth, truth_source)
+            return self._execute_at_previous_landing(step, wiring, truth)
         request = SeamRequest(
             target_description=step.target,
             action_kind=step.action_kind,
@@ -356,11 +364,14 @@ class WindowsDesktopExecutor:
         landing = result.final_point
         if landing is not None:
             self._last_landing = landing
+        #: **落点偏差 = 到矩形的距离（框内 = 0）**（口径版本见
+        #: ``checks.LANDING_ERROR_PX_VERSION``）—— 与浏览器侧同一条口径。
         error = (
-            math.dist((float(landing[0]), float(landing[1])), truth)
-            if landing is not None and truth is not None
+            rect_distance_px(landing, truth.rect)
+            if landing is not None and truth.rect is not None
             else None
         )
+        verdict = landing_tier(landing, truth.rect, truth.center)
         verification = (trace.verification_result or {}) if trace is not None else {}
         satisfied = verification.get("satisfied")
         expectation_text = (
@@ -390,8 +401,8 @@ class WindowsDesktopExecutor:
             execute_verify_ms=(trace.execute_verify_ms if trace else 0.0),
             landing_point=landing,
             landing_error_px=error,
-            truth_source=truth_source,
-            note=("；".join(result.result.notes or ())),
+            truth_source=truth.source,
+            note=landing_note(verdict, result.result.notes or ()),
         )
 
     def _judge_zoom(
@@ -415,8 +426,7 @@ class WindowsDesktopExecutor:
         self,
         step: Step,
         wiring: _Wiring,
-        truth: tuple[int, int] | None,
-        truth_source: str = "",
+        truth: TargetTruth,
     ) -> StepOutcome:
         """点在上一步给的落点**上**（放大的答案就是点击位置）。
 
@@ -460,10 +470,11 @@ class WindowsDesktopExecutor:
             result = wiring.seam.executor.execute(action)
         execute_ms = (time.perf_counter() - started) * 1000.0
         error = (
-            math.dist((float(landing[0]), float(landing[1])), truth)
-            if truth is not None
+            rect_distance_px(landing, truth.rect)
+            if landing is not None and truth.rect is not None
             else None
         )
+        verdict = landing_tier(landing, truth.rect, truth.center)
         return StepOutcome(
             step_id=step.id,
             description=step.description,
@@ -482,21 +493,40 @@ class WindowsDesktopExecutor:
             execute_verify_ms=execute_ms,
             landing_point=landing,
             landing_error_px=error,
-            truth_source=truth_source,
-            note="；".join(result.notes or ()),
+            truth_source=truth.source,
+            note=landing_note(verdict, result.notes or ()),
         )
 
-    def _resolve_truth(
-        self, step: Step, wiring: _Wiring
-    ) -> tuple[tuple[int, int] | None, str]:
-        """真值：命令行覆盖 > 树里查控件框中心 > 写死的常量。
+    def _record_landing_truth(self, step: Step, truth: TargetTruth) -> None:
+        """把这一步的**真值（中心点 + 控件矩形）**记进任务级上下文
+        —— 验收条款要读它来判三档（``checks.landing_in_target_rect``）。"""
+        truths = dict(self._context.get("landing_truths") or {})
+        truths[step.id] = truth.to_dict()
+        self._context["landing_truths"] = truths
 
-        返回 ``(真值, 来源)`` —— **来源要写进报告**：
-        真值从哪来必须看得见（树里的控件框 / 画面量的 / 命令行给的）。
+    def _resolve_truth(self, step: Step, wiring: _Wiring) -> TargetTruth:
+        """真值：**中心点 + 控件矩形**（物理像素）。
+
+        来源优先级：命令行覆盖 > 树里查控件框 > 工单里写死的常量。
+
+        ⚠️ **树里没有那个控件的框 → 不编**：只记 ``missing``
+        （**缺哪条真值**）→ 落点判据据此记 ``undecidable``。
         """
         override = self.truth_overrides.get(step.id)
         if override is not None:
-            return override, "命令行给的"
+            center = (int(override[0]), int(override[1]))
+            if step.truth_rect is not None:
+                return TargetTruth(
+                    center=center,
+                    rect=step.truth_rect,
+                    source="命令行给的中心点 + 工单里写死的矩形",
+                )
+            return TargetTruth(
+                center=center,
+                source="命令行给的（只有中心点）",
+                missing="缺目标控件矩形（bbox）真值",
+            )
+        tree_missing = ""
         if step.truth_element:
             from minicode.action.text import name_matches
             from minicode.uia.ports import UiaFindRequest
@@ -525,13 +555,24 @@ class WindowsDesktopExecutor:
             for element in elements:
                 rect = element.rect
                 if rect[2] > rect[0] and rect[3] > rect[1]:
-                    return (
-                        (rect[0] + rect[2]) // 2,
-                        (rect[1] + rect[3]) // 2,
-                    ), f"树里的控件框「{element.name}」"
+                    return truth_from_rect(
+                        tuple(int(value) for value in rect),
+                        f"树里的控件框「{element.name}」",
+                    )
+            tree_missing = f"树里没有「{step.truth_element}」的控件框"
+        if step.truth_rect is not None:
+            return truth_from_rect(
+                step.truth_rect, "画面量的（任务栏的树读不出节点）"
+            )
         if step.truth is not None:
-            return step.truth, "画面量的（任务栏的树读不出节点）"
-        return None, "（没有真值）"
+            return TargetTruth(
+                center=step.truth,
+                source="画面量的中心点（没有控件矩形）",
+                missing="缺目标控件矩形（bbox）真值",
+            )
+        return missing_truth(
+            tree_missing or "树里没有那个控件的框，工单里也没写死"
+        )
 
     def _record_zoom(self, step: Step, trace: ActionTrace) -> None:
         """记下放大的证据（回源重抓 / 回答是不是整屏坐标）。"""

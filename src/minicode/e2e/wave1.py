@@ -12,6 +12,12 @@
 > 2. **C-1~C-3 需要 BOSS 直聘的登录态**。浏览器通道起的是**全新会话**
 >    （Playwright 的新 context），拿不到登录态 → 那三张票按
 >    :file:`docs/target-tasks.md` §7.1 记 **SKIP** 并写明原因。
+>
+> **落点那一条是三档**（A 命中 / B 近失 / C 错选）：口径与常量在
+> :mod:`minicode.e2e.checks`（:data:`LANDING_HIT_RULE` /
+> :data:`LANDING_NEAR_MISS_PX` / :data:`LANDING_ERROR_PX_VERSION`）——
+> 真值是「**中心点 + 控件矩形**」；树里没有那个控件的框 → 记
+> ``undecidable``（**不编一个真值**）。
 """
 
 from __future__ import annotations
@@ -21,29 +27,44 @@ from minicode.action.protocol import ActionKind
 from minicode.verification.expect import Expectation, ExpectationKind
 
 from .checks import (
+    LANDING_ERROR_PX_VERSION,
+    LANDING_HIT_RULE,
+    LANDING_NEAR_MISS_PX,
     capability_is,
     channel_is,
     channel_visual,
     context_value,
     failure_type_coverage,
-    landing_within,
+    landing_in_target_rect,
+    landing_rule_summary,
     zoom_fresh_capture,
     zoom_landing_inside_region,
 )
 from .tasks import Clause, Step, Task
 
-__all__ = ["WAVE1_TASKS", "task_by_id"]
-
-#: 落点偏差的验收线（物理像素）。目标应用任务清单 §0 的通用判据。
-LANDING_TOLERANCE_PX = 2.0
+__all__ = [
+    "WAVE1_TASKS",
+    "task_by_id",
+    "LANDING_HIT_RULE",
+    "LANDING_NEAR_MISS_PX",
+    "LANDING_ERROR_PX_VERSION",
+    "landing_rule_summary",
+]
 
 #: 屏幕右下角那块放大区域（物理像素）：任务栏的时钟所在处。
 TRAY_REGION = (1900, 1400, 2560, 1600)
 
-#: 时钟控件的中心（**从画面量出来的**：那块区域里亮像素的包围盒中心，
-#: 2026-10-21 04:35 实测；包围盒是 x 2476~2529 / y 1545~1583 ——
+#: 时钟控件的**包围盒**（**从画面量出来的**：那块区域里亮像素的包围盒，
+#: 2026-10-21 04:35 实测；x 2476~2529 / y 1545~1583 ——
 #: 时分两行文字合起来才是那个可点的时钟控件）。
-CLOCK_CENTER = (2502, 1564)
+CLOCK_RECT = (2476, 1545, 2529, 1583)
+
+#: 时钟控件的**中心** = **包围盒中心**（W-3 的「目标中心」口径：
+#: 用包围盒中心，**不是**语义中心）。
+CLOCK_CENTER = (
+    (CLOCK_RECT[0] + CLOCK_RECT[2]) // 2,
+    (CLOCK_RECT[1] + CLOCK_RECT[3]) // 2,
+)
 
 
 def _text(target: str) -> Expectation:
@@ -91,8 +112,9 @@ W1 = Task(
         ),
         Clause(
             "W-1.C",
-            f"落点与目标控件中心偏差 ≤{LANDING_TOLERANCE_PX:.0f} px",
-            landing_within(LANDING_TOLERANCE_PX),
+            f"落点在目标控件矩形内（出框 ≤{LANDING_NEAR_MISS_PX:.0f} px 记近失，"
+            "更远判失败；没有控件框真值就记判不了）",
+            landing_in_target_rect,
         ),
         Clause(
             "W-1.D",
@@ -155,6 +177,7 @@ W3 = Task(
             params={"region": list(TRAY_REGION)},
             expectation=_text("时钟"),
             truth=CLOCK_CENTER,
+            truth_rect=CLOCK_RECT,
             window="taskbar",
         ),
         Step(
@@ -163,6 +186,7 @@ W3 = Task(
             target="时钟",
             expectation=_text("2026/10/21"),
             truth=CLOCK_CENTER,
+            truth_rect=CLOCK_RECT,
             window="taskbar",
             use_previous_landing=True,
         ),
@@ -177,8 +201,9 @@ W3 = Task(
         ),
         Clause(
             "W-3.C",
-            f"落点映射回整屏后与控件中心偏差 ≤{LANDING_TOLERANCE_PX:.0f} px",
-            landing_within(LANDING_TOLERANCE_PX),
+            f"落点映射回整屏后落在时钟的包围盒内（出框 ≤{LANDING_NEAR_MISS_PX:.0f} px "
+            "记近失，更远判失败）",
+            landing_in_target_rect,
         ),
     ),
 )

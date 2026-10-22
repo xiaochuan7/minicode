@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from types import SimpleNamespace
 
@@ -21,11 +22,20 @@ from minicode.e2e.real import (
 from minicode.verification.expect import Expectation, ExpectationKind
 
 from .checks import (
+    LANDING_ERROR_PX_VERSION,
+    LANDING_HIT_RULE,
+    LANDING_NEAR_MISS_PX,
+    LandingTier,
+    TargetTruth,
     capability_is,
     channel_visual,
     context_value,
     failure_type_coverage,
+    landing_in_target_rect,
+    landing_rule_summary,
+    landing_tier,
     landing_within,
+    rect_distance_px,
 )
 from .report import build_report, render_markdown
 from .runner import (
@@ -40,7 +50,7 @@ from .runner import (
     TaskRunner,
 )
 from .tasks import Clause, Step, Task
-from .wave1 import WAVE1_TASKS, task_by_id
+from .wave1 import CLOCK_RECT, WAVE1_TASKS, task_by_id
 
 # ---------------------------------------------------------------------------
 # 假执行器
@@ -610,6 +620,219 @@ def test_landing_within_clause_is_undecidable_without_truth():
     )
     assert not ok
     assert "2.1" in detail
+
+
+# ---------------------------------------------------------------------------
+# 落点三档：A 命中 / B 近失 / C 错选（+ 判不了）
+# ---------------------------------------------------------------------------
+
+
+def _landing_evidence(
+    landing,
+    *,
+    rect=(100, 100, 200, 200),
+    center=(150, 150),
+    step_id="S-1",
+    channel="visual",
+    missing="",
+):
+    """一条落点 + 一份真值（**中心点 + 控件矩形**）的证据。"""
+    truth = TargetTruth(
+        center=center,
+        rect=rect,
+        source="树里的控件框「目标」" if rect else "（没有真值）",
+        missing=missing,
+    )
+    return TaskEvidence(
+        task=_task(),
+        steps=(
+            StepOutcome(
+                step_id=step_id,
+                landing_point=landing,
+                channel=channel,
+                landing_error_px=(rect_distance_px(landing, rect) if rect else None),
+            ),
+        ),
+        context={"landing_truths": {step_id: truth.to_dict()}},
+    )
+
+
+def test_landing_tier_hit_when_the_landing_is_inside_the_target_rect():
+    """**A 命中**：落点在目标控件矩形内 → 判过。"""
+    verdict = landing_tier((120, 130), (100, 100, 200, 200), (150, 150))
+    assert verdict.tier is LandingTier.HIT
+    assert verdict.dist_to_rect_px == 0.0
+    assert verdict.dist_to_center_px == pytest.approx(math.dist((120, 130), (150, 150)))
+    assert verdict.ok
+
+
+def test_landing_tier_near_miss_when_the_landing_is_outside_but_within_36px():
+    """**B 近失**：出框但到矩形边界 ≤ 36 px → 只记档，**不判死**。"""
+    verdict = landing_tier((230, 150), (100, 100, 200, 200), (150, 150))
+    assert verdict.dist_to_rect_px == pytest.approx(30.0)
+    assert verdict.tier is LandingTier.NEAR_MISS
+    assert verdict.ok
+
+
+def test_landing_tier_wrong_when_the_landing_is_beyond_the_near_miss_band():
+    """**C 错选**：到矩形边界的距离 > 36 px → 判失败。"""
+    verdict = landing_tier((300, 150), (100, 100, 200, 200), (150, 150))
+    assert verdict.dist_to_rect_px == pytest.approx(100.0)
+    assert verdict.tier is LandingTier.WRONG
+    assert not verdict.ok
+
+
+def test_landing_tier_without_a_control_rect_is_undecidable():
+    """**没有控件矩形 → 判不了**（不许拿中心点硬凑一个框）。"""
+    verdict = landing_tier((120, 130), None, (150, 150))
+    assert verdict.tier is LandingTier.UNDECIDABLE
+    assert "缺目标控件矩形" in verdict.reason
+    assert verdict.dist_to_rect_px is None
+    assert not verdict.ok
+
+
+def test_landing_clause_passes_on_hit_and_near_miss():
+    """**命中与近失都不判死**（B 只记档）。"""
+    ok, detail = landing_in_target_rect(_landing_evidence((120, 130)))
+    assert ok
+    assert "A 命中" in detail
+    ok, detail = landing_in_target_rect(_landing_evidence((230, 150)))
+    assert ok
+    assert "B 近失" in detail
+
+
+def test_landing_clause_fails_on_wrong():
+    ok, detail = landing_in_target_rect(_landing_evidence((300, 150)))
+    assert not ok
+    assert "C 错选" in detail
+
+
+def test_landing_clause_is_undecidable_without_the_control_rect():
+    """树里没有控件框 → **判不了**，并写清**缺哪条真值**。"""
+    ok, detail = landing_in_target_rect(
+        _landing_evidence(
+            (120, 130),
+            rect=None,
+            missing="缺目标控件矩形（bbox）真值：树里没有「系统」的控件框",
+        )
+    )
+    assert not ok
+    assert "判不了" in detail
+    assert "缺目标控件矩形" in detail
+
+
+def test_landing_clause_reports_the_distribution_the_rate_and_the_version():
+    """条款明细里要有**三档分布**、**视觉步骤可判率**与**口径版本**。"""
+    truth = TargetTruth(center=(150, 150), rect=(100, 100, 200, 200), source="树里的控件框")
+    evidence = TaskEvidence(
+        task=_task(),
+        steps=(
+            StepOutcome(step_id="S-1", landing_point=(120, 130), channel="visual"),
+            StepOutcome(step_id="S-2", landing_point=(230, 150), channel="visual"),
+            StepOutcome(step_id="S-3", landing_point=(300, 150), channel="visual"),
+            StepOutcome(step_id="S-4", landing_point=(10, 10), channel="visual"),
+        ),
+        context={
+            "landing_truths": {
+                "S-1": truth.to_dict(),
+                "S-2": truth.to_dict(),
+                "S-3": truth.to_dict(),
+            }
+        },
+    )
+    ok, detail = landing_in_target_rect(evidence)
+    assert not ok
+    assert "A 1 / B 1 / C 1 / 判不了 1" in detail
+    assert "视觉步骤可判率 = 3/4" in detail
+    assert f"口径版本 = {LANDING_ERROR_PX_VERSION}" in detail
+
+
+def test_landing_error_px_is_the_distance_to_the_rect():
+    """**落点偏差 = 到矩形的距离（框内 = 0）** —— 真机侧与浏览器侧同一条口径。"""
+    assert rect_distance_px((150, 150), (100, 100, 200, 200)) == 0.0
+    assert rect_distance_px((230, 150), (100, 100, 200, 200)) == pytest.approx(30.0)
+    assert rect_distance_px((230, 230), (100, 100, 200, 200)) == pytest.approx(
+        math.hypot(30.0, 30.0)
+    )
+
+
+def test_the_landing_rule_constants_are_the_agreed_ones():
+    assert LANDING_HIT_RULE == "bbox"
+    assert LANDING_NEAR_MISS_PX == 36.0
+    assert LANDING_ERROR_PX_VERSION
+
+
+def test_w3_truth_is_the_bounding_box_center():
+    """W-3 的「目标中心」= **包围盒中心**（不是语义中心）。"""
+    task = task_by_id("W-3")
+    for step in task.steps:
+        assert step.truth_rect == CLOCK_RECT
+        assert step.truth == (
+            (CLOCK_RECT[0] + CLOCK_RECT[2]) // 2,
+            (CLOCK_RECT[1] + CLOCK_RECT[3]) // 2,
+        )
+
+
+def test_truth_without_a_control_box_is_not_invented(tmp_path):
+    """树里没有那个控件的框 → **不编一个真值**：只记缺哪条真值。"""
+    executor = WindowsDesktopExecutor(out_dir=tmp_path)
+    truth = executor._resolve_truth(_step(), SimpleNamespace(anchor=None))
+    assert truth.rect is None
+    assert truth.center is None
+    assert "缺目标控件矩形" in truth.missing
+
+
+def test_the_missing_truth_names_the_control_it_is_missing(tmp_path):
+    """**缺哪条真值**要写得出是哪个控件（W-1.C 那一类）。"""
+    executor = WindowsDesktopExecutor(out_dir=tmp_path)
+    executor._port = _FakeUiaPort(
+        [SimpleNamespace(name="别的控件", rect=(0, 0, 10, 10), automation_id="")]
+    )
+    step = _step(truth_element="系统", truth_control_type="ListItem")
+    truth = executor._resolve_truth(step, SimpleNamespace(anchor=None))
+    assert truth.rect is None
+    assert "系统" in truth.missing
+    assert "缺目标控件矩形" in truth.missing
+
+
+def test_landing_rule_summary_reports_the_version_and_the_distribution():
+    """**wave 级汇总**：三档分布 + 视觉步骤可判率 + 口径版本。"""
+    outcomes = [
+        TaskOutcome(
+            task_id="T-1",
+            title="一张票",
+            verdict=VERDICT_FAIL,
+            reason="",
+            steps=(
+                StepOutcome(
+                    step_id="S-1",
+                    landing_point=(120, 130),
+                    channel="visual",
+                    landing_error_px=0.0,
+                ),
+                StepOutcome(
+                    step_id="S-2",
+                    landing_point=(230, 150),
+                    channel="visual",
+                    landing_error_px=30.0,
+                ),
+                StepOutcome(
+                    step_id="S-3",
+                    landing_point=(300, 150),
+                    channel="visual",
+                    landing_error_px=100.0,
+                ),
+            ),
+        ),
+    ]
+    summary = landing_rule_summary(outcomes)
+    assert summary["landing_error_px_version"] == LANDING_ERROR_PX_VERSION
+    assert summary["landing_hit_rule"] == "bbox"
+    assert summary["tiers"]["hit"] == 1
+    assert summary["tiers"]["near_miss"] == 1
+    assert summary["tiers"]["wrong"] == 1
+    assert summary["visual_steps"] == 3
+    assert summary["visual_step_decidable_rate"] == 1.0
 
 
 def test_capability_clause_compares_the_capability_table():

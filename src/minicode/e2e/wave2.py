@@ -31,6 +31,9 @@ from minicode.verification.expect import Expectation, ExpectationKind
 
 from .apps import PICKED, VerificationPage
 from .checks import (
+    LANDING_ERROR_PX_VERSION,
+    LANDING_HIT_RULE,
+    LANDING_NEAR_MISS_PX,
     capability_usable_or_cut_visual,
     channel_and_failure_readable,
     context_matches_picked,
@@ -40,7 +43,8 @@ from .checks import (
     failure_types_separated,
     gate_unlocked_before_unavailable,
     input_channel_recorded,
-    landing_within,
+    landing_in_target_rect,
+    landing_rule_summary,
     modal_handoff_ok,
     page_title_is,
     structure_channel_preferred,
@@ -49,10 +53,14 @@ from .checks import (
 )
 from .tasks import Clause, Step, Task
 
-__all__ = ["WAVE2_TASKS", "task_by_id"]
-
-#: 落点偏差的验收线（物理像素）。目标应用任务清单 §0 的通用判据。
-LANDING_TOLERANCE_PX = 2.0
+__all__ = [
+    "WAVE2_TASKS",
+    "task_by_id",
+    "LANDING_HIT_RULE",
+    "LANDING_NEAR_MISS_PX",
+    "LANDING_ERROR_PX_VERSION",
+    "landing_rule_summary",
+]
 
 #: E-3 往会话输入框里打的那段中文（含 emoji —— 代理对要正确）。
 E3_TEXT = "端到端评测第二波😀"
@@ -212,8 +220,9 @@ E1 = Task(
     clauses=(
         Clause(
             "E-1.A",
-            f"落点落在该控件框内、偏差 ≤{LANDING_TOLERANCE_PX:.0f} px",
-            landing_within(LANDING_TOLERANCE_PX),
+            f"落点落在该控件框内（出框 ≤{LANDING_NEAR_MISS_PX:.0f} px 记近失，"
+            "更远判失败）",
+            landing_in_target_rect,
         ),
         Clause(
             "E-1.B",
@@ -317,8 +326,9 @@ CC1 = Task(
         Clause("CC-1.A", "UIA 通道判定为可用", context_value("capability", "usable")),
         Clause(
             "CC-1.B",
-            f"落点落在该条目的控件框内、偏差 ≤{LANDING_TOLERANCE_PX:.0f} px",
-            landing_within(LANDING_TOLERANCE_PX),
+            f"落点落在该条目的控件框内（出框 ≤{LANDING_NEAR_MISS_PX:.0f} px 记近失，"
+            "更远判失败）",
+            landing_in_target_rect,
         ),
         Clause(
             "CC-1.C",

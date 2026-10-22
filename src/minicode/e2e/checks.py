@@ -11,22 +11,42 @@
   不许当成「测了，结果是不成立」（那是把缺测量伪装成产品缺陷）。
 * **落点偏差上限**用「上限」这个词（``CONTEXT.md`` 把「容差」列为 avoid：
   它指「越界容差」还是「标定容差」说不清）。
+
+**落点那一条是三档**（A 命中 / B 近失 / C 错选，外加「判不了」）——
+见 :func:`landing_in_target_rect` 与 :class:`LandingTier`。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import Any
 
 from minicode.action.ports import CHANNEL_VISUAL
 
-from .runner import TaskEvidence
+from .runner import TaskEvidence, TaskOutcome
 
 __all__ = [
     "channel_is",
     "channel_visual",
     "failure_type_coverage",
     "landing_within",
+    "landing_in_target_rect",
+    "landing_rule_summary",
+    "landing_tier",
+    "landing_note",
+    "landing_verdict_text",
+    "rect_distance_px",
+    "truth_from_rect",
+    "missing_truth",
+    "TargetTruth",
+    "LandingTier",
+    "LandingVerdict",
+    "LANDING_HIT_RULE",
+    "LANDING_NEAR_MISS_PX",
+    "LANDING_ERROR_PX_VERSION",
     "capability_is",
     "context_value",
     "zoom_fresh_capture",
@@ -91,6 +111,9 @@ def landing_within(limit_px: float) -> Any:
     """**落点与目标控件中心的偏差 ≤ 上限**。
 
     没有真值的步骤 → **判不了**（不是「偏差为 0」）。
+
+    ⚠️ **真机 e2e 的落点条款已经不是这条**（那是三档：:func:`landing_in_target_rect`）；
+    这条留着给「到中心的偏差」那种读数（探针 / 标定）。
     """
 
     def check(evidence: TaskEvidence) -> tuple[bool, str]:
@@ -112,6 +135,332 @@ def landing_within(limit_px: float) -> Any:
         return True, f"落点偏差最大 {error:.1f} px ≤ {limit_px:.0f} px"
 
     return check
+
+
+# ---------------------------------------------------------------------------
+# 落点判定：三档（A 命中 / B 近失 / C 错选）+ 判不了
+# ---------------------------------------------------------------------------
+
+#: 落点判据的**口径**：``"bbox"`` = 判「落点有没有落在目标控件矩形里」。
+#:
+#: ⚠️ **旧口径是「到控件中心 ≤ 2 px」** —— 找对元素的子集落点误差中位就有
+#: 8.9 px（n=76）→ 那一线几乎永远判失败。现在的口径与官方评测脚本一致：
+#: **点在不在目标框里**（闭区间、无距离容差）。
+LANDING_HIT_RULE = "bbox"
+
+#: **近失带**（物理像素）：出框但到矩形边界 ≤ 这个值 → **只记档，不判死**。
+#:
+#: 36 px = 24 CSS px @150% DPI（WCAG 2.2 SC 2.5.8 ——
+#: https://www.w3.org/TR/WCAG22/#target-size-minimum）：那条准则的意图正是
+#: 「近到可能激活了隔壁控件」。
+LANDING_NEAR_MISS_PX = 36.0
+
+#: **落点偏差（``landing_error_px``）的口径版本** —— 换了算法，历史值**不可比**
+#: （报告里必须带这个版本号）。
+#: v1 = **到矩形的距离**（框内 = 0）。
+LANDING_ERROR_PX_VERSION = "rect-distance-v1"
+
+
+class LandingTier(StrEnum):
+    """落点的**三档**（外加「判不了」）。"""
+
+    #: **A 命中**：落点在目标控件矩形内 → **判过**。
+    HIT = "hit"
+    #: **B 近失**：出框但到矩形边界 ≤ :data:`LANDING_NEAR_MISS_PX` → **只记档，不判死**。
+    NEAR_MISS = "near_miss"
+    #: **C 错选**：到矩形的距离 > :data:`LANDING_NEAR_MISS_PX` → **判失败**。
+    WRONG = "wrong"
+    #: **判不了**：**缺真值**（没有控件矩形）→ 如实记，**不许编一个真值**。
+    UNDECIDABLE = "undecidable"
+
+
+#: 档位 → 人读的中文（A / B / C 三档 + 判不了）。
+_TIER_TEXT = {
+    LandingTier.HIT: "A 命中",
+    LandingTier.NEAR_MISS: "B 近失",
+    LandingTier.WRONG: "C 错选",
+    LandingTier.UNDECIDABLE: "判不了",
+}
+
+
+@dataclass(frozen=True)
+class TargetTruth:
+    """目标控件的**真值**：**中心点 + 控件矩形**（物理像素）。
+
+    ⚠️ **矩形缺失 = 判不了**：树里没有那个控件的框时，
+    **不许拿中心点硬凑一个框** —— 只记 :attr:`missing`（**缺哪条真值**）。
+    """
+
+    #: 目标控件的**中心点**（物理像素）。
+    center: tuple[int, int] | None = None
+    #: 目标控件的**矩形**（物理像素；``(left, top, right, bottom)``，闭区间）。
+    rect: tuple[int, int, int, int] | None = None
+    #: 真值从哪来（树里的控件框 / 画面量的 / 命令行给的…）。
+    source: str = ""
+    #: **缺哪条真值**（空串 = 真值齐了）。
+    missing: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """落盘形状（任务级上下文里存的就是它）。"""
+        return {
+            "center": list(self.center) if self.center else None,
+            "rect": list(self.rect) if self.rect else None,
+            "source": self.source,
+            "missing": self.missing,
+        }
+
+
+@dataclass(frozen=True)
+class LandingVerdict:
+    """一步落点的判定结果（**档 + 两个距离**）。"""
+
+    #: 落在哪一档。
+    tier: LandingTier
+    #: **到矩形的距离**（物理像素；**落在框内 = 0**）。
+    dist_to_rect_px: float | None = None
+    #: **到中心的距离**（物理像素；欧氏距离）。
+    dist_to_center_px: float | None = None
+    #: 落点（物理像素）。
+    landing: tuple[int, int] | None = None
+    #: 真值的控件矩形。
+    rect: tuple[int, int, int, int] | None = None
+    #: 真值的中心点。
+    center: tuple[int, int] | None = None
+    #: 判不了时的说明（**缺哪条真值**）。
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """这一档**不算失败**（命中与近失都不判死；错选与判不了都不算成立）。"""
+        return self.tier in (LandingTier.HIT, LandingTier.NEAR_MISS)
+
+
+def truth_from_rect(rect: tuple[int, int, int, int], source: str) -> TargetTruth:
+    """从**控件矩形**造真值（**中心 = 包围盒中心**，不是语义中心）。"""
+    left, top, right, bottom = (int(value) for value in rect)
+    return TargetTruth(
+        center=((left + right) // 2, (top + bottom) // 2),
+        rect=(left, top, right, bottom),
+        source=source,
+    )
+
+
+def missing_truth(reason: str) -> TargetTruth:
+    """**缺真值**：只记**缺哪条真值**，**不编一个框出来**。"""
+    return TargetTruth(
+        source=f"（没有真值：{reason}）",
+        missing=f"缺目标控件矩形（bbox）真值：{reason}",
+    )
+
+
+def rect_distance_px(
+    landing: tuple[int, int], rect: tuple[int, int, int, int]
+) -> float:
+    """落点到**矩形**的距离（物理像素）：落在里面 = 0，落在外面 = 到最近边的距离。
+
+    ⚠️ 这是**真机侧与浏览器侧统一的那一条口径**（浏览器侧本来就是这个语义）。
+    """
+    x, y = float(landing[0]), float(landing[1])
+    left, top, right, bottom = (float(value) for value in rect)
+    dx = max(left - x, 0.0, x - right)
+    dy = max(top - y, 0.0, y - bottom)
+    return math.hypot(dx, dy)
+
+
+def landing_tier(
+    landing: tuple[int, int] | None,
+    rect: tuple[int, int, int, int] | None,
+    center: tuple[int, int] | None = None,
+    *,
+    near_miss_px: float = LANDING_NEAR_MISS_PX,
+) -> LandingVerdict:
+    """判这一步的落点落在哪一档。
+
+    * **框内** → A 命中；**出框但 ≤ 近失带** → B 近失；**> 近失带** → C 错选；
+    * **没有控件矩形** → 判不了（**写清缺哪条真值**，不许编一个框出来）。
+    """
+    if rect is None:
+        missing = "缺目标控件矩形（bbox）真值"
+        if center is None:
+            missing += "与中心点真值"
+        return LandingVerdict(
+            tier=LandingTier.UNDECIDABLE,
+            landing=landing,
+            center=center,
+            reason=missing,
+        )
+    if landing is None:
+        return LandingVerdict(
+            tier=LandingTier.UNDECIDABLE,
+            rect=rect,
+            center=center,
+            reason="这一步没有落点（没有可比的东西）",
+        )
+    dist_rect = rect_distance_px(landing, rect)
+    dist_center = (
+        math.dist(
+            (float(landing[0]), float(landing[1])),
+            (float(center[0]), float(center[1])),
+        )
+        if center is not None
+        else None
+    )
+    if dist_rect <= 0.0:
+        tier = LandingTier.HIT
+    elif dist_rect <= near_miss_px:
+        tier = LandingTier.NEAR_MISS
+    else:
+        tier = LandingTier.WRONG
+    return LandingVerdict(
+        tier=tier,
+        dist_to_rect_px=dist_rect,
+        dist_to_center_px=dist_center,
+        landing=landing,
+        rect=rect,
+        center=center,
+    )
+
+
+def landing_verdict_text(verdict: LandingVerdict) -> str:
+    """人读的一行：档位 + 两个距离（物理像素）。"""
+    if verdict.tier is LandingTier.UNDECIDABLE:
+        return f"判不了（{verdict.reason}）"
+    center = (
+        f"，到中心 {verdict.dist_to_center_px:.1f} px"
+        if verdict.dist_to_center_px is not None
+        else ""
+    )
+    return (
+        f"{_TIER_TEXT[verdict.tier]}（到矩形 {verdict.dist_to_rect_px:.1f} px{center}）"
+    )
+
+
+def landing_note(verdict: LandingVerdict, notes: Sequence[str] = ()) -> str:
+    """把落点判定并进步骤备注（报告里看得见档位）。"""
+    parts = [str(note) for note in notes if note]
+    parts.append(f"落点判定：{landing_verdict_text(verdict)}")
+    return "；".join(parts)
+
+
+def landing_in_target_rect(evidence: TaskEvidence) -> tuple[bool, str]:
+    """**落点三档**（A 命中 / B 近失 / C 错选）+ 缺真值时判不了。
+
+    * **A 命中**（落点在目标控件矩形内）→ **判过**；
+    * **B 近失**（出框但到矩形边界 ≤ 36 px）→ **只记档，不判死**；
+    * **C 错选**（> 36 px）→ **判失败**；
+    * **缺真值**（树里没有那个控件的框）→ **判不了**，并写清**缺哪条真值**。
+
+    真值从任务级上下文的 ``landing_truths`` 里读（**中心点 + 控件矩形**）；
+    没有那条记录 = 没测过 → 判不了。
+    """
+    truths = dict(evidence.context.get("landing_truths") or {})
+    verdicts: list[tuple[Any, LandingVerdict]] = []
+    for step in evidence.steps:
+        if step.landing_point is None and step.channel != CHANNEL_VISUAL:
+            continue
+        truth = dict(truths.get(step.step_id) or {})
+        verdict = landing_tier(
+            step.landing_point,
+            tuple(truth["rect"]) if truth.get("rect") else None,
+            tuple(truth["center"]) if truth.get("center") else None,
+        )
+        missing = str(truth.get("missing") or "")
+        if missing and verdict.tier is LandingTier.UNDECIDABLE:
+            verdict = replace(verdict, reason=missing)
+        verdicts.append((step, verdict))
+    if not verdicts:
+        return False, "没有落点可比（一步都没落到东西上）"
+    counts = {tier: 0 for tier in LandingTier}
+    for _step, verdict in verdicts:
+        counts[verdict.tier] += 1
+    detail = "；".join(
+        (
+            f"三档分布：A {counts[LandingTier.HIT]} / B {counts[LandingTier.NEAR_MISS]} / "
+            f"C {counts[LandingTier.WRONG]} / 判不了 {counts[LandingTier.UNDECIDABLE]}",
+            "逐步："
+            + "、".join(
+                f"{step.step_id} = {landing_verdict_text(verdict)}"
+                for step, verdict in verdicts
+            ),
+            _visual_rate_text(verdicts),
+            f"口径版本 = {LANDING_ERROR_PX_VERSION}",
+        )
+    )
+    return all(verdict.ok for _step, verdict in verdicts), detail
+
+
+def _visual_rate_text(verdicts: Sequence[tuple[Any, LandingVerdict]]) -> str:
+    """**视觉步骤可判率**（判出档的视觉步骤数 ÷ 视觉步骤总数）。"""
+    visual = [verdict for step, verdict in verdicts if step.channel == CHANNEL_VISUAL]
+    total = len(visual)
+    if not total:
+        return "视觉步骤可判率 = —（这一票没有走视觉通道的步骤）"
+    decided = sum(1 for verdict in visual if verdict.tier is not LandingTier.UNDECIDABLE)
+    return (
+        f"视觉步骤可判率 = {decided}/{total} = {decided / total:.0%}"
+        f"（判出档的视觉步骤 {decided} / 视觉步骤总数 {total}；"
+        f"其余 {total - decided} 条已明确记 undecidable）"
+    )
+
+
+def landing_rule_summary(
+    outcomes: Sequence[TaskOutcome], *, near_miss_px: float = LANDING_NEAR_MISS_PX
+) -> dict[str, Any]:
+    """**落点三档的汇总**（报告里那一段）。
+
+    逐条工单的档位由 :func:`landing_in_target_rect` 判（那一步读得到真值）；
+    这里从**落盘的读数**重新分档：``landing_error_px`` 的口径是
+    **「到矩形的距离，框内 = 0」**（版本 :data:`LANDING_ERROR_PX_VERSION`）——
+    **换了算法，历史值不可比**（报告里必须带这个版本号）。
+    """
+    tiers = {tier.value: 0 for tier in LandingTier}
+    per_task: list[dict[str, Any]] = []
+    visual_total = 0
+    visual_decided = 0
+    for outcome in outcomes:
+        counts = {tier.value: 0 for tier in LandingTier}
+        for step in outcome.steps:
+            if step.landing_point is None and step.channel != CHANNEL_VISUAL:
+                continue
+            tier = _tier_from_error(step.landing_error_px, near_miss_px)
+            counts[tier.value] += 1
+            tiers[tier.value] += 1
+            if step.channel == CHANNEL_VISUAL:
+                visual_total += 1
+                if tier is not LandingTier.UNDECIDABLE:
+                    visual_decided += 1
+        per_task.append({"task_id": outcome.task_id, "tiers": counts})
+    return {
+        "landing_error_px_version": LANDING_ERROR_PX_VERSION,
+        "landing_hit_rule": LANDING_HIT_RULE,
+        "landing_near_miss_px": near_miss_px,
+        "landing_near_miss_note": (
+            "36 px = 24 CSS px @150% DPI（WCAG 2.2 SC 2.5.8，"
+            "https://www.w3.org/TR/WCAG22/#target-size-minimum）"
+        ),
+        "tiers": tiers,
+        "visual_steps": visual_total,
+        "visual_steps_decided": visual_decided,
+        "visual_step_decidable_rate": (
+            (visual_decided / visual_total) if visual_total else None
+        ),
+        "visual_step_note": (
+            "可判率 = 判出档的视觉步骤数 ÷ 视觉步骤总数；"
+            "每条视觉步骤都明确落在四档之一（未判出的记 undecidable）"
+        ),
+        "per_task": per_task,
+    }
+
+
+def _tier_from_error(error_px: float | None, near_miss_px: float) -> LandingTier:
+    """从**落点偏差读数**反推档位（口径：到矩形的距离，框内 = 0）。"""
+    if error_px is None:
+        return LandingTier.UNDECIDABLE
+    if error_px <= 0.0:
+        return LandingTier.HIT
+    if error_px <= near_miss_px:
+        return LandingTier.NEAR_MISS
+    return LandingTier.WRONG
 
 
 def capability_is(expected: str) -> Any:
