@@ -664,6 +664,9 @@ class GroundingEcho:
       （服务端可能把大图缩小：本机实测 2560 宽 → 约 2048 宽）——
       报这个尺寸模型才能对账自己给的坐标；不是原图宽、也不是写死的常量；
     * ``image_source`` —— 那张图从哪来（整屏截图 / 从原始帧裁出的 crop / 回源重抓）。
+    * ``raw_bbox`` —— **模型给的原始外接矩形**（模型输入空间；粗定位那一级才有）。
+      此前**不落盘** → 「目标半径」「挑错元素」两类分析只能靠推断；
+    * ``raw_text`` —— **模型自报的「这个元素上可见的文字」**（可以为空串）。
     """
 
     stage: str
@@ -672,6 +675,10 @@ class GroundingEcho:
     sent_width: int | None = None
     sent_height: int | None = None
     image_source: str = ""
+    #: **模型给的原始外接矩形**（模型输入空间；粗定位那一级才有）。
+    raw_bbox: tuple[float, float, float, float] | None = None
+    #: **模型自报的元素文字**（可以为空串）。
+    raw_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """落盘形状（回显自己知道怎么渲染）。"""
@@ -682,6 +689,8 @@ class GroundingEcho:
             "sent_width": self.sent_width,
             "sent_height": self.sent_height,
             "image_source": self.image_source,
+            "raw_bbox": list(self.raw_bbox) if self.raw_bbox else None,
+            "raw_text": self.raw_text,
         }
 
 
@@ -732,6 +741,9 @@ class VisualLocateResult:
     model_calls: int = 0
     #: 这次换算用的**标度**（来自标定结果）。
     scale: str = ""
+    #: **最终落点来自哪一级**（``refined`` / ``coarse`` / ``whole_screen`` /
+    #: ``numbered`` / ``none``）—— 施工清单第 ① 条埋点。
+    landing_source: str = ""
 
     @property
     def ok(self) -> bool:

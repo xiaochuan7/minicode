@@ -227,8 +227,8 @@ class CropPlanTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertTrue(plan["shifted"])
         self.assertFalse(plan["shrunk"])
-        self.assertEqual(plan["width"], default_crop_size()[0])
-        self.assertEqual(plan["height"], default_crop_size()[1])
+        self.assertEqual(plan["width"], default_crop_size((2560, 1600))[0])
+        self.assertEqual(plan["height"], default_crop_size((2560, 1600))[1])
         # 粗定位点在窗口内（不裁掉目标）。
         self.assertTrue(plan["target_fully_contained"])
         self.assertGreaterEqual(plan["origin_x"], 0)
@@ -284,8 +284,9 @@ class CropContractTests(unittest.TestCase):
             )
         )
         plan = result.crop_plan
-        half = plan["width"] / 2.0
-        expected = (plan["origin_x"] + half, plan["origin_y"] + half)
+        half_x = plan["width"] / 2.0
+        half_y = plan["height"] / 2.0
+        expected = (plan["origin_x"] + half_x, plan["origin_y"] + half_y)
         self.assertAlmostEqual(result.landing_point[0], expected[0], places=6)
         self.assertAlmostEqual(result.landing_point[1], expected[1], places=6)
 
@@ -439,7 +440,7 @@ class EchoTests(unittest.TestCase):
         self.assertEqual((stages["coarse"].sent_width, stages["coarse"].sent_height), (2048, 1280))
         self.assertEqual(
             (stages["refine"].sent_width, stages["refine"].sent_height),
-            default_crop_size(),
+            default_crop_size((2560, 1600)),
         )
         # 图像来源可判定（裁剪取自原始物理分辨率图 / 整屏抓图）。
         self.assertIn("crop", stages["refine"].image_source)
@@ -463,6 +464,8 @@ class EchoTests(unittest.TestCase):
                 "sent_width": 512,
                 "sent_height": 512,
                 "image_source": "crop-from-capture|fake",
+                "raw_bbox": None,
+                "raw_text": "",
             },
         )
 
@@ -491,12 +494,19 @@ class CoarseBoxTests(unittest.TestCase):
         )
 
     def test_the_prompt_asks_for_a_box(self):
-        """提示词问 **bounding box**（官方协议的措辞），**不许有量纲暗示**。"""
+        """提示词问 **bounding box**（官方协议的措辞），**不许有量纲暗示**。
+
+        ⚠️ **2026-10-22（施工清单第 ⑦ 条）**：粗定位**删掉 ``point`` 字段**
+        （官方全部是「每对象一个几何」）、**加 ``text`` 自报**、**加负出口**。
+        """
         from minicode.ground.prompt import coarse_prompt
 
         prompt = coarse_prompt("开始", (1280, 800))
         self.assertIn("bbox", prompt)
-        self.assertIn("point", prompt)
+        self.assertNotIn("point", prompt)
+        self.assertIn("text", prompt)
+        # 负出口：元素不在这张图里时怎么答。
+        self.assertIn('"bbox": null', prompt)
         self.assertIn("1280×800", prompt)
         for forbidden in ("归一化", "0~1000", "分母", "1000"):
             self.assertNotIn(forbidden, prompt)

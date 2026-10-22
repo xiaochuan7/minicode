@@ -301,17 +301,26 @@ class GatePipelineTests(unittest.TestCase):
         self.assertTrue(result.fallback)
         self.assertEqual(result.fallback_cause, FallbackCause.OUT_OF_BOUNDS.value)
 
-    def test_refine_deviating_from_coarse_falls_back_to_coarse(self):
-        """精定位结果**明显偏离粗定位** → 回落（治「选中相邻同类控件」）。"""
+    def test_refine_deviating_from_coarse_is_recorded_not_fallback(self):
+        """精定位结果**明显偏离粗定位** → **只记录，不改落点**（施工清单第 ④ 条）。
+
+        ⚠️ **2026-10-22 改口径**：偏离判据**降级为记录器** ——
+        「离 crop 中心多远」换成「‖精定位 − 粗定位点‖₂」，阈值表达换成
+        crop 宽度千分位；**落点不再因为偏离而回落**，
+        硬失败回落只剩 ``no_output`` / ``out_of_bounds`` / ``call_failed`` 三种。
+        """
         model = _StubModel(_reply(390.625, 500.0), _reply(900.0, 500.0))
         grounder = _grounder(model, target_radius_px=8.0)
         result = grounder.locate(_request(_detail_frame(2560, 1600)))
-        self.assertTrue(result.fallback)
-        self.assertEqual(result.fallback_cause, FallbackCause.DEVIATION.value)
-        self.assertIn("偏离", result.fallback_reason)
-        self.assertAlmostEqual(
-            result.landing_point[0], result.coarse_point[0], places=6
-        )
+        # 不回落、落点是**精定位**给的那一刀。
+        self.assertFalse(result.fallback)
+        self.assertEqual(result.fallback_cause, "")
+        self.assertEqual(result.landing_source, "refined")
+        # 但偏离量**照样落盘**（记录器）。
+        plan = result.crop_plan
+        self.assertIsNotNone(plan["deviation_px_coarse"])
+        self.assertIsNotNone(plan["deviation_c1000"])
+        self.assertTrue(plan["deviation_exceeded"])
 
     def test_refine_close_to_coarse_is_kept(self):
         """偏离在阈值内 → **不回落**（精定位的收益要留住）。"""

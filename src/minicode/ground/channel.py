@@ -66,7 +66,7 @@ from minicode.coord.coordinates import (
     CoordinateOutOfBounds,
     ModelScale,
 )
-from minicode.coord.crop_refine import CropRefiner
+from minicode.coord.crop_refine import CropRefiner, plan_crop
 from minicode.model.effort import Effort
 from minicode.model.image import downscale_frame
 from minicode.model.ports import ModelCaller
@@ -95,7 +95,7 @@ from .prompt import (
     numbered_candidates_prompt,
     parse_chosen_numbers,
     parse_coarse_target,
-    parse_point,
+    parse_optional_point,
     refine_prompt,
     whole_screen_prompt,
 )
@@ -105,6 +105,7 @@ __all__ = [
     "TargetNames",
     "ask_model_point",
     "box_center",
+    "crop_geometry_label",
     "default_crop_size",
 ]
 
@@ -135,32 +136,43 @@ DEFAULT_NUMBERED_MAX_TOKENS = 4000
 #: 源码级检查（``test_ground_two_stage.py``）混淆。
 ZOOM_CONSISTENCY_PER_MILLE = 1_000
 
-#: **裁剪窗口的默认尺寸**（物理像素）—— **ground 层**的那份默认值。
+#: **裁剪窗口的几何**（物理像素）—— **ground 层**的那份（施工清单第 ⑤ 条）。
 #:
-#: ⚠️ 冻结原型 ``coord/crop_refine.py`` 里也有一份（512）—— **那个目录不许改**，
-#: 生产用的尺寸由**本层**给（``TwoStageGrounder(crop_width=…, crop_height=…)``
-#: 是运行时参数，评测台从那儿覆盖）。
+#: ⚠️ 冻结原型 ``coord/crop_refine.py`` 里也有一份默认值（512）—— **那个目录不许改**，
+#: 生产用的几何由**本层**给。
 #:
-#: **取值来源**【实测数字】：330 条 ScreenSpot-Pro 分层抽样（固定 seed 20251020）、
-#: 七个尺寸 {128,192,256,512,768,1024,1280} **同一批样本**、**七个尺寸共用同一次
-#: 粗定位回答**（差异里不混模型随机性）、**A 半调 / B 半评**（交错取样）：
+#: **取值依据**【实测，n=183，零模型调用】：
+#: 离线几何重算（:mod:`minicode.ground.crop_geometry`，产物
+#: ``runs/m3-crop-geometry/crop-geometry.json``）给出的「完整含住 GT 框」比例：
 #:
-#: * **A 半命中率**：128 35.2% / **192 43.0%** / 256 43.0% / 512 42.4% /
-#:   768 42.4% / 1024 41.8% / 1280 40.0%；
-#: * 192~768 彼此**差 ≤1 条样本**（= 噪声）→ 按 A 半的中位误差破平：**192 最低**
-#:   （68.7 px vs 256/512 的 75.5 px）；
-#: * **成本**：192 那一次精定位的图像 token = **49**，512 = **361**（7.4 倍）；
-#: * B 半（**只用来评**）：192 47.3%，整批与 B 半的峰是 512（46.7% / 50.9%）。
+#: ==========================  ==========  ================  ==================
+#: 几何                          含住率       窗口无目标率       容忍粗点误差（中位）
+#: ==========================  ==========  ================  ==================
+#: 192×192（旧）                  42.1%        36.1%             ±74 / ±84 px
+#: 512×512                       71.0%        24.6%             ±234 / ±244 px
+#: 768×768                       76.0%        21.9%             ±362 / ±372 px
+#: 1024×1024                     79.2%        19.1%             ±490 / ±500 px
+#: 1280×800                      79.8%        18.0%             ±618 / ±388 px
+#: **0.5×当前图（本轮采用）**      **84.2%**    **14.2%**         **±839 / ±522 px**
+#: ==========================  ==========  ================  ==================
 #:
-#: 产物：``runs/g1-crop-scan/crop-scan.json``（命令见
-#: :mod:`minicode.ground.numbered_bench` 的 ``--crop-scan``）。
+#: ⇒ 验收线 C 组（含住率 ≥ 75%、容忍粗点误差 ≥ ±512）**只有「比例 + 下限」这条达成**。
 #:
-#: ⚠️ **这条曲线混着两个效应**：偏离判据的参考点改成 **crop 窗口中心**之后，
-#: 窗口越大、被 shift 掉的越多 → **回落率随尺寸单调上升**（27.6% → 82.7%）。
-#: 「≥1024 更差」这个读法**部分**是这个判据造成的，不是尺寸本身的账 ——
-#: 要把两者分开，下一轮要再跑一臂（参考点改回 coarse）。
-DEFAULT_CROP_WIDTH_PX = 192
-DEFAULT_CROP_HEIGHT_PX = 192
+#: **窗口语义**（与官方 ``crop_to_center`` 同语义）：
+#: 以**粗定位框中心**为中心、窗口 = **当前物理帧的 50% 线性尺寸**、
+#: 绝对下限 **512 px**、贴边时**向内平移补足、不缩小窗口**；
+#: 裁剪从**物理帧 1:1 原生像素**取（不做有损缩放）。
+CROP_LINEAR_FRACTION = 0.5
+MIN_CROP_WIDTH_PX = 512
+MIN_CROP_HEIGHT_PX = 512
+
+#: **默认 crop 尺寸** = **自适应几何的下限档**（实际尺寸随帧而变）。
+#:
+#: ⚠️ **不是**一个固定值：``TwoStageGrounder`` 缺省走**自适应**
+#: （0.5×当前帧，下限 512）；这两个常量是那条几何的**下限**，
+#: 也是**显式传固定尺寸**时 ``crop_width`` / ``crop_height`` 的缺省。
+DEFAULT_CROP_WIDTH_PX = MIN_CROP_WIDTH_PX
+DEFAULT_CROP_HEIGHT_PX = MIN_CROP_HEIGHT_PX
 
 #: **目标描述规范化**时给模型的名字条数上限（B-4：给 2~3 个更具体的表述）。
 MAX_TARGET_NAMES = 5
@@ -169,12 +181,34 @@ MAX_TARGET_NAMES = 5
 TargetNames = Callable[[CapturedFrame], "list[str]"]
 
 
-def default_crop_size() -> tuple[int, int]:
-    """**裁剪窗口的默认尺寸**（物理像素）—— 取**ground 层**的那份默认值。
+def default_crop_size(frame_size: tuple[int, int] | None = None) -> tuple[int, int]:
+    """**生产默认的裁剪窗口尺寸**（物理像素）—— 取**ground 层**的那份。
 
-    评测台要报「裁剪参数」，就得报**实际用的那个尺寸**（不另写一份常量）。
+    给了 ``frame_size``（当前物理帧的尺寸）→ **那一帧的自适应尺寸**
+    （0.5× 线性尺寸，绝对下限 512）；
+    不给 → **下限档** ``(512, 512)``。
+
+    ⚠️ **实际尺寸随帧而变** —— 报告里要报的是**几何口径**，
+    不是某一个固定数（评测台用 :func:`crop_geometry_label`）。
     """
-    return (DEFAULT_CROP_WIDTH_PX, DEFAULT_CROP_HEIGHT_PX)
+    if frame_size is None:
+        return (DEFAULT_CROP_WIDTH_PX, DEFAULT_CROP_HEIGHT_PX)
+    width = min(
+        int(frame_size[0]), max(MIN_CROP_WIDTH_PX, int(frame_size[0] * CROP_LINEAR_FRACTION))
+    )
+    height = min(
+        int(frame_size[1]), max(MIN_CROP_HEIGHT_PX, int(frame_size[1] * CROP_LINEAR_FRACTION))
+    )
+    return (width, height)
+
+
+def crop_geometry_label() -> str:
+    """**裁剪几何的口径说明**（报告里报的是它，不是一个固定尺寸）。"""
+    return (
+        f"crop = 当前物理帧的 {int(CROP_LINEAR_FRACTION * 100)}% 线性尺寸"
+        f"（绝对下限 {MIN_CROP_WIDTH_PX}×{MIN_CROP_HEIGHT_PX}、"
+        "以粗定位框为中心、贴边向内平移不缩小、原生像素 1:1）"
+    )
 
 
 def ask_model_point(
@@ -184,10 +218,14 @@ def ask_model_point(
     *,
     effort: Effort | str,
     max_tokens: int,
-) -> tuple[float, float]:
+) -> tuple[float, float] | None:
     """问模型要一个点（**数值原样带回**，不乘分母、不猜量纲）。
 
     粗定位与「第二次独立粗定位」都走这里 —— **「问模型要一个点」只有这一处实现**。
+
+    ⚠️ **返回 ``None`` = 模型说「这张图里没有那个元素」**（施工清单第 ⑦ 条的
+    负出口：``{"x": null, "y": null}``）—— **不是解析失败**，
+    调用方据此**干净回落**，而不是接受一个假点。
     """
     image_base64 = encode_frame_base64(frame)
     if image_base64 is None:
@@ -198,7 +236,7 @@ def ask_model_point(
         max_tokens=max_tokens,
         image_base64=image_base64,
     )
-    return parse_point(reply.text)
+    return parse_optional_point(reply.text)
 
 #: 粗定位这一级的名字（回显与追踪记录里用）。
 STAGE_COARSE = "coarse"
@@ -217,6 +255,19 @@ STAGE_NUMBERED = "numbered"
 #: ⚠️ **没接候选源**时**不记**这一条 —— 那条分支压根不存在，
 #: 行为与原来完全一致（既有单测继续绿）。
 STAGE_NO_CANDIDATES = "no_candidates"
+
+#: **最终落点来自哪一级**（施工清单第 ① 条埋点：``landing_source``）。
+#:
+#: * ``refined`` —— **crop 精定位**给的那一刀；
+#: * ``coarse`` —— 回落到**粗定位点**（精定位没产出可用结果）；
+#: * ``whole_screen`` —— **整屏第二遍**给的（粗定位本身不可用）；
+#: * ``numbered`` —— **编号选择**（落点 = 候选框的物理中心）；
+#: * ``none`` —— 没有落点（定位失败）。
+LANDING_SOURCE_REFINED = "refined"
+LANDING_SOURCE_COARSE = "coarse"
+LANDING_SOURCE_WHOLE_SCREEN = "whole_screen"
+LANDING_SOURCE_NUMBERED = "numbered"
+LANDING_SOURCE_NONE = "none"
 
 
 def _image_source(frame: CapturedFrame) -> str:
@@ -263,7 +314,9 @@ class TwoStageGrounder:
         整屏物理帧应有的尺寸（= 标定探针的尺寸）。整屏帧尺寸对不上就**拒绝换算**：
         模型输入尺寸不可复用时继续跑只会得到静默偏移。
     crop_width / crop_height
-        裁剪窗口尺寸（物理像素）。缺省取冻结原型的默认值（架构备忘 §1.3：512×512）。
+        裁剪窗口尺寸（物理像素）。**缺省 = 自适应**
+        （**当前物理帧的 50% 线性尺寸、绝对下限 512**，施工清单第 ⑤ 条）；
+        给了就是**固定尺寸**（评测台的 crop 扫描从那儿覆盖）。
     crop_model_input_size
         **模型实际看到的那张 crop 图**的尺寸。缺省 = crop 尺寸（1:1，服务端不缩放
         这张小图；本机实测）。
@@ -315,8 +368,8 @@ class TwoStageGrounder:
         scale: ModelScale,
         model_input_size: tuple[int, int],
         full_screen_size: tuple[int, int],
-        crop_width: int = DEFAULT_CROP_WIDTH_PX,
-        crop_height: int = DEFAULT_CROP_HEIGHT_PX,
+        crop_width: int | None = None,
+        crop_height: int | None = None,
         crop_model_input_size: tuple[int, int] | None = None,
         effort: Effort | str = Effort.LOW,
         max_tokens: int = DEFAULT_MAX_TOKENS,
@@ -355,9 +408,36 @@ class TwoStageGrounder:
         self.adapter = CoordinateAdapter(
             scale, out_of_bounds_tolerance_px=self.out_of_bounds_tolerance_px
         )
+        #: **固定裁剪尺寸**（``None`` = 自适应：0.5×当前帧、下限 512）。
+        self.crop_width = int(crop_width) if crop_width else None
+        self.crop_height = int(crop_height) if crop_height else None
         self.refiner = CropRefiner(
-            self.adapter, crop_width=crop_width, crop_height=crop_height
+            self.adapter,
+            crop_width=self.crop_width or DEFAULT_CROP_WIDTH_PX,
+            crop_height=self.crop_height or DEFAULT_CROP_HEIGHT_PX,
         )
+
+    # ------------------------------------------------------------------
+    # 裁剪几何
+    # ------------------------------------------------------------------
+
+    def _crop_size_for(self, frame: CapturedFrame) -> tuple[int, int]:
+        """**这一帧的裁剪窗口尺寸**（物理像素）。
+
+        * 两个都显式给了 → **固定尺寸**（评测台的 crop 扫描用那条）；
+        * 否则 → **自适应**：当前物理帧的 **50% 线性尺寸**、绝对下限 **512**、
+          且**不超过这一帧**（帧比下限还小 → 只能等于帧的大小）。
+        """
+        if self.crop_width and self.crop_height:
+            return (self.crop_width, self.crop_height)
+        width, height = frame.width, frame.height
+        crop_width = self.crop_width or min(
+            width, max(MIN_CROP_WIDTH_PX, int(width * CROP_LINEAR_FRACTION))
+        )
+        crop_height = self.crop_height or min(
+            height, max(MIN_CROP_HEIGHT_PX, int(height * CROP_LINEAR_FRACTION))
+        )
+        return (int(crop_width), int(crop_height))
 
     # ------------------------------------------------------------------
     # 主流程
@@ -484,7 +564,7 @@ class TwoStageGrounder:
             raw = None
             coarse_issue = f"粗定位失败：{exc}"
         raw_center: tuple[float, float] | None = None
-        if raw is not None:
+        if raw is not None and not raw.negative:
             raw_center = box_center(raw)
             echoes.append(
                 GroundingEcho(
@@ -497,6 +577,11 @@ class TwoStageGrounder:
                     sent_width=screen_frame.width,
                     sent_height=screen_frame.height,
                     image_source=_image_source(screen_frame),
+                    # **粗定位的原始回答**（施工清单第 ① 条埋点）：
+                    # 原始框 + 模型自报的文字 —— 此前**不可恢复**，
+                    # 于是「目标半径」「挑错元素」这两类分析只能靠推断。
+                    raw_bbox=raw.bbox,
+                    raw_text=raw.text,
                 )
             )
             try:
@@ -506,6 +591,21 @@ class TwoStageGrounder:
                 coarse_issue = f"粗定位结果越界：{exc}"
             except CoordinateError as exc:
                 coarse_issue = f"粗定位结果不可用：{exc}"
+        elif raw is not None and raw.negative:
+            # **负出口**（施工清单第 ⑦ 条）：模型说「这张图里没有这个元素」。
+            coarse_issue = "模型说这张图里没有对应的元素"
+            echoes.append(
+                GroundingEcho(
+                    stage=STAGE_COARSE,
+                    raw_x=None,
+                    raw_y=None,
+                    sent_width=screen_frame.width,
+                    sent_height=screen_frame.height,
+                    image_source=_image_source(screen_frame),
+                    raw_bbox=raw.bbox,
+                    raw_text=raw.text,
+                )
+            )
 
         # -- 门控：**只落盘**（不再决定开不开精定位）--------------------------
         left, top, right, bottom = (int(value) for value in request.surface)
@@ -553,13 +653,20 @@ class TwoStageGrounder:
                 refine_enabled=False,
                 echoes=echoes,
                 model_calls=model_calls,
+                landing_source=LANDING_SOURCE_COARSE,
             )
 
         # -- 裁剪计划：从原始物理分辨率图上取窗口 --------------------------
+        # ⚠️ **窗口尺寸是自适应的**（施工清单第 ⑤ 条）：当前物理帧的 50% 线性尺寸、
+        # 绝对下限 512、贴边**向内平移补足、不缩小窗口**；裁剪**1:1 原生像素**。
+        crop_width, crop_height = self._crop_size_for(frame)
         try:
-            plan = self.refiner.plan(
-                coarse,
+            plan = plan_crop(
+                coarse[0],
+                coarse[1],
                 surface_rect(request.surface),
+                crop_width=crop_width,
+                crop_height=crop_height,
                 target_radius_px=(coarse_radius_px or self.target_radius_px),
             )
             crop = crop_frame(frame, plan)
@@ -586,6 +693,7 @@ class TwoStageGrounder:
                 echoes=echoes,
                 model_calls=model_calls,
                 plan_fields=self._plan_fields(plan),
+                landing_source=LANDING_SOURCE_COARSE,
             )
         except Exception as exc:
             return self._result(
@@ -600,6 +708,24 @@ class TwoStageGrounder:
                 echoes=echoes,
                 model_calls=model_calls,
                 plan_fields=self._plan_fields(plan),
+                landing_source=LANDING_SOURCE_COARSE,
+            )
+        if raw_refine is None:
+            # **负出口**（施工清单第 ⑦ 条）：模型说「这张裁剪图里没有这个元素」
+            # → **干净回落到粗定位**（不是「接受一个假点」）。
+            return self._result(
+                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
+                coarse=coarse,
+                plan=plan,
+                decision=decision,
+                refine_enabled=True,
+                fallback=True,
+                fallback_cause=FallbackCause.NO_OUTPUT.value,
+                fallback_reason="模型说这张裁剪图里没有对应的元素（负出口）",
+                echoes=echoes,
+                model_calls=model_calls,
+                plan_fields=self._plan_fields(plan),
+                landing_source=LANDING_SOURCE_COARSE,
             )
         echoes.append(
             GroundingEcho(
@@ -630,33 +756,16 @@ class TwoStageGrounder:
                 echoes=echoes,
                 model_calls=model_calls,
                 plan_fields=self._plan_fields(plan),
+                landing_source=LANDING_SOURCE_COARSE,
             )
 
-        # -- 偏离量（工单 M7 AC 3）：选到相邻的同类控件 → 回落 --------------
-        # ⚠️ **参考点是 crop 窗口的中心**（不是粗定位点：crop 走 **shift**
-        # 语义时两者不同 —— 目标贴着屏幕边时窗口被平移过）。
-        deviation = math.hypot(
-            refined[0] - plan.center[0], refined[1] - plan.center[1]
-        )
+        # -- 偏离量（施工清单第 ④ 条）：**只记录，不改落点** ------------------
+        # ⚠️ **判据降级为记录器**（2026-10-22）：量的口径从「离 crop 窗口中心多远」
+        # 改成 **‖精定位 − 粗定位点‖₂**（crop 被 shift 时不再注入额外偏移），
+        # 阈值表达改成 **crop 宽度千分位**（``deviation_c1000``）。
+        # **落点不再因为偏离而回落** —— 硬失败回落只剩
+        # ``no_output`` / ``out_of_bounds`` / ``call_failed`` 三种。
         plan_fields = self._plan_fields(plan, refined=refined, coarse=coarse)
-        if deviation > self.gate_params.deviation_tolerance_px:
-            return self._result(
-                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
-                coarse=coarse,
-                plan=plan,
-                decision=decision,
-                refine_enabled=True,
-                fallback=True,
-                fallback_cause=FallbackCause.DEVIATION.value,
-                fallback_reason=(
-                    f"精定位结果偏离参考点（crop 窗口中心）{deviation:.1f} px"
-                    f"（阈值 {self.gate_params.deviation_tolerance_px:.1f} px）"
-                ),
-                echoes=echoes,
-                model_calls=model_calls,
-                plan_fields=plan_fields,
-            )
-
         return self._result(
             landing_point=(int(round(refined[0])), int(round(refined[1]))),
             coarse=coarse,
@@ -666,6 +775,7 @@ class TwoStageGrounder:
             echoes=echoes,
             model_calls=model_calls,
             plan_fields=plan_fields,
+            landing_source=LANDING_SOURCE_REFINED,
         )
 
     # ------------------------------------------------------------------
@@ -707,15 +817,25 @@ class TwoStageGrounder:
     ) -> dict[str, float | None]:
         """裁剪计划的**落盘补充字段**（偏离量与 zoom 一致性）。
 
-        * ``deviation_px`` —— 精定位落点离 **crop 窗口中心**多远
-          （**回落判据的量**，参考点不是粗定位点：crop 走 shift 语义时两者不同）；
-        * ``zoom_consistency_px`` —— 两级之间的位移 ‖ε₁‖₂（物理像素）；
-        * ``zoom_consistency_c1000`` —— 同一个量的**公开判据刻度**
-          （``c = ε₁ × 1000 / crop 宽``；系数随 crop 宽变：512 → 1.953、
-          **默认 192 → 5.208**）。
+        * ``deviation_px`` —— 精定位落点离 **crop 窗口中心**多远（**历史口径**，
+          参考点不是粗定位点：crop 走 shift 语义时两者不同）—— **留着，便于对比**；
+        * ``deviation_px_coarse`` —— **‖精定位 − 粗定位点‖₂**（**当前口径的量**，
+          施工清单第 ④ 条）；
+        * ``deviation_c1000`` —— 同一个量按 **crop 宽度千分位**表达的刻度
+          （阈值用它 → **换 crop 尺寸不用重调**）；
+        * ``deviation_exceeded`` —— 记录器的判断结果（**只落盘，不改落点**）；
+        * ``refined_point_x`` / ``refined_point_y`` —— **精定位的原始落点**
+          （物理像素）—— 此前**不可恢复**，「阈值附近的逐条归属」因此有噪声；
+        * ``zoom_consistency_px`` / ``zoom_consistency_c1000`` —— 两级之间的位移
+          （= ``deviation_px_coarse``，历史字段名，留着）。
         """
         fields: dict[str, float | None] = {
             "deviation_px": None,
+            "deviation_px_coarse": None,
+            "deviation_c1000": None,
+            "deviation_exceeded": None,
+            "refined_point_x": None,
+            "refined_point_y": None,
             "zoom_consistency_px": None,
             "zoom_consistency_c1000": None,
         }
@@ -724,11 +844,17 @@ class TwoStageGrounder:
         fields["deviation_px"] = math.hypot(
             refined[0] - plan.center[0], refined[1] - plan.center[1]
         )
+        fields["refined_point_x"] = refined[0]
+        fields["refined_point_y"] = refined[1]
         if coarse is not None:
             consistency = math.hypot(refined[0] - coarse[0], refined[1] - coarse[1])
+            fields["deviation_px_coarse"] = consistency
             fields["zoom_consistency_px"] = consistency
-            fields["zoom_consistency_c1000"] = (
-                consistency * ZOOM_CONSISTENCY_PER_MILLE / plan.width
+            scaled = consistency * ZOOM_CONSISTENCY_PER_MILLE / plan.width
+            fields["deviation_c1000"] = scaled
+            fields["zoom_consistency_c1000"] = scaled
+            fields["deviation_exceeded"] = (
+                scaled > self.gate_params.deviation_tolerance_per_mille
             )
         return fields
 
@@ -923,6 +1049,7 @@ class TwoStageGrounder:
             echoes=tuple(echoes),
             model_calls=model_calls,
             scale=self.scale.value,
+            landing_source=LANDING_SOURCE_NUMBERED,
         )
 
     def _ask_chosen_number(
@@ -1068,6 +1195,7 @@ class TwoStageGrounder:
             refine_enabled=False,
             echoes=echoes,
             model_calls=model_calls,
+            landing_source=LANDING_SOURCE_WHOLE_SCREEN,
         )
 
     def _result(
@@ -1084,6 +1212,7 @@ class TwoStageGrounder:
         fallback_cause: str = "",
         fallback_reason: str = "",
         plan_fields: dict[str, float | None] | None = None,
+        landing_source: str = LANDING_SOURCE_COARSE,
     ) -> VisualLocateResult:
         """一次定位的结果（门控字段 + 回落字段一起落）。"""
         return VisualLocateResult(
@@ -1104,6 +1233,7 @@ class TwoStageGrounder:
             echoes=tuple(echoes),
             model_calls=model_calls,
             scale=self.scale.value,
+            landing_source=landing_source,
         )
 
     def _failure(

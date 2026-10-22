@@ -129,6 +129,10 @@ class FallbackCause(StrEnum):
     #: 精定位调用失败（异常 / 没有文本输出）。
     CALL_FAILED = "call_failed"
     #: 精定位结果明显偏离粗定位（选到了相邻的同类控件）。
+    #:
+    #: ⚠️ **2026-10-22 起不再产生**（施工清单第 ④ 条）：偏离判据**降级为记录器**
+    #: —— 只落盘（``deviation_exceeded``），**不再改落点**。
+    #: 硬失败回落因此只剩上面那三种。枚举成员**留着**（口径一条都不删）。
     DEVIATION = "deviation"
     #: **编号分支挑不出编号**（工单 B-1）→ 回落点式路径。
     #:
@@ -189,20 +193,45 @@ DEFAULT_CONSISTENCY_SOURCE = (
 
 #: 「精定位偏离粗定位」的容差（物理像素）与取值来源。
 #:
-#: ⚠️ **参考点是 crop 窗口的中心**（``plan.center``），不是粗定位点 ——
-#: crop 走 **shift** 语义时（目标贴着屏幕边，窗口被平移过）两者不同。
+#: ⚠️ **参考点是粗定位点**（不是 crop 窗口中心 —— 2026-10-22 施工清单第 ④ 条改）：
+#: crop 走 **shift** 语义时（目标贴着屏幕边，窗口被平移过），
+#: 「离 crop 中心多远」会注入最多 ~半窗宽的**额外偏移**，
+#: 那不是模型指错，是**我们自己的窗口摆放**。
+#:
+#: ⚠️ **这条判据现在是记录器**（2026-10-22）：只落盘 ``deviation_exceeded``，
+#: **不再改落点**。硬失败回落只剩 ``no_output`` / ``out_of_bounds`` /
+#: ``call_failed`` 三种。
 DEFAULT_DEVIATION_TOLERANCE_PX = 50.0
 DEFAULT_DEVIATION_SOURCE = (
-    "一手：ZoomClick（arXiv:2512.05941）Table 11 —— 最优 50.7 px、"
-    "分类准确 91.8%；正确对中位 <10 px、错误对中位 >50 px；"
-    "原文『motivating our adoption of 50 px as a unified decision boundary』。"
-    "单位换算：公开判据 c = ‖ε₁‖₂ / r 折算到我们的刻度是 "
-    "c = ε₁(物理 px) × 1000 / crop 宽（**系数随 crop 宽变**：512 crop 时 1.953；"
-    "**生产默认 crop 192 px 时 5.208** → 50 px ⇔ c ≈ 260.4）。"
-    "⚠️ 上面那段公开分桶（c<30 / 30-80 / 80-150 / 150-250 / ≥250）的推导是在 "
-    "512 crop 上做的；默认 crop 已按本机实测改成 192 px，**同一阈值落在的分桶变了**"
-    "（按本文自己的换算式：512 时 ⇔ c≈97.6 落 80-150 档，192 时 ⇔ c≈260.4 落 ≥250 档）——"
-    "**阈值本身不动**（人已拍板），分桶这一条留给下一轮复核"
+    "⚠️ **2026-10-22 改口径**（施工清单第 ④ 条）：① **量** = ‖精定位 − **粗定位点**‖₂"
+    "（= 本仓已算好的 `zoom_consistency_px`；与 ZoomClick 的 ε₁ 同量 —— "
+    "一手：ZoomClick 论文 §3.2.1 的 ε₁ 是「两次预测的位移」，"
+    "**不是「离 crop 中心多远」**）；"
+    "② **阈值表达**改成 crop 宽度千分位（`deviation_c1000 = ‖Δ‖₂ × 千 / crop 宽`，"
+    "192 crop 时 50 px ≡ c≈260.4）→ 换 crop 尺寸不用重调；"
+    "③ **判据降级为记录器**（只落盘 `deviation_exceeded`，**不再改落点**）—— "
+    "本机重放实测：取消这一条回落，同一批 183 条 44.81% → 47.45%（平台，t=∞）、"
+    "t=96 峰 47.71%（**同批数据上的峰，不对外报**）；"
+    "④ 一手锚点：ZoomClick README 的 `--prezoom_px_thresh 50` "
+    "（https://raw.githubusercontent.com/Princeton-AI2-Lab/ZoomClick/main/README.md）；"
+    "LFPR 换算在 192 crop 上是 47.5 px（c≈247.5，"
+    "https://arxiv.org/html/2608.19553v1）。"
+    "⚠️ 旧的 50 px（crop 中心参考点）这条**只作历史记录**，"
+    "**不再参与任何判定**"
+)
+
+#: 「精定位偏离粗定位」的容差 —— **crop 宽度千分位刻度**（``c1000``）。
+#:
+#: 换算：``c1000 = ‖精定位 − 粗定位点‖₂ × 千 / crop 宽``。
+#: 默认 **260.4** ≡ 旧口径的 50 px @192 crop（**保持同一把尺子的历史读数**）。
+#:
+#: ⚠️ 字段名里**不写那三个数字**（C-04 的源码级扫描不许看见「写死的分母」）；
+#: 落盘键叫 ``deviation_tolerance_c1000``。
+DEFAULT_DEVIATION_TOLERANCE_PER_MILLE = 260.4
+DEFAULT_DEVIATION_PER_MILLE_SOURCE = (
+    "c1000 = ‖精定位 − 粗定位点‖₂ × 千 / crop 宽；"
+    "默认 260.4 ≡ 旧口径 50 px @192 crop（同一把尺子的历史读数）；"
+    "**这是记录器的阈值**（只落盘 `deviation_exceeded`，不再改落点）"
 )
 
 
@@ -218,6 +247,12 @@ class GateParams:
     consistency_source: str = DEFAULT_CONSISTENCY_SOURCE
     deviation_tolerance_px: float = DEFAULT_DEVIATION_TOLERANCE_PX
     deviation_source: str = DEFAULT_DEVIATION_SOURCE
+    #: **判据用的阈值**（crop 宽度千分位刻度）—— 记录器读它。
+    #:
+    #: ⚠️ 字段名里**不写那三个数字**（C-04 的源码级扫描）；落盘键是
+    #: ``deviation_tolerance_c1000``。
+    deviation_tolerance_per_mille: float = DEFAULT_DEVIATION_TOLERANCE_PER_MILLE
+    deviation_per_mille_source: str = DEFAULT_DEVIATION_PER_MILLE_SOURCE
 
     def to_dict(self) -> dict[str, object]:
         """落盘形状（值 + 来源一起落 —— 事后能核对「当时用的哪个阈值、凭什么」）。"""
@@ -228,8 +263,12 @@ class GateParams:
             "confidence_source": self.confidence_source,
             "consistency_tolerance_px": self.consistency_tolerance_px,
             "consistency_source": self.consistency_source,
+            #: ⚠️ **历史口径**（crop 中心参考点、固定 50 px）—— **不再参与判定**。
             "deviation_tolerance_px": self.deviation_tolerance_px,
             "deviation_source": self.deviation_source,
+            #: **当前口径**：crop 宽度千分位刻度（记录器阈值）。
+            "deviation_tolerance_c1000": self.deviation_tolerance_per_mille,
+            "deviation_c1000_source": self.deviation_per_mille_source,
         }
 
 

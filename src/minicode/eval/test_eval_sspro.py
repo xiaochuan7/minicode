@@ -252,7 +252,7 @@ class TableTests(unittest.TestCase):
             comparison=comparison,
             official=OFFICIAL_ROWS,
             model_id="test-model",
-            crop_size=(512, 512),
+            crop_label="crop 512×512",
         )
         self.assertEqual(len(rows), 7)
         self.assertEqual(len(OFFICIAL_ROWS), 5)
@@ -270,7 +270,7 @@ class TableTests(unittest.TestCase):
             comparison=comparison,
             official=OFFICIAL_ROWS,
             model_id="test-model",
-            crop_size=(512, 512),
+            crop_label="crop 512×512",
         )
         table = render_table(rows)
         self.assertEqual(len(table.splitlines()), 9)  # 表头 + 分隔线 + 7 行
@@ -289,7 +289,7 @@ class TableTests(unittest.TestCase):
             comparison=comparison,
             official=OFFICIAL_ROWS,
             model_id="test-model",
-            crop_size=(512, 512),
+            crop_label="crop 512×512",
         )
         table = render_table(rows)
         self.assertIn("只用粗定位", table)

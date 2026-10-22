@@ -237,6 +237,33 @@ class ArmOutcome:
     fallback_cause: str
     model_calls: int
     error: str = ""
+    # -- 施工清单第 ① 条埋点（8 个字段）---------------------------------
+    #: **crop 窗口有没有完整含住 GT 框**（``None`` = 这一臂没开过窗）。
+    crop_contains_target: bool | None = None
+    #: **没含住的原因**：``out-of-frame`` / ``coarse-picked-wrong`` /
+    #: ``out-of-bbox``；含住了就是空串。
+    crop_miss_reason: str = ""
+    #: 精定位落点离 **crop 窗口中心**多远（历史口径，留着做对比）。
+    deviation_px_crop_center: float | None = None
+    #: 精定位落点离 **粗定位点**多远（**当前口径的量**：‖精定位 − 粗定位‖₂）。
+    deviation_px_coarse: float | None = None
+    #: 同一个量的 **crop 宽度千分位**刻度（阈值用它 → 换 crop 不用重调）。
+    deviation_c1000: float | None = None
+    #: **精定位的原始落点**（物理像素）—— 此前**不可恢复**。
+    refined_point_px: tuple[float, float] | None = None
+    #: **最终落点来自哪一级**（``refined`` / ``coarse`` / ``whole_screen`` /
+    #: ``numbered`` / ``none``）。
+    landing_source: str = ""
+    #: **粗定位的原始回答**：框（模型输入空间）。
+    coarse_bbox_model: list[float] | None = None
+    #: 粗定位的原始中心点（模型输入空间）。
+    coarse_point_model: list[float] | None = None
+    #: 粗定位**模型自报的元素文字**。
+    coarse_text: str = ""
+    #: **落点到 GT bbox 的距离**（框内 = 0）。
+    dist_to_bbox: float | None = None
+    #: 这一臂的**图像 token**（按 28 px patch 规则对**实际发出的那张图**估计）。
+    image_tokens: int | None = None
 
     @property
     def stratum(self) -> tuple[str, str]:
@@ -261,6 +288,24 @@ class ArmOutcome:
             "fallback_cause": self.fallback_cause,
             "model_calls": self.model_calls,
             "error": self.error,
+            "crop_contains_target": self.crop_contains_target,
+            "crop_miss_reason": self.crop_miss_reason,
+            "deviation_px_crop_center": self.deviation_px_crop_center,
+            "deviation_px_coarse": self.deviation_px_coarse,
+            "deviation_c1000": self.deviation_c1000,
+            "refined_point_px": (
+                list(self.refined_point_px) if self.refined_point_px else None
+            ),
+            "landing_source": self.landing_source,
+            "coarse_bbox_model": (
+                list(self.coarse_bbox_model) if self.coarse_bbox_model else None
+            ),
+            "coarse_point_model": (
+                list(self.coarse_point_model) if self.coarse_point_model else None
+            ),
+            "coarse_text": self.coarse_text,
+            "dist_to_bbox": self.dist_to_bbox,
+            "image_tokens": self.image_tokens,
         }
 
 
@@ -360,6 +405,7 @@ def run_arms(
     progress: Callable[[str], None] | None = None,
     workers: int = 1,
     gate_params: Any = None,
+    crop_size: tuple[int, int] | None = None,
 ) -> tuple[list[ArmOutcome], list[ArmOutcome], list[ArmOutcome]]:
     """跑**三臂**，返回 ``(门控记录器, 无条件两段式, 只用粗定位)`` 三组结果。
 
@@ -400,6 +446,7 @@ def run_arms(
             max_tokens,
             client,
             gate_params=gate_params,
+            crop_size=crop_size,
         )
         always = _run_one(
             sample,
@@ -412,6 +459,7 @@ def run_arms(
             max_tokens,
             client,
             gate_params=gate_params,
+            crop_size=crop_size,
         )
         coarse_only = _run_one(
             sample,
@@ -425,6 +473,7 @@ def run_arms(
             client,
             gate_params=gate_params,
             coarse_only=True,
+            crop_size=crop_size,
         )
         return on_demand, always, coarse_only
 
@@ -457,6 +506,75 @@ def run_arms(
     )
 
 
+def _dist_to_bbox(
+    point: tuple[int, int] | tuple[float, float] | None,
+    bbox: tuple[int, int, int, int],
+) -> float | None:
+    """点到 GT bbox 的距离（**框内 = 0**）。
+
+    与浏览器侧 ``e2e/apps.py`` 的「到矩形距离」同一语义。
+    """
+    if point is None:
+        return None
+    x1, y1, x2, y2 = bbox
+    dx = max(x1 - point[0], 0.0, point[0] - x2)
+    dy = max(y1 - point[1], 0.0, point[1] - y2)
+    return float((dx * dx + dy * dy) ** 0.5)
+
+
+def _crop_containment(
+    crop_plan: Any, bbox: tuple[int, int, int, int], image_size: tuple[int, int]
+) -> tuple[bool | None, str]:
+    """crop 窗口**有没有完整含住 GT 框**，以及没含住的**原因**。
+
+    原因三选一（施工清单第 ① 条）：
+
+    * ``out-of-frame`` —— GT 框本身就出了这张图（**不可能**含住）；
+    * ``coarse-picked-wrong`` —— GT 框的中心**不在** crop 窗内
+      （粗点指到了别的地方）；
+    * ``out-of-bbox`` —— 中心在窗内，但框**没被完整含住**（部分含）。
+    """
+    if not crop_plan:
+        return (None, "")
+    try:
+        left = float(crop_plan["origin_x"])
+        top = float(crop_plan["origin_y"])
+        right = left + float(crop_plan["width"])
+        bottom = top + float(crop_plan["height"])
+    except (KeyError, TypeError, ValueError):
+        return (None, "")
+    x1, y1, x2, y2 = bbox
+    if x1 < 0 or y1 < 0 or x2 > image_size[0] or y2 > image_size[1]:
+        return (False, "out-of-frame")
+    center_x = (x1 + x2) / 2.0
+    center_y = (y1 + y2) / 2.0
+    if not (left <= center_x <= right and top <= center_y <= bottom):
+        return (False, "coarse-picked-wrong")
+    if left <= x1 and top <= y1 and right >= x2 and bottom >= y2:
+        return (True, "")
+    return (False, "out-of-bbox")
+
+
+#: **算图像 token 的那一级**（``coarse_only`` / ``no_candidates`` 不是模型调用）。
+_IMAGE_TOKEN_STAGES = ("coarse", "whole_screen", "refine", "numbered")
+
+
+def _image_tokens_of_echoes(echoes: Any) -> int | None:
+    """这一臂的**图像 token**（28 px patch 规则，对**实际发出的那张图**估计）。"""
+    from minicode.model.request_log import estimate_image_tokens
+
+    total = 0
+    seen = False
+    for echo in echoes or ():
+        if echo.stage not in _IMAGE_TOKEN_STAGES:
+            continue
+        if not echo.sent_width or not echo.sent_height:
+            continue
+        total += estimate_image_tokens(int(echo.sent_width), int(echo.sent_height))
+        seen = True
+    return total if seen else None
+
+
 def _run_one(
     sample: SsproSample,
     frame: CapturedFrame,
@@ -469,6 +587,7 @@ def _run_one(
     client: ModelCaller,
     gate_params: Any = None,
     coarse_only: bool = False,
+    crop_size: tuple[int, int] | None = None,
 ) -> ArmOutcome:
     """跑一条样本的一个臂，判命中（**按官方脚本的判定口径**）。"""
     from minicode.action.ports import VisualLocateRequest
@@ -484,6 +603,8 @@ def _run_one(
         gate_mode=gate_mode,
         gate_params=gate_params,
         coarse_only=coarse_only,
+        crop_width=crop_size[0] if crop_size else None,
+        crop_height=crop_size[1] if crop_size else None,
     )
     result = grounder.locate(
         VisualLocateRequest(
@@ -496,6 +617,19 @@ def _run_one(
     if result.landing_point is not None:
         prediction = SCREENSPOT_PRO.wrap(result.landing_point, sample.image_size)
         hit = SCREENSPOT_PRO.hit(prediction, sample.as_eval_sample())
+    crop_plan = result.crop_plan or {}
+    contains, miss_reason = _crop_containment(
+        crop_plan, sample.bbox, sample.image_size
+    )
+    coarse_echo = next(
+        (echo for echo in result.echoes if echo.stage == "coarse"), None
+    )
+    refined_point = None
+    if crop_plan.get("refined_point_x") is not None:
+        refined_point = (
+            float(crop_plan["refined_point_x"]),
+            float(crop_plan["refined_point_y"]),
+        )
     return ArmOutcome(
         sample_id=sample.sample_id,
         ui_type=sample.ui_type,
@@ -513,6 +647,26 @@ def _run_one(
         fallback_cause=result.fallback_cause,
         model_calls=result.model_calls,
         error=result.error_message,
+        crop_contains_target=contains,
+        crop_miss_reason=miss_reason,
+        deviation_px_crop_center=crop_plan.get("deviation_px"),
+        deviation_px_coarse=crop_plan.get("deviation_px_coarse"),
+        deviation_c1000=crop_plan.get("deviation_c1000"),
+        refined_point_px=refined_point,
+        landing_source=result.landing_source,
+        coarse_bbox_model=(
+            list(coarse_echo.raw_bbox)
+            if coarse_echo is not None and coarse_echo.raw_bbox
+            else None
+        ),
+        coarse_point_model=(
+            [coarse_echo.raw_x, coarse_echo.raw_y]
+            if coarse_echo is not None and coarse_echo.raw_x is not None
+            else None
+        ),
+        coarse_text=coarse_echo.raw_text if coarse_echo is not None else "",
+        dist_to_bbox=_dist_to_bbox(result.landing_point, sample.bbox),
+        image_tokens=_image_tokens_of_echoes(result.echoes),
     )
 
 
@@ -558,6 +712,70 @@ def summarize(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
         "model_calls": sum(outcome.model_calls for outcome in outcomes),
         "errors": sum(1 for outcome in outcomes if outcome.error),
         "gate": gate.to_dict(),
+        **_telemetry_summary(outcomes),
+    }
+
+
+def _telemetry_summary(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
+    """**第 ① 条埋点**的汇总（crop 含住率 / 假命中 / 落点来源 / 图像 token）。"""
+    opened = [outcome for outcome in outcomes if outcome.crop_contains_target is not None]
+    contains = [outcome for outcome in opened if outcome.crop_contains_target]
+    miss_reasons: dict[str, int] = {}
+    for outcome in opened:
+        if outcome.crop_miss_reason:
+            miss_reasons[outcome.crop_miss_reason] = (
+                miss_reasons.get(outcome.crop_miss_reason, 0) + 1
+            )
+    fallback_causes: dict[str, int] = {}
+    for outcome in outcomes:
+        if outcome.fallback_cause:
+            fallback_causes[outcome.fallback_cause] = (
+                fallback_causes.get(outcome.fallback_cause, 0) + 1
+            )
+    landing_sources: dict[str, int] = {}
+    for outcome in outcomes:
+        key = outcome.landing_source or "none"
+        landing_sources[key] = landing_sources.get(key, 0) + 1
+    distances = sorted(
+        outcome.dist_to_bbox for outcome in outcomes if outcome.dist_to_bbox is not None
+    )
+    image_tokens = [
+        outcome.image_tokens for outcome in outcomes if outcome.image_tokens is not None
+    ]
+    return {
+        "telemetry": {
+            "crop_opened": len(opened),
+            "crop_contains_target": len(contains),
+            "crop_contains_target_rate": (
+                len(contains) / len(opened) if opened else 0.0
+            ),
+            "crop_miss_reason_distribution": miss_reasons,
+            #: **假命中**：窗口里没有目标，模型**仍然产出了被采纳的精定位点**。
+            "fake_hits": sum(
+                1
+                for outcome in opened
+                if outcome.crop_contains_target is False
+                and outcome.landing_source == "refined"
+            ),
+            "fallback_cause_distribution": fallback_causes,
+            "landing_source_distribution": landing_sources,
+            "dist_to_bbox": {
+                "n": len(distances),
+                "p50": round(distances[len(distances) // 2], 1) if distances else None,
+                "p90": (
+                    round(distances[min(len(distances) - 1, int(len(distances) * 0.9))], 1)
+                    if distances
+                    else None
+                ),
+                "max": round(distances[-1], 1) if distances else None,
+            },
+            "image_tokens": {
+                "total": sum(image_tokens),
+                "per_target": (
+                    sum(image_tokens) / len(image_tokens) if image_tokens else 0.0
+                ),
+            },
+        }
     }
 
 
@@ -659,7 +877,7 @@ def table_rows(
     comparison: dict[str, Any],
     official: Sequence[dict[str, str]],
     model_id: str,
-    crop_size: tuple[int, int],
+    crop_label: str,
 ) -> list[dict[str, str]]:
     """那张 **7 行表**（官方 5 行 + 本方案 2 行）。
 
@@ -681,7 +899,7 @@ def table_rows(
                 "model": f"{model_id}（本次实测）",
                 "dataset": "ScreenSpot-Pro（本轮抽样，见报告 N）",
                 "crop": (
-                    f"crop {crop_size[0]}×{crop_size[1]}"
+                    crop_label
                     if mode != "coarse_only"
                     else "无 crop（只有整屏粗定位）"
                 ),

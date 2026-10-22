@@ -32,9 +32,10 @@ import argparse
 import json
 import statistics
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from minicode.coord.coordinates import Rect
 from minicode.coord.crop_refine import plan_crop
@@ -95,8 +96,8 @@ class GeometryStats:
     median_tolerance_x: float
     median_tolerance_y: float
     median_coarse_error_px: float
-    #: **自适应几何**时，窗口尺寸逐样本不同 → 这里记「最小 / 中位 / 最大」。
-    size_range: tuple[int, int, int] = (0, 0, 0)
+    #: **自适应几何**时，窗口尺寸逐样本不同 → 这里记「宽/高的最小与最大值」。
+    size_range: tuple[int, int, int, int] = (0, 0, 0, 0)
 
     @property
     def fully_contains_rate(self) -> float:
@@ -296,8 +297,9 @@ def evaluate_geometry(
         ),
         size_range=(
             min(widths) if widths else 0,
-            int(statistics.median(widths)) if widths else 0,
+            min(heights) if heights else 0,
             max(widths) if widths else 0,
+            max(heights) if heights else 0,
         ),
     )
     return (stats, outcomes)

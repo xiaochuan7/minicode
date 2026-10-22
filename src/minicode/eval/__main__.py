@@ -64,11 +64,11 @@ from .sspro import (
 __all__ = ["main"]
 
 
-def _crop_size() -> tuple[int, int]:
-    """**实际用的裁剪窗口尺寸**（取冻结原型那份默认值，不另写常量）。"""
-    from minicode.ground.channel import default_crop_size
+def _crop_label() -> str:
+    """**实际用的裁剪几何的口径**（自适应 → 报口径，不报一个固定数）。"""
+    from minicode.ground.channel import crop_geometry_label
 
-    return default_crop_size()
+    return crop_geometry_label()
 
 
 def _parse_size(text: str) -> tuple[int, int]:
@@ -154,6 +154,21 @@ def main(argv=None) -> int:
         help="按样本并行的线程数（只缩短墙钟时间，不改变任何判定）",
     )
     parser.add_argument(
+        "--crop-width",
+        type=int,
+        default=0,
+        help=(
+            "裁剪窗口宽（物理像素）；0 = **自适应**"
+            "（当前物理帧的 50% 线性尺寸、绝对下限 512 —— 施工清单第 ⑤ 条）"
+        ),
+    )
+    parser.add_argument(
+        "--crop-height",
+        type=int,
+        default=0,
+        help="裁剪窗口高（物理像素）；0 = 自适应（同上）",
+    )
+    parser.add_argument(
         "--limit", type=int, default=0, help="最多跑多少条样本（0 = 不限；调试用）"
     )
     args = parser.parse_args(argv)
@@ -211,8 +226,14 @@ def main(argv=None) -> int:
             f"门控参数覆盖：一致性容差 {args.consistency_tolerance} px"
             f"（自带值 {default_gate_params().consistency_tolerance_px} px）"
         )
+    crop_size = (
+        (args.crop_width, args.crop_height)
+        if args.crop_width and args.crop_height
+        else None
+    )
     print(
-        f"=== 跑三臂（门控记录器 / 无条件两段式 / 只用粗定位），N={len(chosen)} ==="
+        "=== 跑三臂（门控记录器 / 无条件两段式 / 只用粗定位），"
+        f"N={len(chosen)}｜裁剪几何：{_crop_label()} ==="
     )
     on_demand, always, coarse_only = run_arms(
         chosen,
@@ -224,10 +245,11 @@ def main(argv=None) -> int:
         progress=lambda line: print(line, flush=True),
         workers=args.workers,
         gate_params=gate_params,
+        crop_size=crop_size,
     )
 
     comparison = compare_arms(on_demand, always, coarse_only=coarse_only)
-    crop_size = _crop_size()
+    crop_label = _crop_label()
     #: **平均模型调用数/目标**（两条验收线判的都是这个数）。
     #:
     #: ⚠️ **口径只有这一处**：逐条累加**那一臂**的 ``model_calls`` ÷ 样本数。
@@ -245,7 +267,7 @@ def main(argv=None) -> int:
         comparison=comparison,
         official=OFFICIAL_ROWS,
         model_id=config.model,
-        crop_size=crop_size,
+        crop_label=crop_label,
     )
     table = render_table(rows)
 

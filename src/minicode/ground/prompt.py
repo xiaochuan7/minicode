@@ -48,12 +48,15 @@ __all__ = [
     "CandidateLine",
     "CoarseTarget",
     "GroundingParseError",
+    "answer_line_payload",
     "coarse_prompt",
+    "is_truncated",
     "normalize_target",
     "normalize_target_prompt",
     "numbered_candidates_prompt",
     "parse_chosen_numbers",
     "parse_coarse_target",
+    "parse_optional_point",
     "parse_point",
     "refine_prompt",
     "whole_screen_prompt",
@@ -70,6 +73,14 @@ class CoarseTarget:
 
     * ``bbox`` —— 模型给的**外接矩形** ``(x1, y1, x2, y2)``；没有就是 ``None``；
     * ``point`` —— 模型自己报的**中心点**；没有就是 ``None``。
+      ⚠️ **2026-10-22 起生产提示词不再问这个字段**（施工清单第 ⑦ 条：
+      官方全部是「每对象一个几何」，``point`` 是死字段 —— 本机实测 18/18 条
+      模型自报的 point 恰等于它自己的 bbox 中心，|Δ| ≤ 1 px，丢掉它是恒等变换）。
+      **解析仍然认它**（旧产物/旧模型回答要能读）。
+    * ``text`` —— 模型**自报**的「这个元素上可见的文字」（施工清单第 ⑦ 条）。
+      用来把「挑错元素」从**静默的错**变成**可检出的错**。
+    * ``negative`` —— 模型说了「**这张图里没有这个元素**」（负出口）。
+      此时 ``bbox``/``point`` 都是 ``None``，**不是解析失败**。
 
     ⚠️ **落点取框中心**（官方通用 API 协议的做法）：论文 ScreenSpot-Pro
     Table 3 题注逐字 "For models inferencing boxes, we consider the center
@@ -83,6 +94,10 @@ class CoarseTarget:
 
     bbox: tuple[float, float, float, float] | None = None
     point: tuple[float, float] | None = None
+    #: 模型自报的「这个元素上可见的文字」（可以为空串）。
+    text: str = ""
+    #: 模型说「**这张图里没有这个元素**」（负出口）。
+    negative: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,6 +139,11 @@ def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
       提示词里声明它，模型报的坐标就知道对应哪一张图。
     * **不许提量纲**（不写「0~1000」「归一化」「分母」），也不许提别的空间 ——
       模型报的是**整屏**位置。**尺寸声明照旧**（A-2）。
+    * **2026-10-22（施工清单第 ⑦ 条）**：**删掉 ``point`` 字段**（官方全部是
+      「每对象一个几何」；本机实测 18/18 条模型自报的 point 恰等于它自己的
+      bbox 中心，|Δ| ≤ 1 px → 删掉是恒等变换，而留着它会与 bbox 矛盾）、
+      **加 ``text`` 字段**（模型自报选中元素上的可见文字）、**加负出口**
+      （元素不在这张图里 → 答 ``{"bbox": null, "text": ""}``）。
     """
     return (
         "这是一张 Windows 桌面截图。\n"
@@ -131,9 +151,11 @@ def coarse_prompt(target_description: str, image_size: tuple[int, int]) -> str:
         "请在图里找到与下面这个指令对应的界面元素，"
         "并给出它的外接矩形（bounding box）。\n"
         f"指令：{target_description}\n"
-        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}'
+        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "text": "这个元素上可见的文字"}'
         "（坐标是这张图的像素）。\n"
-        "bbox 是这个元素在图里的外接矩形的左上角与右下角，point 是它的中心点。\n"
+        "bbox 是这个元素在图里的外接矩形的左上角与右下角。\n"
+        "text 是这个元素上能看到的文字；这个元素没有文字就填空字符串。\n"
+        '如果这张图里找不到这个元素，答 {"bbox": null, "text": ""}。\n'
         "不要输出分析。"
     )
 
@@ -147,12 +169,17 @@ def refine_prompt(target_description: str, image_size: tuple[int, int]) -> str:
 
     「在这张图里」说的是**参照系**（哪张图），不是**答案单位**；
     答案单位由标定探针判定，不在这里写死。
+
+    ⚠️ **2026-10-22（施工清单第 ⑦ 条）加了「没找到」逃生口**：
+    元素不在这张裁剪图里 → 答 ``{"x": null, "y": null}`` → **干净回落到粗定位**，
+    而不是接受一个假点（这是「假命中归零」的手段）。
     """
     return (
         "这是一张从 Windows 桌面截图里裁出的小区域（未缩放，1 像素 = 1 屏幕像素）。\n"
         f"{_size_line(image_size)}\n"
         f"请给出这张图里名为「{target_description}」的元素【中心】的位置。\n"
         f"{_answer_format()}\n"
+        '如果这张图里没有这个元素，答 {"x": null, "y": null}。\n'
         "请给这张图的像素坐标（直接给坐标即可，不用解释你的坐标范围）。"
     )
 
@@ -175,7 +202,7 @@ def whole_screen_prompt(
     ⚠️ **不是逐字重发**：逐字重发同一条请求，确定性模型会给出同一个答案
     （工单 M7 AC 3：不得静默重试）。带上失败原因后它是**另一次问**。
 
-    ⚠️ **问的量与 :func:`coarse_prompt` 一样**（**框 + 点**）：它是粗定位那一级的
+    ⚠️ **问的量与 :func:`coarse_prompt` 一样**（**框 + 自报文字**）：它是粗定位那一级的
     重试 —— 契约不同的话，两遍的结果就没法比。
     """
     return (
@@ -185,9 +212,11 @@ def whole_screen_prompt(
         "并给出它的外接矩形（bounding box）。\n"
         f"指令：{target_description}\n"
         f"（上一次没能给出可用的位置：{retry_reason}。请再看一遍这张图。）\n"
-        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "point": [x, y]}'
+        '用 JSON 回答，格式：{"bbox": [左, 上, 右, 下], "text": "这个元素上可见的文字"}'
         "（坐标是这张图的像素）。\n"
-        "bbox 是这个元素在图里的外接矩形的左上角与右下角，point 是它的中心点。\n"
+        "bbox 是这个元素在图里的外接矩形的左上角与右下角。\n"
+        "text 是这个元素上能看到的文字；这个元素没有文字就填空字符串。\n"
+        '如果这张图里找不到这个元素，答 {"bbox": null, "text": ""}。\n'
         "不要输出分析。"
     )
 
@@ -385,6 +414,49 @@ def _json_array(text: str) -> Any:
         return None
 
 
+#: **答案行**的行首标记（官方通用 API 评测协议的读法：末行 ``Answer: [...]``）。
+#:
+#: 一手：https://github.com/modelscope/evalscope/blob/main/evalscope/benchmarks/screenspot_pro/screenspot_pro_adapter.py
+_ANSWER_LINE = re.compile(
+    r"^\s*(?:answer|answer\.|final answer|答案)\s*[:：]?\s*(?P<body>.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _answer_line_body(text: str) -> str | None:
+    """回答里**最后一条答案行**的正文（没有答案行 → ``None``）。"""
+    matches = list(_ANSWER_LINE.finditer(text or ""))
+    if not matches:
+        return None
+    return matches[-1].group("body")
+
+
+def answer_line_payload(text: str) -> Any | None:
+    """**答案行优先**：回答里有一行 ``Answer: …`` / ``答案：…`` → 只读那一行。
+
+    没有答案行 → 返回 ``None``（调用方读整段回答）。
+
+    ⚠️ **取最后一条**答案行（官方协议读的是**末行**答案）。
+    """
+    body = _answer_line_body(text)
+    if body is None:
+        return None
+    payload = _json_payload(body)
+    if payload is not None:
+        return payload
+    return _json_array(body)
+
+
+def is_truncated(text: str) -> bool:
+    """回答**被截断**了吗（括号不配对）？
+
+    官方协议：**截断 = 0 分**（截断的回答不许被"抢救"成一个坐标）。
+    """
+    if not text:
+        return True
+    return text.count("{") > text.count("}") or text.count("[") > text.count("]")
+
+
 def _as_pair(value: Any) -> tuple[float, float] | None:
     """把 ``[x, y]`` / ``{"x": .., "y": ..}`` 读成一对数值。"""
     if isinstance(value, dict):
@@ -423,6 +495,27 @@ def parse_point(text: str) -> tuple[float, float]:
     raise GroundingParseError(f"模型回答里取不出坐标：{text[:160]!r}")
 
 
+def parse_optional_point(text: str) -> tuple[float, float] | None:
+    """把模型回答读成 ``(x, y)``；**模型说「没找到」** → ``None``。
+
+    「没找到」的形态（施工清单第 ⑦ 条的逃生口）：
+
+    * ``{"x": null, "y": null}`` —— 元素不在这张图里 → ``None``；
+    * 别的读不出来 → :class:`GroundingParseError`（**显式失败**，不猜）。
+
+    ⚠️ **截断 = 0 分**：括号不配对的回答**不抢救** → 显式失败。
+    """
+    payload = answer_line_payload(text)
+    if payload is None:
+        payload = _json_payload(text)
+    if isinstance(payload, dict) and payload.get("x") is None and payload.get("y") is None:
+        return None
+    pair = _as_pair(payload)
+    if pair is not None:
+        return pair
+    raise GroundingParseError(f"模型回答里取不出坐标：{text[:160]!r}")
+
+
 def _numbers(value: Any) -> list[float] | None:
     """一串数字（``[1, 2, 3]``）；不是数字列表就是 ``None``。"""
     if not isinstance(value, (list, tuple)) or not value:
@@ -456,26 +549,48 @@ def _box_of(value: Any) -> tuple[float, float, float, float] | None:
 
 
 def parse_coarse_target(text: str) -> CoarseTarget:
-    """把粗定位的回答读成**框 + 点**（**模型输入空间**的数值，原样带回）。
+    """把粗定位的回答读成**框 + 自报文字**（**模型输入空间**的数值，原样带回）。
 
     认得的几种形状：
 
-    * ``{"bbox": [x1, y1, x2, y2], "point": [x, y]}`` —— 框与点都有（**要的就是这个**）；
+    * ``{"bbox": [x1, y1, x2, y2], "text": "…"}`` —— 框 + 自报文字（**要的就是这个**）；
     * ``{"bbox": [x1, y1, x2, y2]}`` —— 只有框（**落点取框中心**）；
     * ``{"bbox": [x, y, x, y]}`` —— **退化成点**的框（中心即该点）；
-    * ``{"point": [x, y]}`` / ``{"x": .., "y": ..}`` / ``[x, y]`` —— 只有点；
+    * ``{"bbox": null, "text": ""}`` —— **负出口**（元素不在这张图里）；
+    * ``{"point": [x, y]}`` / ``{"x": .., "y": ..}`` / ``[x, y]`` —— 只有点
+      （``point`` 字段生产提示词已不再问，**但仍然认**）；
     * ``[[x1, y1, x2, y2]]`` —— 官方协议那种顶层数组。
+
+    **解析纪律**（施工清单第 ⑦ 条，照官方通用 API 评测协议的读法，
+    一手：https://github.com/modelscope/evalscope/blob/main/evalscope/benchmarks/screenspot_pro/screenspot_pro_adapter.py）：
+
+    * **答案行优先** —— 有 ``Answer:`` / ``答案：`` 那一行就只读那一行；
+    * **截断 = 0 分** —— 括号不配对的回答**不抢救** → 显式失败；
+    * **松散写法仅在答案行接受** —— ``x: .., y: ..`` 这种只在答案行上认。
 
     读不出来 → :class:`GroundingParseError`（**显式失败**，不猜、不按数值大小猜量纲）。
     """
-    payload = _json_payload(text)
+    body = _answer_line_body(text)
+    segment = body if body is not None else text
+    if is_truncated(segment):
+        raise GroundingParseError(
+            f"模型回答被截断（括号不配对），按 0 分处理：{text[:160]!r}"
+        )
+    payload = answer_line_payload(text)
+    if payload is None:
+        payload = _json_payload(text)
     if isinstance(payload, dict):
         bbox = _box_of(payload.get("bbox"))
         point = _pair_of(payload.get("point"))
         if point is None:
             point = _pair_of([payload.get("x"), payload.get("y")])
+        reported = payload.get("text")
+        reported_text = reported if isinstance(reported, str) else ""
+        if bbox is None and point is None and payload.get("bbox") is None:
+            # **负出口**：``{"bbox": null, "text": ""}`` —— 元素不在这张图里。
+            return CoarseTarget(text=reported_text, negative=True)
         if bbox is not None or point is not None:
-            return CoarseTarget(bbox=bbox, point=point)
+            return CoarseTarget(bbox=bbox, point=point, text=reported_text)
     if isinstance(payload, list):
         # 官方协议：``[[x1, y1, x2, y2]]``（外面多一层数组）。
         inner = payload[0] if len(payload) == 1 and isinstance(payload[0], list) else payload
@@ -486,7 +601,7 @@ def parse_coarse_target(text: str) -> CoarseTarget:
         if point is not None:
             return CoarseTarget(point=point)
     # 顶层的方括号数组（前面可能还有一句话）。
-    array = _json_array(text)
+    array = _json_array(segment)
     if array is not None:
         inner = array[0] if len(array) == 1 and isinstance(array[0], list) else array
         bbox = _box_of(inner)
@@ -495,9 +610,11 @@ def parse_coarse_target(text: str) -> CoarseTarget:
         point = _pair_of(inner)
         if point is not None:
             return CoarseTarget(point=point)
-    # 老读法：``x: .., y: ..`` / ``(x, y)``（只有点）。
-    try:
-        return CoarseTarget(point=parse_point(text))
-    except GroundingParseError as exc:
-        raise GroundingParseError(f"模型回答里取不出框或坐标：{text[:160]!r}") from exc
+    # 老读法：``x: .., y: ..`` / ``(x, y)``（只有点）—— **仅在答案行上接受**。
+    if body is not None:
+        try:
+            return CoarseTarget(point=parse_point(body))
+        except GroundingParseError as exc:
+            raise GroundingParseError(f"模型回答里取不出框或坐标：{text[:160]!r}") from exc
+    raise GroundingParseError(f"模型回答里取不出框或坐标：{text[:160]!r}")
 
