@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from minicode.action.ports import CapturedFrame, PixelFormat
 from minicode.coord.crop_refine import CropPlan
-from minicode.model.image import upscale_frame
+from minicode.model.image import downscale_frame, upscale_frame
 
 __all__ = ["crop_frame", "crop_region", "upscale_crop"]
 
@@ -145,6 +145,8 @@ def upscale_crop(
       所以需要 ``factor ≈ 30 / target_size_px``（``target_size_px`` 是目标在
       **物理像素**下的边长）；
     * **上限**：放大后的图宽 ≤ ``max_width``（服务端上限，超了坐标系不可信）；
+    * ⚠️ **crop 自己就超宽时**（超宽屏：0.5×5120 = 2560 px）→ **缩小**到上限
+      以内（**声明尺寸 = 实际发出的尺寸**，否则那一次请求的坐标系不可信）；
     * **下限**：``factor ≥ 1`` —— **大目标不放大**（text 子集本来就有 66~87 px，
       放大它只会浪费、还可能改坏落点）。
 
@@ -161,6 +163,14 @@ def upscale_crop(
     needed = TARGET_APPARENT_MIN_PX / target_size_px
     wanted = max(1.0, min(factor, needed))
     #: **宽度上限**决定的倍数（服务端那条线）。
+    if frame.width > max_width:
+        # ⚠️ **crop 自己就超过服务端上限**（超宽屏：0.5×5120 = 2560 px）。
+        #: 服务端会把它再缩 → **那一次请求的坐标系不可信** →
+        #: **必须自己缩到上限以内**（声明尺寸 = 实际发出的尺寸）。
+        return (
+            downscale_frame(frame, max_width, max(1, round(frame.height * max_width / frame.width))),
+            max_width / frame.width,
+        )
     if frame.width > 0:
         allowed = max_width / frame.width
         if allowed < 1.0:
