@@ -343,7 +343,10 @@ def main(argv=None) -> int:
             "endpoint": config.base_url,
             "effort": args.effort,
             "max_tokens": args.max_tokens,
-            "crop_size": list(crop_size),
+            #: **裁剪几何的口径**（自适应 → 报口径，不报一个固定数；
+            #: 显式指定固定尺寸时报那一对像素）。
+            "crop_geometry": crop_label,
+            "crop_size": list(crop_size) if crop_size else None,
         },
         "calibration": [
             {**record, "scale": record["scale"].value} for record in calibrations
