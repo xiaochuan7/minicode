@@ -13,7 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 from minicode.action.protocol import ActionKind
+from minicode.action.text import name_matches
 from minicode.e2e import real as real_module
+from minicode.e2e.apps import VerificationPage
 from minicode.e2e.real import (
     WindowsDesktopExecutor,
     read_scale_from_registry,
@@ -775,7 +777,7 @@ def test_w3_truth_is_the_bounding_box_center():
 
 def test_truth_without_a_control_box_is_not_invented(tmp_path):
     """树里没有那个控件的框 → **不编一个真值**：只记缺哪条真值。"""
-    executor = WindowsDesktopExecutor(out_dir=tmp_path)
+    executor = WindowsDesktopExecutor(out_dir=tmp_path, ocr_truth_source=_no_ocr_truth())
     truth = executor._resolve_truth(_step(), SimpleNamespace(anchor=None))
     assert truth.rect is None
     assert truth.center is None
@@ -784,7 +786,7 @@ def test_truth_without_a_control_box_is_not_invented(tmp_path):
 
 def test_the_missing_truth_names_the_control_it_is_missing(tmp_path):
     """**缺哪条真值**要写得出是哪个控件（W-1.C 那一类）。"""
-    executor = WindowsDesktopExecutor(out_dir=tmp_path)
+    executor = WindowsDesktopExecutor(out_dir=tmp_path, ocr_truth_source=_no_ocr_truth())
     executor._port = _FakeUiaPort(
         [SimpleNamespace(name="别的控件", rect=(0, 0, 10, 10), automation_id="")]
     )
@@ -793,6 +795,75 @@ def test_the_missing_truth_names_the_control_it_is_missing(tmp_path):
     assert truth.rect is None
     assert "系统" in truth.missing
     assert "缺目标控件矩形" in truth.missing
+
+
+# ---------------------------------------------------------------------------
+# OCR 的词框当控件矩形真值（工单 T9）
+# ---------------------------------------------------------------------------
+
+
+def _no_ocr_truth():
+    """假的 OCR 真值源：**什么都没读到**（→ 仍然判不了）。"""
+
+    def _source(element_name):
+        return None
+
+    return _source
+
+
+def test_the_ocr_word_box_becomes_the_control_rect_truth(tmp_path):
+    """树里没有控件框 → **OCR 的词框**就是控件矩形真值（画面量的）。"""
+    executor = WindowsDesktopExecutor(
+        out_dir=tmp_path,
+        ocr_truth_source=lambda name: (
+            ((100, 200, 180, 240), "OCR 量的（画面里那个词的框：「系统」）")
+        ),
+    )
+    executor._port = _FakeUiaPort(
+        [SimpleNamespace(name="别的控件", rect=(0, 0, 10, 10), automation_id="")]
+    )
+    step = _step(truth_element="系统", truth_control_type="ListItem")
+    truth = executor._resolve_truth(step, SimpleNamespace(anchor=None))
+    assert truth.rect == (100, 200, 180, 240)
+    assert truth.center == (140, 220)
+    assert "OCR 量的" in truth.source
+    assert truth.missing == ""
+
+
+def test_the_ocr_truth_is_not_used_when_the_tree_has_the_control_box(tmp_path):
+    """**树里有那个控件的框** → 树里的优先（OCR 那一路不跑）。"""
+    calls = []
+
+    def _ocr(element_name):
+        calls.append(element_name)
+        return None
+
+    executor = WindowsDesktopExecutor(out_dir=tmp_path, ocr_truth_source=_ocr)
+    executor._port = _FakeUiaPort(
+        [SimpleNamespace(name="系统", rect=(10, 20, 110, 60), automation_id="")]
+    )
+    step = _step(truth_element="系统", truth_control_type="ListItem")
+    truth = executor._resolve_truth(step, SimpleNamespace(anchor=None))
+    assert truth.rect == (10, 20, 110, 60)
+    assert "树里的控件框" in truth.source
+    assert calls == []
+
+
+def test_the_truth_stays_undecidable_when_the_ocr_reading_fails(tmp_path):
+    """**OCR 读不出来** → 仍然判不了（**不编真值**）。"""
+
+    def _ocr(element_name):
+        raise OSError("OCR 后端没有给出词级读数")
+
+    executor = WindowsDesktopExecutor(out_dir=tmp_path, ocr_truth_source=_ocr)
+    executor._port = _FakeUiaPort(
+        [SimpleNamespace(name="别的控件", rect=(0, 0, 10, 10), automation_id="")]
+    )
+    step = _step(truth_element="系统", truth_control_type="ListItem")
+    truth = executor._resolve_truth(step, SimpleNamespace(anchor=None))
+    assert truth.rect is None
+    assert "系统" in truth.missing
+    assert "OCR 读不出来" in executor.task_context()["ocr_truth_note"]
 
 
 def test_landing_rule_summary_reports_the_version_and_the_distribution():
@@ -920,3 +991,78 @@ def test_w3_zoom_step_uses_the_zoom_action_and_a_region():
     step = task_by_id("W-3").steps[0]
     assert step.action_kind is ActionKind.ZOOM
     assert len(step.params["region"]) == 4
+
+
+# ---------------------------------------------------------------------------
+# 浏览器通道那三件套（工单 T8）
+# ---------------------------------------------------------------------------
+
+
+def test_the_local_page_has_the_three_browser_channel_pieces():
+    """**可滚列表（>1 屏高）+ 搜索框 + 城市筛选下拉**（纯 HTML）。"""
+    html = VerificationPage()._html()
+    assert f'aria-label="{VerificationPage.JOB_LIST}"' in html
+    assert f'aria-label="{VerificationPage.SEARCH_BOX}"' in html
+    assert f">{VerificationPage.SEARCH_BUTTON}<" in html
+    assert f">{VerificationPage.CITY_FILTER}<" in html
+    assert VerificationPage.CITY_PANEL in html
+    assert VerificationPage.BACK_TO_TOP in html
+    #: **比一屏高** → 24 条 × 32 px 行高已经超过一屏（视口高 780 px）。
+    assert len(VerificationPage.JOBS) * 32 > 780
+
+
+def _visible_names(*, panel=False, suggestions=False, summary=False, backtop=False):
+    """验证页上的**可访问名**（按那一刻的可见状态列出来）。"""
+    names = [
+        (VerificationPage.TITLE, "heading"),
+        ("设置面板", "heading"),
+        ("保存", "button"),
+        ("打开详情", "link"),
+        (VerificationPage.COMPOSER, "textbox"),
+        ("最新职位", "heading"),
+        (VerificationPage.SEARCH_BOX, "searchbox"),
+        (VerificationPage.SEARCH_BUTTON, "button"),
+        (VerificationPage.CITY_FILTER, "button"),
+        (VerificationPage.JOB_LIST, "list"),
+    ]
+    for title, city, salary in VerificationPage.JOBS:
+        names.append((title, "link"))
+        names.append((f"{title} · {city} · {salary}", "listitem"))
+        names.append((f"{city} · {salary}", "statictext"))
+    if panel:
+        names.append((VerificationPage.CITY_PANEL, "heading"))
+        for city in VerificationPage.CITIES:
+            names.append((city, "button"))
+    if suggestions:
+        names.append((f"{VerificationPage.SUGGESTION}：前端工程师", "listitem"))
+    if summary:
+        names.append((f"{VerificationPage.RESULT_SUMMARY}：1 条", "paragraph"))
+    if backtop:
+        names.append((VerificationPage.BACK_TO_TOP, "button"))
+    return names
+
+
+def test_every_chrome_target_matches_exactly_one_element_when_it_is_located():
+    """**目标描述在定位那一刻要唯一** —— 候选不唯一 → 通道直接拒绝执行。"""
+    cases = [
+        (task_by_id("C-1").steps[0], _visible_names()),
+        (task_by_id("C-2").steps[1], _visible_names(suggestions=True)),
+        (task_by_id("C-3").steps[0], _visible_names()),
+        (task_by_id("C-3").steps[1], _visible_names(backtop=True)),
+    ]
+    for step, names in cases:
+        matched = [
+            (name, role)
+            for name, role in names
+            if name_matches(name, step.target)
+            and (not step.control_type or step.control_type in role)
+        ]
+        assert len(matched) == 1, (step.id, step.target, matched)
+
+
+def test_the_search_box_and_the_submit_button_do_not_collide():
+    """**搜索框**与**提交按钮**的名字不能互相包含 —— 否则两个目标都命中两个元素。"""
+    assert VerificationPage.SEARCH_BOX not in VerificationPage.SEARCH_BUTTON
+    assert VerificationPage.SEARCH_BUTTON not in VerificationPage.SEARCH_BOX
+    assert not name_matches(VerificationPage.SEARCH_BOX, VerificationPage.SEARCH_BUTTON)
+    assert not name_matches(VerificationPage.SEARCH_BUTTON, VerificationPage.SEARCH_BOX)

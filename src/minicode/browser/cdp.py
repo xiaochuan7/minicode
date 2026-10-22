@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import ctypes
+import time
 from dataclasses import dataclass
 
 from minicode.action.ports import WindowAnchor
@@ -34,7 +35,60 @@ __all__ = [
     "find_browser_window_by_pid",
     "window_rect",
     "PLAYWRIGHT_REQUIRED",
+    "SCROLL_UNIT",
 ]
+
+#: **浏览器通道的滚动单位**：**CSS 像素**。
+#:
+#: ⚠️ **三条通道的单位各自声明，不许混**（工单 M13 / 动作协议 v1）：
+#:
+#: * **桌面通道**：``action/executor.py::SCROLL_DELTA_PER_LINE = 50`` —— **像素语义**
+#:   （Win32 的滚轮一格是 ``WHEEL_DELTA = 120``，见
+#:   https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-mouseinput）；
+#: * **浏览器通道**：**CSS 像素** —— CDP ``Input.dispatchMouseEvent`` 的
+#:   ``mouseWheel`` 的 delta 就是 CSS 像素，**相对主框架的视口**
+#:   （https://chromedevtools.github.io/devtools-protocol/tot/Input/#method-dispatchMouseEvent）；
+#: * 「**1 行 = 多少 CSS px**」**运行时量**（见 :data:`_LINE_METRIC_JS`）—— **不写死**。
+SCROLL_UNIT = "css-px"
+
+#: 量「**1 行 = 多少 CSS 像素**」的脚本（**运行时量，不写死**）。
+#:
+#: 口径（按优先级取第一个非零的）：
+#:
+#: 1. **相邻子项的 y 差**（列表项之间的距离 = 这个列表的「一行」）；
+#: 2. ``getComputedStyle(el).lineHeight``（元素自己的行高）；
+#: 3. ``fontSize``（最后兜底：行高按字号算）。
+#:
+#: ⚠️ 这三个都是**当场量的**——页面换字号 / 换行距时读数跟着变。
+_LINE_METRIC_JS = """
+function(){
+  var cs = getComputedStyle(this);
+  var raw = cs.lineHeight;
+  var lineHeight = (raw === 'normal' || !raw) ? 0 : (parseFloat(raw) || 0);
+  var gap = 0;
+  var kids = this.children;
+  for (var i = 0; i + 1 < kids.length; i++) {
+    var a = kids[i].getBoundingClientRect();
+    var b = kids[i + 1].getBoundingClientRect();
+    if (a.height > 0 && b.height > 0 && b.top > a.top) { gap = b.top - a.top; break; }
+  }
+  return {
+    childGap: gap,
+    lineHeight: lineHeight,
+    fontSize: parseFloat(cs.fontSize) || 0
+  };
+}
+"""
+
+#: 读**当前滚动位置**（窗口的 + 目标元素自己的）。
+#:
+#: ⚠️ 两个都读：有的页面滚**窗口**，有的页面滚**内层容器**——
+#: 哪个动了就算滚到了（读数如实记两个）。
+_SCROLL_STATE_JS = """
+function(){
+  return { windowY: window.scrollY || 0, elementTop: this.scrollTop || 0 };
+}
+"""
 
 
 def _ax_name(node: dict) -> str:
@@ -84,6 +138,45 @@ _INTERACTIVE_ROLES = frozenset(
         "treeitem",
     }
 )
+
+def _first_positive(*values: object) -> float:
+    """取第一个**大于 0** 的数（都没有 → 0.0）。"""
+    for value in values:
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if number > 0.0:
+            return number
+    return 0.0
+
+
+def _visible_point(
+    css_rect: tuple[float, float, float, float], view_w: float, view_h: float
+) -> tuple[float, float]:
+    """目标元素**在视口里可见的那一块**的中点（CSS 像素）。
+
+    ⚠️ 可滚列表常常**比视口还高** → 直接取元素中心会落在视口外，
+    wheel 事件就没人接 → 取「元素 ∩ 视口」的交集中心。
+    """
+    left, top, width, height = css_rect
+    right = left + width
+    bottom = top + height
+    visible_left = max(left, 0.0)
+    visible_top = max(top, 0.0)
+    visible_right = min(right, view_w) if view_w > 0 else right
+    visible_bottom = min(bottom, view_h) if view_h > 0 else bottom
+    if visible_right <= visible_left or visible_bottom <= visible_top:
+        # 整个元素都在视口外 → 夹到视口里（光标总得有个地方停）。
+        return (
+            min(max(left + width / 2.0, 0.0), max(view_w - 1.0, 0.0)),
+            min(max(top + height / 2.0, 0.0), max(view_h - 1.0, 0.0)),
+        )
+    return (
+        (visible_left + visible_right) / 2.0,
+        (visible_top + visible_bottom) / 2.0,
+    )
+
 
 PLAYWRIGHT_REQUIRED = (
     "真机浏览器通道需要 Playwright（可选依赖）："
@@ -366,6 +459,122 @@ class ChromiumPage:
             )
         return True
 
+    def scroll_lines(self, element_id: str, lines: int) -> dict:
+        """滚 ``lines`` 行（**浏览器自己的输入通道**：CDP ``mouseWheel``）。
+
+        ⚠️ **单位是 CSS 像素**（CDP 的 ``mouseWheel`` delta 就是 CSS 像素，
+        相对主框架视口），**不是**桌面通道那个像素语义的 ``SCROLL_DELTA_PER_LINE``
+        —— 两条通道的单位**各自声明**（见 :data:`SCROLL_UNIT`）。
+        「**1 行 = 多少 CSS px**」**运行时量**（:data:`_LINE_METRIC_JS`），不写死。
+
+        流程（与点元素同构：都是**浏览器自己的输入通道**）：
+
+        1. ``mouseMoved`` 到目标（**wheel 事件落在光标处**）；
+        2. 量「1 行 = 多少 CSS px」→ ``delta = lines × 每行像素``；
+        3. 发 ``mouseWheel``；
+        4. 轮询到**滚动停住**（惯性结束）→ 读 ``window.scrollY``；
+        5. 校验 ``0 < ΔscrollY < 视口高``；**Δ = 0** → 退
+           ``el.scrollBy(0, dy)``（wheel 事件可能被页面的 handler 吃掉）。
+
+        返回读数（进端到端的上下文）；**读不出来就如实记，不假装成功**。
+        """
+        result: dict = {
+            "ok": False,
+            "unit": SCROLL_UNIT,
+            "lines": int(lines),
+            "css_px_per_line": 0.0,
+            "delta_css_px": 0.0,
+            "scroll_y_before": 0.0,
+            "scroll_y_after": 0.0,
+            "element_scroll_before": 0.0,
+            "element_scroll_after": 0.0,
+            "scrolled_px": 0.0,
+            "viewport_height_css_px": 0.0,
+            "within_viewport": False,
+            "fallback_used": False,
+            "stable": False,
+            "error": "",
+        }
+        css_rect = self._css_rects.get(element_id)
+        if css_rect is None:
+            result["error"] = "页面结构快照里没有这个元素的盒子（量不出滚动目标）"
+            return result
+        try:
+            backend_id = int(element_id)
+        except ValueError:
+            result["error"] = f"元素引用不是数字：{element_id!r}"
+            return result
+
+        viewport = self.page.evaluate(
+            "() => ({ width: window.innerWidth, height: window.innerHeight })"
+        )
+        view_w = float(viewport.get("width") or 0.0)
+        view_h = float(viewport.get("height") or 0.0)
+        result["viewport_height_css_px"] = view_h
+
+        # -- 1. 光标移到目标（wheel 事件落在光标处）------------------------
+        # ⚠️ 目标可能**比视口还高**（可滚列表）→ 落点取「元素 ∩ 视口」的交集，
+        # 否则光标会落在视口外 → wheel 事件没人接。
+        x, y = _visible_point(css_rect, view_w, view_h)
+        self.cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+
+        # -- 2. 量「1 行 = 多少 CSS px」（运行时量）--------------------------
+        metric = self._call_on_element(backend_id, _LINE_METRIC_JS)
+        if not metric:
+            result["error"] = f"量不出「1 行 = 多少 CSS px」：{self.last_error or '读不到元素'}"
+            return result
+        per_line = _first_positive(
+            metric.get("childGap"), metric.get("lineHeight"), metric.get("fontSize")
+        )
+        if per_line <= 0.0:
+            result["error"] = "量不出「1 行 = 多少 CSS px」（行高 / 相邻项间距都是 0）"
+            return result
+        result["css_px_per_line"] = per_line
+        delta = float(lines) * per_line
+        result["delta_css_px"] = delta
+
+        # -- 3. 发 wheel ----------------------------------------------------
+        self.cdp.send(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseWheel",
+                "x": x,
+                "y": y,
+                "deltaX": 0.0,
+                "deltaY": delta,
+                "pointerType": "mouse",
+            },
+        )
+
+        # -- 4. 等滚动停住 + 读位置 ------------------------------------------
+        before = self._scroll_state(backend_id)
+        result["scroll_y_before"] = before[0]
+        result["element_scroll_before"] = before[1]
+        after, stable = self._wait_scroll_stable(backend_id)
+        result["scroll_y_after"] = after[0]
+        result["element_scroll_after"] = after[1]
+        result["stable"] = stable
+
+        # -- 5. 校验；Δ = 0 → 退 scrollBy -----------------------------------
+        scrolled = max(after[0] - before[0], after[1] - before[1], 0.0)
+        if scrolled <= 0.0:
+            result["fallback_used"] = True
+            self._scroll_by(backend_id, delta)
+            after, stable = self._wait_scroll_stable(backend_id)
+            result["scroll_y_after"] = after[0]
+            result["element_scroll_after"] = after[1]
+            result["stable"] = stable
+            scrolled = max(after[0] - before[0], after[1] - before[1], 0.0)
+        result["scrolled_px"] = scrolled
+        result["within_viewport"] = 0.0 < scrolled < view_h
+        result["ok"] = scrolled > 0.0
+        if not result["ok"]:
+            result["error"] = (
+                "滚了之后位置没变（wheel 事件可能被页面 handler 吃掉了，"
+                "scrollBy 兜底也没动）"
+            )
+        return result
+
     # -- 能力探测 ---------------------------------------------------------
 
     def assess(self) -> PageAssessment:
@@ -548,6 +757,68 @@ class ChromiumPage:
             return
         self.cdp.send("DOM.getDocument", {"depth": 0})
         self._dom_ready = True
+
+    def _call_on_element(self, backend_id: int, function_declaration: str) -> dict | None:
+        """在这个元素上跑一段 JS，返回它的返回值（读不到 → ``None``）。"""
+        self._ensure_dom()
+        try:
+            resolved = self.cdp.send("DOM.resolveNode", {"backendNodeId": backend_id})
+            object_id = resolved["object"]["objectId"]
+            result = self.cdp.send(
+                "Runtime.callFunctionOn",
+                {
+                    "objectId": object_id,
+                    "functionDeclaration": function_declaration,
+                    "returnByValue": True,
+                },
+            )
+            value = result["result"]["value"]
+        except Exception as exc:  # noqa: BLE001 —— 读不到就当没有（不猜）
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _scroll_state(self, backend_id: int) -> tuple[float, float]:
+        """当前滚动位置 ``(window.scrollY, 元素自己的 scrollTop)``（CSS 像素）。"""
+        state = self._call_on_element(backend_id, _SCROLL_STATE_JS) or {}
+        return (
+            float(state.get("windowY") or 0.0),
+            float(state.get("elementTop") or 0.0),
+        )
+
+    def _wait_scroll_stable(
+        self, backend_id: int, *, attempts: int = 12, interval_s: float = 0.12
+    ) -> tuple[tuple[float, float], bool]:
+        """轮询到**滚动停住**为止（惯性结束才继续）。
+
+        ⚠️ Playwright 的 ``mouse.wheel`` 原文「does not wait for the scrolling
+        to finish」→ **停没停住要自己判**（连续两次读数相同 = 停住了）。
+
+        返回 ``((windowY, elementTop), 停住了吗)``。
+        """
+        last: tuple[float, float] | None = None
+        for attempt in range(attempts):
+            current = self._scroll_state(backend_id)
+            if current == last:
+                return current, True
+            last = current
+            if attempt + 1 < attempts:
+                time.sleep(interval_s)
+        return (last or self._scroll_state(backend_id)), False
+
+    def _scroll_by(self, backend_id: int, delta: float) -> None:
+        """兜底：直接让元素（不行就让窗口）滚 ``delta`` 个 CSS 像素。"""
+        self._call_on_element(
+            backend_id,
+            f"""
+function(){{
+  var before = this.scrollTop || 0;
+  this.scrollBy(0, {float(delta)!r});
+  if ((this.scrollTop || 0) === before) {{ window.scrollBy(0, {float(delta)!r}); }}
+  return {{ windowY: window.scrollY || 0, elementTop: this.scrollTop || 0 }};
+}}
+""",
+        )
 
     def _focused(self) -> tuple[str, str]:
         """当前聚焦元素的取值与引用（没有聚焦元素 → ``("", "")``）。"""

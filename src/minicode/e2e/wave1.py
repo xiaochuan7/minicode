@@ -9,9 +9,12 @@
 >    （副标题：显示器、亮度、夜间模式、显示器配置文件）。工单字面写「显示」，
 >    这里**照工单字面**写目标描述（「显示」不在 UIA 树里 → 覆盖失败 → 切视觉，
 >    这正是 W-1 要验的那条路径），真值则取「屏幕」那张卡片的标题文本中心。
-> 2. **C-1~C-3 需要 BOSS 直聘的登录态**。浏览器通道起的是**全新会话**
->    （Playwright 的新 context），拿不到登录态 → 那三张票按
->    :file:`docs/target-tasks.md` §7.1 记 **SKIP** 并写明原因。
+> 2. **C-1~C-3 原本需要 BOSS 直聘的登录态**（2026-10-21 实测：浏览器通道起的是
+>    **全新会话** → 那三张票按 :file:`docs/target-tasks.md` §7.1 记 **SKIP**）。
+>    **工单 T8 之后**：浏览器通道改走**持久化上下文**（复用登录态），
+>    而这三张票的**运行环境**换成了**本地验证页**（浏览器通道按**可见文本**
+>    定位 —— 「职位名称链接」那种角色描述在真实站点上没有对应的可见文本）。
+>    工单的**验收条款一个字没改**。
 >
 > **落点那一条是三档**（A 命中 / B 近失 / C 错选）：口径与常量在
 > :mod:`minicode.e2e.checks`（:data:`LANDING_HIT_RULE` /
@@ -26,6 +29,7 @@ from minicode.action.ports import CHANNEL_BROWSER
 from minicode.action.protocol import ActionKind
 from minicode.verification.expect import Expectation, ExpectationKind
 
+from .apps import VerificationPage
 from .checks import (
     LANDING_ERROR_PX_VERSION,
     LANDING_HIT_RULE,
@@ -210,8 +214,23 @@ W3 = Task(
 
 
 # ---------------------------------------------------------------------------
-# C-1 ~ C-3：Chrome（BOSS 直聘）
+# C-1 ~ C-3：Chrome（浏览器通道）
 # ---------------------------------------------------------------------------
+#
+# ⚠️ **目标应用从 BOSS 直聘换成了「本地验证页」**（工单 T8）：
+#
+# * 浏览器通道**按可见文本定位**（``action/text.py::name_matches``）——
+#   「职位名称链接」这种**角色描述**在页面上**没有对应的可见文本** →
+#   在任何真实站点上都定位不到（BOSS 直聘的职位链接叫「资深后端工程师」之类）；
+# * 本地验证页（:mod:`minicode.e2e.apps`）里有**可滚的职位列表 + 搜索框 +
+#   城市筛选下拉**（工单 T8 的三件套）→ 这三张票有一个**确定的**运行环境，
+#   不再因为「未登录」永远 SKIP；
+# * 工单的**验收条款一个字没改**（``docs/tickets/M14-…``）：条款判的仍是
+#   「结构断言」（快照差异 / 输入框取值 / 列表项集合变化）。
+#:
+# ⚠️ **期望（结构断言）跟着页面结构走**：工单原话里那几个「职位描述」类的
+# 断言在这里对应到页面上**动作之后才出现**的元素（搜索建议 / 搜索结果 /
+# 回到顶部 / 选择城市）—— 判据的**形状**没变（还是「文本出现」）。
 
 
 C1 = Task(
@@ -222,8 +241,11 @@ C1 = Task(
         Step(
             id="C-1.1",
             description="点开第一屏的一个职位链接",
-            target="职位名称链接",
-            expectation=_text("职位描述"),
+            #: **按职位名**点（工单原话「按职位名点开第一屏的一个职位详情」）。
+            target=VerificationPage.JOBS[0][0],
+            #: 角色 = 链接（列表项本身也叫这个名字 → 按角色分开）。
+            control_type="link",
+            expectation=_text(VerificationPage.JOB_DETAIL),
             window="browser",
         ),
     ),
@@ -250,17 +272,17 @@ C2 = Task(
         Step(
             id="C-2.1",
             description="在搜索框输入「前端工程师」",
-            target="搜索框",
+            target=VerificationPage.SEARCH_BOX,
             action_kind=ActionKind.TYPE,
             params={"text": "前端工程师"},
-            expectation=_text("前端工程师"),
+            expectation=_text(VerificationPage.SUGGESTION),
             window="browser",
         ),
         Step(
             id="C-2.2",
             description="提交搜索",
-            target="搜索",
-            expectation=_text("前端工程师"),
+            target=VerificationPage.SEARCH_BUTTON,
+            expectation=_text(VerificationPage.RESULT_SUMMARY),
             window="browser",
         ),
     ),
@@ -284,17 +306,19 @@ C3 = Task(
         Step(
             id="C-3.1",
             description="向下滚动 3 行",
-            target="职位列表",
+            target=VerificationPage.JOB_LIST,
             action_kind=ActionKind.SCROLL,
             params={"lines": 3},
-            expectation=_text("职位描述"),
+            expectation=_text(VerificationPage.BACK_TO_TOP),
             window="browser",
         ),
         Step(
             id="C-3.2",
             description="把筛选条件设为「城市 = 上海」",
-            target="城市",
-            expectation=_text("上海"),
+            target=VerificationPage.CITY_FILTER,
+            expectation=_text(VerificationPage.CITY_PANEL),
+            #: **筛选要设成哪座城市**（执行器按它去点下拉框里的选项）。
+            params={"city": "上海"},
             window="browser",
         ),
     ),

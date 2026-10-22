@@ -2464,7 +2464,7 @@ class ElectronExecutor:
 
 
 class VerificationPage:
-    """**本地验证页**（工单 M15 的 E-1/E-2/E-3 与 CC-3 用）。
+    """**本地验证页**（工单 M15 的 E-1/E-2/E-3 与 CC-3 用；工单 T8 的浏览器三件套）。
 
     页面由评测台自己起（一个线程 + ``http.server``）：
 
@@ -2476,6 +2476,19 @@ class VerificationPage:
     * 一个 ``contenteditable`` 的会话输入框（E-3：打一段中文）；
     * 正文显示**当前生效的配置**（CC-3 的「依赖该配置的页面」——
       读数由 :attr:`provider` 给，cc-switch 切完配置后这一行就变了）。
+
+    **浏览器通道那三件套**（工单 T8 —— 纯 HTML，**不碰登录态**）：
+
+    * **可滚的职位列表**（:data:`JOB_LIST`，**比一屏高** → 滚得动）：
+      每条是一个 ``<li>``（AX 角色 ``listitem``），里面一个职位名链接
+      （AX 角色 ``link``）+ 一段「城市 · 薪资」；
+    * **搜索框**（:data:`SEARCH_BOX`，``autofocus``）+ **提交按钮**
+      （:data:`SEARCH_BUTTON`，**与搜索框不同名** —— 否则「搜索」那个目标
+      会同时命中输入框与按钮 → 候选不唯一 → 通道拒绝执行）；
+    * **城市筛选下拉**（:data:`CITY_FILTER` 按钮 → 面板 → 城市按钮）：
+      选中之后**列表按城市过滤**（每条列表项的可访问名里带城市）；
+    * 附带两个**只在动作之后才出现**的元素，给那两步当结构断言：
+      **搜索建议**（输入时出现）与**回到顶部**（滚下去才出现）。
     """
 
     #: 页面标题（目标标题）。
@@ -2488,6 +2501,63 @@ class VerificationPage:
     DEFAULT_LEVEL = "中档"
     #: 会话输入框的可访问名。
     COMPOSER = "会话输入框"
+
+    # -- 浏览器通道那三件套（工单 T8）---------------------------------------
+
+    #: **搜索框**的可访问名。
+    SEARCH_BOX = "搜索框"
+    #: **提交按钮**的可访问名（**不能**含「搜索框」那三个字，见类注释）。
+    SEARCH_BUTTON = "提交搜索"
+    #: **搜索建议**（输入时才出现）—— 输入那一步的结构断言。
+    SUGGESTION = "搜索建议"
+    #: **搜索结果摘要**（提交后才出现）。
+    RESULT_SUMMARY = "搜索结果"
+    #: **职位列表**的可访问名（滚动那一步的目标）。
+    JOB_LIST = "职位列表"
+    #: **职位详情**块里的标题（点开职位后才出现）。
+    JOB_DETAIL = "职位描述"
+    #: **城市筛选**按钮的可访问名。
+    CITY_FILTER = "城市"
+    #: **城市筛选面板**的标题（点开筛选框才出现）。
+    CITY_PANEL = "选择城市"
+    #: **回到顶部**按钮（滚下去才出现）。
+    BACK_TO_TOP = "回到顶部"
+    #: 可选城市。
+    CITIES = ("上海", "北京", "深圳", "杭州")
+    #: 职位列表（**比一屏高** —— 不然滚不动）。
+    #: 每条 = ``(职位名, 城市, 薪资)``。
+    JOBS: tuple[tuple[str, str, str], ...] = (
+        ("资深后端工程师", "上海", "30-50K"),
+        ("高级前端工程师", "上海", "25-40K"),
+        ("测试开发工程师", "北京", "20-30K"),
+        ("算法工程师", "北京", "40-60K"),
+        ("数据分析师", "深圳", "20-35K"),
+        ("运维工程师", "深圳", "18-28K"),
+        ("产品经理", "杭州", "25-40K"),
+        ("交互设计师", "杭州", "20-30K"),
+        ("服务端开发工程师", "上海", "30-45K"),
+        ("客户端开发工程师", "上海", "25-35K"),
+        ("安全工程师", "北京", "30-45K"),
+        ("嵌入式开发工程师", "深圳", "22-33K"),
+        ("大数据开发工程师", "北京", "28-42K"),
+        ("机器学习工程师", "杭州", "35-55K"),
+        ("推荐算法工程师", "杭州", "38-58K"),
+        ("测试工程师", "上海", "15-25K"),
+        ("实施工程师", "深圳", "15-22K"),
+        ("技术支持工程师", "北京", "12-20K"),
+        ("项目经理", "上海", "28-42K"),
+        ("视觉设计师", "杭州", "18-28K"),
+        ("增长运营专员", "深圳", "15-25K"),
+        ("内容运营专员", "北京", "12-20K"),
+        ("数据库管理员", "上海", "25-38K"),
+        ("前端开发工程师", "杭州", "20-32K"),
+        ("运维开发工程师", "北京", "20-30K"),
+        ("网络工程师", "深圳", "16-26K"),
+        ("解决方案架构师", "上海", "35-55K"),
+        ("商业分析师", "杭州", "22-34K"),
+        ("客服主管", "北京", "14-22K"),
+        ("招聘专员", "深圳", "12-20K"),
+    )
 
     def __init__(self, provider: Callable[[], str] | None = None, port: int = 8791):
         self.provider = provider or (lambda: "")
@@ -2558,8 +2628,31 @@ class VerificationPage:
             f'<button type="button" onclick="setLevel(\'{item}\')">{item}</button> '
             for item in self.LEVELS
         )
+        jobs = "".join(
+            f'<li aria-label="{title} · {city} · {salary}">'
+            f'<a href="#job-{index}" onclick="openJob({index}); return false;">{title}</a>'
+            f'<span class="meta">{city} · {salary}</span></li>'
+            for index, (title, city, salary) in enumerate(self.JOBS)
+        )
+        cities = "".join(
+            f'<button type="button" onclick="pickCity(\'{city}\')">{city}</button>'
+            for city in self.CITIES
+        )
+        data = ",".join(
+            f'{{"title": "{title}", "city": "{city}", "salary": "{salary}"}}'
+            for title, city, salary in self.JOBS
+        )
         return f"""<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>{self.TITLE}</title></head>
+<html lang="zh"><head><meta charset="utf-8"><title>{self.TITLE}</title>
+<style>
+body {{ font-family: "Microsoft YaHei", sans-serif; margin: 16px; }}
+ul.jobs {{ padding-left: 20px; }}
+ul.jobs li {{ line-height: 32px; }}
+.meta {{ color: #666; margin-left: 12px; }}
+#backtop {{ position: fixed; right: 24px; bottom: 24px; }}
+#suggestions {{ list-style: none; padding-left: 0; }}
+</style>
+</head>
 <body>
 <h1>{self.TITLE}</h1>
 <section id="settings">
@@ -2573,7 +2666,30 @@ class VerificationPage:
 <a id="more" href="#detail" onclick="document.getElementById('detail').textContent='{self.DETAIL}';return false;">打开详情</a>
 <p id="detail"></p>
 <div id="composer" role="textbox" contenteditable="true" aria-label="{self.COMPOSER}"></div>
+<section id="board">
+  <h2>最新职位</h2>
+  <div class="bar">
+    <input id="q" type="search" aria-label="{self.SEARCH_BOX}" placeholder="职位关键词" autofocus>
+    <button type="button" onclick="submitSearch()">{self.SEARCH_BUTTON}</button>
+    <button type="button" id="city-filter" onclick="toggleCities()">{self.CITY_FILTER}</button>
+    <span id="city-state"></span>
+  </div>
+  <ul id="suggestions" hidden></ul>
+  <div id="city-panel" hidden>
+    <h3>{self.CITY_PANEL}</h3>
+    {cities}
+  </div>
+  <p id="summary" hidden></p>
+  <ul class="jobs" id="jobs" aria-label="{self.JOB_LIST}">{jobs}</ul>
+</section>
+<section id="job-detail" hidden>
+  <h2>{self.JOB_DETAIL}</h2>
+  <p id="job-detail-text"></p>
+</section>
+<button type="button" id="backtop" onclick="window.scrollTo(0,0)" hidden>{self.BACK_TO_TOP}</button>
 <script>
+var DATA = [{data}];
+var currentCity = "";
 function setLevel(value) {{
   document.getElementById('level').textContent = '思考档位：' + value;
 }}
@@ -2581,6 +2697,70 @@ function save() {{
   var value = document.getElementById('level').textContent.split('：')[1];
   document.getElementById('saved').textContent = '已保存：' + value;
 }}
+function renderJobs(items) {{
+  var list = document.getElementById('jobs');
+  list.innerHTML = '';
+  items.forEach(function (job, index) {{
+    var li = document.createElement('li');
+    li.setAttribute('aria-label', job.title + ' · ' + job.city + ' · ' + job.salary);
+    var link = document.createElement('a');
+    link.href = '#job-' + index;
+    link.textContent = job.title;
+    link.setAttribute('onclick', 'openJob(' + index + '); return false;');
+    var meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = job.city + ' · ' + job.salary;
+    li.appendChild(link);
+    li.appendChild(meta);
+    list.appendChild(li);
+  }});
+}}
+function openJob(index) {{
+  document.getElementById('jobs').hidden = true;
+  var job = DATA[index];
+  document.getElementById('job-detail-text').textContent = job.title + ' · ' + job.city;
+  document.getElementById('job-detail').hidden = false;
+}}
+function toggleCities() {{
+  var panel = document.getElementById('city-panel');
+  panel.hidden = !panel.hidden;
+}}
+function pickCity(city) {{
+  currentCity = city;
+  document.getElementById('city-state').textContent = '已选：' + city;
+  document.getElementById('city-panel').hidden = true;
+  renderJobs(matched());
+}}
+function matched() {{
+  var keyword = (document.getElementById('q').value || '').trim();
+  return DATA.filter(function (job) {{
+    if (currentCity && job.city !== currentCity) return false;
+    if (keyword && job.title.indexOf(keyword) < 0) return false;
+    return true;
+  }});
+}}
+function submitSearch() {{
+  var items = matched();
+  renderJobs(items);
+  var summary = document.getElementById('summary');
+  summary.hidden = false;
+  summary.textContent = items.length
+    ? '{self.RESULT_SUMMARY}：' + items.length + ' 条'
+    : '{self.RESULT_SUMMARY}：无结果';
+}}
+document.getElementById('q').addEventListener('input', function () {{
+  var value = (this.value || '').trim();
+  var box = document.getElementById('suggestions');
+  box.innerHTML = '';
+  if (!value) {{ box.hidden = true; return; }}
+  var item = document.createElement('li');
+  item.textContent = '{self.SUGGESTION}：' + value;
+  box.appendChild(item);
+  box.hidden = false;
+}});
+window.addEventListener('scroll', function () {{
+  document.getElementById('backtop').hidden = !(window.scrollY > 0);
+}});
 </script>
 </body></html>
 """

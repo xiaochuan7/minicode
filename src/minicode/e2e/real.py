@@ -28,10 +28,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from minicode.action.ports import ControlCandidate
+from minicode.action.ports import CHANNEL_BROWSER, ControlCandidate
 from minicode.action.protocol import ActionKind
 from minicode.action.records import ActionTrace, ListTraceSink, MultiTraceSink
 from minicode.action.seam import ActionExecutionSeam, SeamRequest, SeamResult
+from minicode.browser.cdp import SCROLL_UNIT
 from minicode.reflection.handoff import build_handoff
 from minicode.reflection.stop import STOP_EXPECTATION_MET, STOP_REASON_TEXT, StopPolicy
 
@@ -47,7 +48,14 @@ from .runner import StepOutcome
 from .tasks import Step
 from .visual import VisualChannel, merged_candidate_source
 
-__all__ = ["WindowsDesktopExecutor", "ChromeExecutor", "read_window_controls"]
+__all__ = [
+    "WindowsDesktopExecutor",
+    "ChromeExecutor",
+    "read_window_controls",
+    "ocr_word_rect",
+    "default_chrome_user_data_dir",
+    "copy_chrome_profile",
+]
 
 #: **候选源要枚举的 UIA 控件类型**（UIA 主表）。
 #:
@@ -162,6 +170,120 @@ def _percent_of(value: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+# ---------------------------------------------------------------------------
+# 真值：OCR 的**词框**当控件矩形真值（T9）
+# ---------------------------------------------------------------------------
+
+
+def ocr_word_rect(
+    element_name: str, *, language: str = "zh-Hans-CN"
+) -> tuple[tuple[int, int, int, int], str] | None:
+    """用 **OCR 的词框**当控件矩形真值（**画面量的**）。
+
+    树里读不到那个控件的框时 → 取当前帧 → Windows 自带 OCR 的**词级框** →
+    在词框里找**文本等于/包含**那个名字的词 → 它的框就是控件矩形真值。
+
+    * 词框是**喂进去那张 PNG 的像素**（= 原始物理分辨率，1 像素 = 1 物理像素）
+      → **加上帧的原点**才是物理表面坐标（口径见
+      ``verification/ocr_windows.py::OcrWord``）；
+    * **没命中就返回 ``None``** —— **不编真值**（上层据此记 ``undecidable``）；
+    * 多个命中时取**最小**的那个（最贴近那个词本身）；
+    * OCR 后端读不出来会**抛异常**（上层据此判「判不了」）。
+    """
+    from minicode.action.capture import CapturePort
+    from minicode.action.windows import WindowsCaptureSource
+    from minicode.verification.ocr_windows import WindowsOcrPort
+
+    frame = CapturePort([WindowsCaptureSource()]).screenshot()
+    if frame.is_empty:
+        return None
+    words = WindowsOcrPort(language).read_words(frame)
+    exact = [word for word in words if word.text.strip() == element_name]
+    contains = [word for word in words if element_name in word.text]
+    matches = exact or contains
+    if not matches:
+        return None
+    word = min(matches, key=lambda item: item.w * item.h)
+    left = frame.left + word.x
+    top = frame.top + word.y
+    rect = (left, top, left + word.w, top + word.h)
+    return rect, f"OCR 量的（画面里那个词的框：「{word.text}」）"
+
+
+# ---------------------------------------------------------------------------
+# 浏览器通道的**持久化登录态**（T8）
+# ---------------------------------------------------------------------------
+
+
+def default_chrome_user_data_dir() -> str:
+    """本机 Chrome 的**默认用户数据目录**（读不到 → 空串）。
+
+    ⚠️ **为什么用它**：`launch_persistent_context(user_data_dir=…)` 用的是
+    **同一个用户数据目录** → 登录态（cookie）还在 → 真实站点不再永远 SKIP。
+    """
+    import os
+
+    base = os.environ.get("LOCALAPPDATA", "")
+    if not base:
+        return ""
+    path = Path(base) / "Google" / "Chrome" / "User Data"
+    return str(path) if path.is_dir() else ""
+
+
+#: **复制 profile 时不复制的那几样**（缓存 —— 复制的唯一目的是拿登录态）。
+_PROFILE_COPY_SKIP = frozenset(
+    {
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "DawnCache",
+        "GrShaderCache",
+        "ShaderCache",
+        "Service Worker",
+        "blob_storage",
+        "Crashpad",
+        "component_crx_cache",
+        "optimization_guide_model_store",
+    }
+)
+
+
+def copy_chrome_profile(source: str, *, dest: str | None = None) -> str:
+    """把 Chrome 的用户数据目录**复制**一份（默认 profile 被占着时的退路）。
+
+    * 复制 ``Local State``（cookie 的加密密钥在里面）+ ``Default``
+      （cookie / local storage / preferences）—— **缓存不复制**；
+    * 返回复制出来的目录（失败 → 空串，**不假装成功**）。
+
+    ⚠️ **这是执行细节，不是阻塞项**（Playwright 文档：默认 profile 被正在运行的
+    Chrome 锁住时起不来 → 复制一份再指过去）。
+    """
+    import shutil
+
+    if not source or not Path(source).is_dir():
+        return ""
+    target = Path(dest) if dest else Path(source).parent / f"{Path(source).name}-copy"
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        local_state = Path(source) / "Local State"
+        if local_state.is_file():
+            shutil.copy2(local_state, target / "Local State")
+        default = Path(source) / "Default"
+        if default.is_dir():
+            shutil.copytree(
+                default,
+                target / "Default",
+                ignore=shutil.ignore_patterns(*_PROFILE_COPY_SKIP),
+                dirs_exist_ok=True,
+            )
+    except OSError:
+        shutil.rmtree(target, ignore_errors=True)
+        return ""
+    return str(target)
+
+
 def read_window_controls(
     port: Any,
     anchor: Any,
@@ -225,6 +347,24 @@ def window_title_of(hwnd: int) -> str:
     return buf.value[:length] if length > 0 else ""
 
 
+def _bring_to_front(hwnd: int) -> bool:
+    """把窗口**置前**（成功 → ``True``）。
+
+    ⚠️ **为什么要有这一步**：浏览器通道的文本输入**先走桌面注入**
+    （工单 M13 AC 4）—— 浏览器不在前台时那些按键会落到**别的窗口**上
+    （真机上就是「打字打进了别的程序」）。
+    """
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.ShowWindow(wintypes.HWND(int(hwnd)), 9)  # SW_RESTORE
+        user32.SetForegroundWindow(wintypes.HWND(int(hwnd)))
+    except Exception:  # noqa: BLE001 —— 置前失败也不许崩
+        return False
+    return True
+
+
 @dataclass
 class _Wiring:
     """一个窗口上的接线（锚点 + 缝 + 观察端口 + 能力表条目）。"""
@@ -247,6 +387,7 @@ class WindowsDesktopExecutor:
         model_input: tuple[int, int] | None = None,
         truth_overrides: Mapping[str, tuple[int, int]] | None = None,
         candidate_source: Any | None = None,
+        ocr_truth_source: Any | None = None,
     ):
         self.out_dir = Path(out_dir)
         self.gate_mode = gate_mode
@@ -255,6 +396,10 @@ class WindowsDesktopExecutor:
         self.truth_overrides = dict(truth_overrides or {})
         self._wiring: dict[str, _Wiring] = {}
         self._context: dict[str, Any] = {}
+        #: **真值的那一路兜底**：树里读不到控件框时用 **OCR 的词框**
+        #: （画面量的）。缺省 = 真机那一路（:func:`ocr_word_rect`）；
+        #: 注入别的 = 单测里不碰真桌面。
+        self._ocr_truth_source = ocr_truth_source or ocr_word_rect
         #: 上一步给的落点（放大那一类：放大的答案就是点击位置）。
         self._last_landing: tuple[int, int] | None = None
         #: **视觉通道的接线**（标定 / 准入门 / 两级 grounding / 放大）——
@@ -507,10 +652,14 @@ class WindowsDesktopExecutor:
     def _resolve_truth(self, step: Step, wiring: _Wiring) -> TargetTruth:
         """真值：**中心点 + 控件矩形**（物理像素）。
 
-        来源优先级：命令行覆盖 > 树里查控件框 > 工单里写死的常量。
+        来源优先级：命令行覆盖 > 树里查控件框 > 工单里写死的常量 >
+        **OCR 的词框**（画面量的）。
 
         ⚠️ **树里没有那个控件的框 → 不编**：只记 ``missing``
         （**缺哪条真值**）→ 落点判据据此记 ``undecidable``。
+        ⚠️ 但**树里没有不等于拿不到**：画面上那个词**看得见**时，
+        **OCR 的词框**就是它的控件矩形（工单 M14 的 W-1.C / W-3.C 那一类
+        「判不了」的解药）—— 那是**画面量的真值**，来源如实记。
         """
         override = self.truth_overrides.get(step.id)
         if override is not None:
@@ -564,6 +713,13 @@ class WindowsDesktopExecutor:
             return truth_from_rect(
                 step.truth_rect, "画面量的（任务栏的树读不出节点）"
             )
+        if tree_missing and step.truth_element:
+            #: **树里没有那个控件的框** → 用 **OCR 的词框**当控件矩形真值
+            #: （画面量的）。**没命中就仍然判不了**（不编真值）。
+            ocr = self._ocr_truth(step.truth_element)
+            if ocr is not None:
+                rect, source = ocr
+                return truth_from_rect(rect, source)
         if step.truth is not None:
             return TargetTruth(
                 center=step.truth,
@@ -573,6 +729,16 @@ class WindowsDesktopExecutor:
         return missing_truth(
             tree_missing or "树里没有那个控件的框，工单里也没写死"
         )
+
+    def _ocr_truth(self, element_name: str) -> tuple[tuple[int, int, int, int], str] | None:
+        """OCR 那一路的控件矩形真值（读不出来 → ``None``，**不编真值**）。"""
+        try:
+            return self._ocr_truth_source(element_name)
+        except Exception as exc:  # noqa: BLE001 —— OCR 读不出来 = 判不了
+            self._context["ocr_truth_note"] = (
+                f"OCR 读不出来（{type(exc).__name__}: {exc}）→ 真值仍然判不了"
+            )
+            return None
 
     def _record_zoom(self, step: Step, trace: ActionTrace) -> None:
         """记下放大的证据（回源重抓 / 回答是不是整屏坐标）。"""
@@ -803,14 +969,28 @@ class PageObserver:
 
 
 class ChromeExecutor:
-    """Chrome（浏览器通道）上的真机执行器。"""
+    """Chrome（浏览器通道）上的真机执行器。
+
+    ⚠️ **持久化上下文**（工单 T8）：浏览器起的是
+    ``launch_persistent_context(user_data_dir=…)`` —— **同一个用户数据目录**
+    → **登录态还在** → 真实站点（BOSS 直聘这类）不再永远 SKIP。
+    （``launch() + new_context()`` 起的是**全新会话**，登录态永远没有。）
+    """
 
     #: BOSS 直聘的职位列表页。
     JOB_URL = "https://www.zhipin.com/web/geek/job"
 
-    def __init__(self, *, out_dir: str | Path, url: str = JOB_URL):
+    def __init__(
+        self,
+        *,
+        out_dir: str | Path,
+        url: str = JOB_URL,
+        profile_dir: str = "",
+    ):
         self.out_dir = Path(out_dir)
         self.url = url
+        #: **持久化上下文**用的用户数据目录（空串 = 自动找本机 Chrome 的默认目录）。
+        self.profile_dir = profile_dir
         self._playwright = None
         self._browser = None
         self._context = None
@@ -835,13 +1015,13 @@ class ChromeExecutor:
         except ImportError:  # pragma: no cover - 可选依赖缺失
             return "环境不可达：没装 Playwright（浏览器通道的真机适配器需要它）"
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(
-            channel="chrome",
-            headless=False,
-            args=["--window-size=1280,900", "--window-position=120,80"],
+        blocked = self._launch_persistent()
+        if blocked:
+            self.close()
+            return blocked
+        self._page = (
+            self._context.pages[0] if self._context.pages else self._context.new_page()
         )
-        self._context = self._browser.new_context(no_viewport=True)
-        self._page = self._context.new_page()
         try:
             self._page.goto(self.url, timeout=45000)
         except Exception as exc:  # noqa: BLE001 —— 网络不通
@@ -853,7 +1033,7 @@ class ChromeExecutor:
         if "passport" in url or "登录" in title or "注册" in title:
             self.close()
             return (
-                f"环境不可达：未登录（浏览器通道起的是全新会话，"
+                f"环境不可达：未登录（持久化上下文里也没有登录态："
                 f"打开 {self.url} 被重定向到登录页：{title!r}）"
             )
         from minicode.action.ports import WindowAnchor
@@ -866,16 +1046,85 @@ class ChromeExecutor:
         self._source = ChromiumPage(self._page, self._cdp, hwnd)
         table = BrowserCapabilityTable(ChromiumCapabilityProbe(self._source))
         anchor = WindowAnchor(
-            hwnd=hwnd, app="chrome", version=str(self._browser.version)
+            hwnd=hwnd, app="chrome", version=self._browser_version()
         )
         entry = table.availability(anchor)
         self._capability = entry.availability.value
         self._context_data["capability"] = entry.availability.value
         self._context_data["capability_reason"] = entry.reason
         self._context_data["page_url"] = url
+        self._context_data["page_title"] = title
         self._anchor = anchor
         self._channel = BrowserChannel(structure=self._source, capability=table)
+        #: **把浏览器窗口置前**：文本输入先走**桌面注入**（工单 M13 AC 4）
+        #: —— 浏览器不在前台时那些按键会落到别的窗口上。
+        self._context_data["window_foreground"] = _bring_to_front(hwnd)
         return ""
+
+    def _launch_persistent(self) -> str:
+        """起一个**持久化上下文**（复用登录态）。返回空串 = 起来了。
+
+        ⚠️ **为什么不是 ``launch() + new_context()``**：那是一个**全新会话**
+        → 真实站点一律被重定向到登录页 → 那三张票永远 SKIP。
+
+        ⚠️ **默认 profile 被正在运行的 Chrome 锁住** → 起不来；
+        这时**复制一份 profile** 再指过去（执行细节，**不是阻塞项**）。
+        """
+        candidates: list[tuple[str, str]] = []
+        if self.profile_dir:
+            candidates.append((self.profile_dir, "指定的 profile"))
+        else:
+            detected = default_chrome_user_data_dir()
+            if detected:
+                candidates.append((detected, "本机 Chrome 的默认用户数据目录"))
+        notes: list[str] = []
+        for path, label in candidates:
+            context = self._launch_context(path)
+            if context is None:
+                notes.append(f"{label}（{path}）起不来")
+                continue
+            self._context = context
+            self._browser = None
+            self._context_data["browser_profile"] = path
+            self._context_data["browser_profile_source"] = label
+            return ""
+        copied = copy_chrome_profile(candidates[0][0]) if candidates else ""
+        if copied:
+            context = self._launch_context(copied)
+            if context is not None:
+                self._context = context
+                self._browser = None
+                self._context_data["browser_profile"] = copied
+                self._context_data["browser_profile_source"] = (
+                    "复制出来的 profile（原目录被占着）"
+                )
+                return ""
+            notes.append(f"复制出来的 profile（{copied}）起不来")
+        return "环境不可达：起不来持久化浏览器上下文（" + "；".join(notes) + "）"
+
+    def _launch_context(self, user_data_dir: str):
+        """按用户数据目录起持久化上下文（起不来 → ``None``，**不假装成功**）。"""
+        try:
+            return self._playwright.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                channel="chrome",
+                headless=False,
+                no_viewport=True,
+                args=["--window-size=1280,900", "--window-position=120,80"],
+            )
+        except Exception as exc:  # noqa: BLE001 —— 起不来就换下一条路
+            self._context_data["browser_profile_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _browser_version(self) -> str:
+        """浏览器版本（**CDP 读到的**；读不到 → 空串）。"""
+        try:
+            product = self._cdp.send("Browser.getVersion").get("product", "")
+        except Exception:  # noqa: BLE001 —— 读不到版本不影响跑
+            return ""
+        return str(product or "")
 
     def stop_reason(self) -> str:
         """停止条件（M12）：见 :meth:`WindowsDesktopExecutor.stop_reason`。"""
@@ -915,6 +1164,9 @@ class ChromeExecutor:
     def close(self) -> None:
         """关掉浏览器（不留下窗口）。"""
         for closer in (
+            #: ⚠️ **持久化上下文**下浏览器**就是那个上下文** → 先关它
+            #: （``self._browser`` 是 ``None``，关浏览器由上下文代劳）。
+            getattr(self._context, "close", None),
             getattr(self._browser, "close", None),
             getattr(self._playwright, "stop", None),
         ):
@@ -924,6 +1176,7 @@ class ChromeExecutor:
                 closer()
             except Exception:  # noqa: BLE001 —— 关不掉也不许崩
                 pass
+        self._context = None
         self._browser = None
         self._playwright = None
 
@@ -937,19 +1190,9 @@ class ChromeExecutor:
         from minicode.verification.layer import VerificationLayer
 
         if step.action_kind is ActionKind.SCROLL:
-            # **浏览器通道没有滚动动作**（M13 只做了点击与文本输入）——
-            # 桌面注入的滚动不会落到网页上（浏览器不是前台窗口）。
-            # 不许拿假注入器糊过去：**显式失败**，报告里写明缺什么。
-            return StepOutcome(
-                step_id=step.id,
-                description=step.description,
-                ok=False,
-                error_code="channel_unsupported",
-                error_message=(
-                    "浏览器通道没有滚动动作（M13 未实现）："
-                    "桌面注入的滚动到不了网页，需要浏览器自己的输入通道"
-                ),
-            )
+            # **浏览器通道的滚动**：走**浏览器自己的输入通道**
+            # （CDP ``mouseWheel``）—— 桌面注入的滚动到不了网页。
+            return self._scroll(step)
         if self._channel is None or self._anchor is None:
             return StepOutcome(
                 step_id=step.id,
@@ -974,6 +1217,7 @@ class ChromeExecutor:
         )
         before = len(self._sink.traces)
         before_names = self._page_names()
+        before_items = self._list_item_names()
         if step.action_kind is ActionKind.TYPE:
             result = self._type(step)
         else:
@@ -1001,6 +1245,14 @@ class ChromeExecutor:
                 "disappeared": sorted(disappeared)[:5],
                 "appeared": sorted(appeared)[:5],
             }
+        #: **城市筛选**：这一步自己把选项选上（浏览器自己的输入通道），
+        #: 再**独立读回**列表（结构断言）。
+        city = str(step.params.get("city") or "")
+        if city:
+            self._apply_city_filter(city, before_items)
+        #: **提交搜索**：读回结果列表（结构断言）。
+        if self._is_search_submit(step):
+            self._record_search_results()
         return StepOutcome(
             step_id=step.id,
             description=step.description,
@@ -1018,6 +1270,153 @@ class ChromeExecutor:
             execute_verify_ms=(trace.execute_verify_ms if trace else 0.0),
             landing_point=result.final_point,
             note=("；".join(result.result.notes or ())),
+        )
+
+    # -- 浏览器通道的动作：滚动 / 城市筛选 / 搜索结果 -----------------------
+
+    def _scroll(self, step: Step) -> StepOutcome:
+        """**滚动**（CDP ``mouseWheel``；单位 = **CSS 像素**）。
+
+        ⚠️ **单位与桌面通道各自声明**：桌面通道的 ``SCROLL_DELTA_PER_LINE = 50``
+        是**像素语义**，这里的是 **CSS 像素**，且「1 行 = 多少 CSS px」
+        **运行时量**（不写死）—— 读数全部进上下文（``scroll_px_per_line`` 等）。
+        """
+        from dataclasses import replace
+
+        from minicode.action.capture import CapturePort
+        from minicode.action.windows import WindowsCaptureSource
+        from minicode.verification.layer import VerificationLayer, VerifyRequest
+
+        lines = int(step.params.get("lines", 0) or 0)
+        element = self._find_element(step.target)
+        if element is None:
+            return StepOutcome(
+                step_id=step.id,
+                description=step.description,
+                ok=False,
+                error_code="target_not_found",
+                error_message=f"页面结构快照里没有与「{step.target}」匹配的元素",
+            )
+        verifier = VerificationLayer(
+            screenshot_port=CapturePort([WindowsCaptureSource()]),
+            observer=PageObserver(self._source),
+        )
+        request = VerifyRequest(
+            expectation=step.expectation,
+            action=None,
+            landing_point=None,
+            target_description=step.target,
+        )
+        #: **基线在动作之前取**（期望判的是「变化」）。
+        baseline = verifier.begin(request)
+        result = self._source.scroll_lines(element.element_id, lines)
+        verification = verifier.verify(replace(request, baseline=baseline))
+        self._context_data["scroll_lines"] = lines
+        self._context_data["scroll_stable"] = bool(result.get("stable"))
+        self._context_data["scroll_unit"] = result.get("unit", SCROLL_UNIT)
+        self._context_data["scroll_px_per_line"] = result.get("css_px_per_line")
+        self._context_data["scroll_result"] = result
+        ok = bool(result.get("ok"))
+        return StepOutcome(
+            step_id=step.id,
+            description=step.description,
+            ok=ok,
+            channel=CHANNEL_BROWSER,
+            error_code="" if ok else "execute_failed",
+            error_message="" if ok else str(result.get("error") or ""),
+            expectation_met=verification.satisfied,
+            expectation=(step.expectation.describe() if step.expectation else ""),
+            expectation_detail=(verification.diff or verification.observed or ""),
+            note=(
+                f"滚动 {lines} 行 = {result.get('delta_css_px')} CSS px"
+                f"（1 行 = {result.get('css_px_per_line')} CSS px，运行时量的）；"
+                f"滚了 {result.get('scrolled_px')} CSS px"
+                f"（视口高 {result.get('viewport_height_css_px')} CSS px，"
+                f"兜底 scrollBy 用过：{result.get('fallback_used')}）"
+            ),
+        )
+
+    def _apply_city_filter(self, city: str, before_items: Sequence[str]) -> None:
+        """把筛选条件设成「城市 = <city>」，并**独立读回**验证（结构断言）。
+
+        * 选项在**下拉框**里 → 点它（**浏览器自己的输入通道**）；
+        * 验证 = **列表项集合变了** + **每一项的城市字段 == 那座城市**
+          （不是「画面变了」）。
+        """
+        option = self._find_element(city, roles=("button", "option", "link", "menuitem"))
+        if option is None:
+            self._context_data["city_filter_applied"] = False
+            self._context_data["city_filter_note"] = f"下拉框里没有「{city}」这个选项"
+            return
+        self._source.invoke(option.element_id)
+        time.sleep(0.5)
+        after_items = self._list_item_names()
+        changed = set(after_items) != set(before_items)
+        all_city = bool(after_items) and all(city in item for item in after_items)
+        self._context_data["city_filter_applied"] = bool(changed and all_city)
+        self._context_data["city_filter_note"] = (
+            f"选项「{city}」点完：列表项 {len(before_items)} → {len(after_items)} 条"
+            f"（集合变了：{changed}；每项都含「{city}」：{all_city}）"
+        )
+
+    def _is_search_submit(self, step: Step) -> bool:
+        """这一步是不是「提交搜索」（目标文本里带「提交」）。"""
+        return "提交" in (step.target or "")
+
+    def _record_search_results(self) -> None:
+        """读回**结果列表**（结构断言）。
+
+        工单口径：「提交后结果列表每条含该关键词，**或**页面明确显示「无结果」」。
+        """
+        keyword = str(self._context_data.get("input_value") or "")
+        page_text = "\n".join(self._page_names())
+        if "无结果" in page_text:
+            self._context_data["search_results_ok"] = True
+            self._context_data["search_results_note"] = (
+                f"页面明确显示「无结果」（关键词「{keyword}」）"
+            )
+            return
+        items = self._list_item_names()
+        if not items:
+            self._context_data["search_results_ok"] = False
+            self._context_data["search_results_note"] = "结果列表是空的（也没有「无结果」）"
+            return
+        missing = [item for item in items if keyword and keyword not in item]
+        self._context_data["search_results_ok"] = not missing
+        self._context_data["search_results_note"] = (
+            f"结果 {len(items)} 条，每条都含「{keyword}」：{not missing}"
+            + (f"；不含的有：{missing[:3]}" if missing else "")
+        )
+
+    def _find_element(self, name: str, *, roles: Sequence[str] = ()) -> Any | None:
+        """在页面结构快照里按**可见文本**找一个元素（找不到 → ``None``）。
+
+        * **精确匹配优先**（同名的一堆时先挑名字**完全一样**的那个）；
+        * ``roles`` 给了就只在这些角色里找（例如下拉框里的**选项**是按钮）。
+        """
+        from minicode.action.text import name_matches
+
+        if self._source is None:
+            return None
+        snapshot = self._source.snapshot()
+        candidates = [
+            element
+            for element in snapshot.elements
+            if name_matches(element.name, name)
+            and (not roles or element.role in tuple(roles))
+        ]
+        if not candidates:
+            return None
+        exact = [element for element in candidates if element.name.strip() == name.strip()]
+        return (exact or candidates)[0]
+
+    def _list_item_names(self) -> tuple[str, ...]:
+        """页面结构里**列表项**（AX 角色 ``listitem``）的可见文本（按顺序）。"""
+        if self._source is None:
+            return ()
+        snapshot = self._source.snapshot()
+        return tuple(
+            element.name for element in snapshot.elements if element.role == "listitem"
         )
 
     def _page_names(self) -> set[str]:

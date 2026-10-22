@@ -119,6 +119,22 @@ def _parse_args(argv):
             "人代跑完的结果带进来**单独统计**，仍不混进自动通过率"
         ),
     )
+    parser.add_argument(
+        "--browser-url",
+        default="",
+        help=(
+            "**浏览器通道**打开哪个页面（缺省 = 本地验证页；"
+            "指到真实站点可以验「持久化登录态」那一条）"
+        ),
+    )
+    parser.add_argument(
+        "--browser-profile",
+        default="",
+        help=(
+            "**浏览器通道**的**持久化用户数据目录**（缺省 = 自动找本机 Chrome "
+            "的默认目录；被占着就复制一份再指过去）"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -141,7 +157,14 @@ def _executor_for(task, args, page):
         "truth_overrides": truth_overrides,
     }
     if task.app == "Chrome":
-        return ChromeExecutor(out_dir=args.out)
+        #: **浏览器通道**：走**持久化上下文**（复用登录态，工单 T8）；
+        #: 页面默认是**本地验证页**（那三件套：可滚列表 / 搜索框 / 城市筛选），
+        #: ``--browser-url`` 可以指到别的站点（例如真机上的 BOSS 直聘）。
+        return ChromeExecutor(
+            out_dir=args.out,
+            url=args.browser_url or (page.url if page else ""),
+            profile_dir=args.browser_profile,
+        )
     if task.app == "微信":
         return WeChatExecutor(
             **native_common,
@@ -189,9 +212,11 @@ def main(argv=None) -> int:
     tasks = [lookup(item) for item in wanted] if wanted else list(tasks_all)
     manual_results = _load_manual(args.manual)
 
-    #: **本地验证页**（第二波用；第一波不起）。
+    #: **本地验证页**（第二波用；第一波的**浏览器那三张票**也用它 ——
+    #: 工单 T8：可滚列表 + 搜索框 + 城市筛选下拉）。
     page = None
-    if args.wave == "2":
+    needs_page = args.wave == "2" or any(task.app == "Chrome" for task in tasks)
+    if needs_page:
         from .apps import VerificationPage, read_ccswitch_providers
 
         #: 页面上的「当前配置」= **cc-switch 当前生效的那个条目**
