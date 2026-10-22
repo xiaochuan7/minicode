@@ -55,6 +55,17 @@ _RULE_MARKERS = ("口径", "标注", "必带")
 
 #: 区间特征串（两种写法都算命中：波浪号与连字符）。
 _RANGE_NEEDLES = ("15.5", "33.6", "55~63", "55-63", "55–63")
+#: **区间特征串的精确匹配**（正则）。
+#:
+#: ⚠️ **为什么要在串之外再收紧一层**：那组区间的单位是「**分**」（分数增益），
+#: 而 **Wilson 区间的半宽**写成「**pp**」（百分点）—— 两者是**不同的东西**。
+#: 例：``| Creative 组 n / 半宽 | 36 / 15.5pp |`` 里的 ``15.5`` 是
+#: **半宽 15.5 个百分点**，**不是**「+15.5 分的 harness 增益」→
+#: 它命中裸串是**误报**（实测：`docs/research/r-s7-eval-full.md` 两行）。
+#:
+#: ⇒ 判据：``15.5`` / ``33.6`` 后面**不接** ``pp`` 才算命中；
+#: ``55~63`` / ``55-63`` / ``55–63`` 那一段（步数的变化率）原样命中。
+_RANGE_NEEDLE_RE = re.compile(r"(?:15\.5|33\.6)(?!\s*pp)|55[~–-]63")
 #: 「禁用/未核」说明句的标志 —— 出现在区间所在行即达标。
 _PROHIBITION_MARKERS = (
     "不在",
@@ -71,6 +82,18 @@ _PROHIBITION_MARKERS = (
 #: 真要引用这组区间时必须带的出处：论文编号 + 消融表号。
 _PAPER_ID = "2610.22200"
 _TABLE_NUMBER_RE = re.compile(r"(表|Table)\s*\d")
+#: **别的系统**的公开数字 —— **不在 C-14 的管辖范围**里。
+#:
+#: C-14 管的是**本仓厂商自评**的那一个数（OSWorld 2.0 的 partial score 61.7）。
+#: 下面这几类是**别的系统**的公开数字，**不是**那个数：
+#:
+#: * ``视图`` / ``MVP`` —— MVP 的**多视图消融**（2/4/10 视图 → 61.0/**61.7**/60.6），
+#:   是 ScreenSpot-Pro 的 grounding 准确率【一手·公开 arXiv 2512.08529】；
+#: * ``GTA1`` —— 另一个模型（GTA1-7B）在 ScreenSpot-Pro 上的**官方成绩**。
+#:
+#: ⚠️ **判据放在**上下文**（±3 行）**里 —— 只在这几处上下文里跳过，
+#: 其余任何地方的 61.7 仍然要带口径三件套（**规则本身没放松**）。
+_EXTERNAL_NUMBER_MARKERS = ("视图", "MVP", "GTA1")
 #: 「带增益的写法」—— ``+19.6 分`` / ``−53%`` 这类。
 _GAIN_RE = re.compile(r"[+＋]\s?\d+(?:\.\d+)?\s*(?:分|points?)|−\s?\d+(?:\.\d+)?\s*%")
 #: README 正文可核的两组数里出现的那几个数字。
@@ -166,6 +189,9 @@ class CitationDisciplineTest(unittest.TestCase):
                 low = max(0, index - 3)
                 high = min(len(lines), index + 4)
                 context = "\n".join(lines[low:high])
+                #: ⚠️ **别的系统**的公开数字不在 C-14 的管辖范围里（见常量说明）。
+                if any(marker in context for marker in _EXTERNAL_NUMBER_MARKERS):
+                    continue
                 caliber = (
                     any(marker in context for marker in _CALIBER_MARKERS)
                     and any(marker in context for marker in _SELF_REPORT_MARKERS)
@@ -227,7 +253,7 @@ class HarnessGainCitationDisciplineTest(unittest.TestCase):
             for index, line in enumerate(
                 path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
             ):
-                if not any(needle in line for needle in _RANGE_NEEDLES):
+                if not _RANGE_NEEDLE_RE.search(line):
                     continue
                 prohibition = any(marker in line for marker in _PROHIBITION_MARKERS)
                 cited_with_table = (

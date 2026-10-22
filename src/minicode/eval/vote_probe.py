@@ -21,6 +21,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from . import configure_utf8_output
 from .formats import SCREENSPOT_PRO
 from .png_read import read_png_frame
 from .sspro import load_samples
@@ -161,6 +162,7 @@ def analyze(
 
 
 def main(argv=None) -> int:
+    configure_utf8_output()
     parser = argparse.ArgumentParser(
         prog="minicode.eval.vote_probe",
         description="T1 采样池探针的离线分析（零模型调用）",

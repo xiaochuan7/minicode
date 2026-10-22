@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from .formats import (
     CCF_SCREENSPOT_V2,
     SCREENSPOT_PRO,
@@ -28,6 +30,16 @@ from .formats import (
     to_original_pixels,
 )
 
+
+def configure_utf8_output() -> None:
+    """控制台按 **UTF-8** 输出（默认代码页是 GBK，中文与符号会变成乱码）。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # pragma: no cover - 老解释器没有这个方法
+            pass
+
+
 __all__ = [
     "CCF_SCREENSPOT_V2",
     "EvalBBoxFormat",
@@ -39,6 +51,7 @@ __all__ = [
     "ZOOMCLICK",
     "bbox_xywh_to_xyxy",
     "bbox_xyxy_to_xywh",
+    "configure_utf8_output",
     "point_in_bbox_xywh",
     "point_in_bbox_xyxy",
     "self_check_hit_rate",

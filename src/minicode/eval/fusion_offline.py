@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import configure_utf8_output
 from .formats import SCREENSPOT_PRO
 from .sspro import load_samples
 from .stats import mcnemar_midp, paired_bootstrap_delta, wilson_ci
@@ -369,6 +370,7 @@ def _evaluate(
 
 
 def main(argv=None) -> int:
+    configure_utf8_output()
     parser = argparse.ArgumentParser(
         prog="minicode.eval.fusion_offline",
         description="护栏候选的离线重算（零模型调用；施工清单 T5）",
