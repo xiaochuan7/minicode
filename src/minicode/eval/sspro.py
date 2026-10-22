@@ -71,6 +71,9 @@ __all__ = [
     "SsproSample",
     "compare_arms",
     "load_samples",
+    "near_miss_calibration",
+    "paired_comparison",
+    "prompt_stage",
     "run_arms",
     "stratified_subset",
     "summarize",
@@ -328,6 +331,58 @@ GATE_INPUT_SOURCES: dict[str, str] = {
 }
 
 
+#: **阶段标签**（施工清单第 ⑨ 条：「每条回答打阶段标签 coarse / whole2nd / refine」）。
+#:
+#: ⚠️ **这只是标签**：用来**事后分辨哪一级被复用了**。
+#: 它**不参与任何坐标换算**，也不改变任何判定 —— 换算链的唯一真值来源
+#: 仍然是标定结果（架构决策备忘 §2.6 C-04）。
+STAGE_COARSE = "coarse"
+STAGE_WHOLE_SECOND = "whole2nd"
+STAGE_REFINE = "refine"
+STAGE_CALIB = "calib"
+STAGE_UNKNOWN = "unknown"
+
+#: **提示词 → 阶段标签**的映射表（**前缀**匹配，**顺序即优先级**）。
+#:
+#: * ``refine`` —— crop 内精定位（「这是一张从 Windows 桌面截图里裁出的小区域…」）；
+#: * ``calib`` —— 标定探针（「这是一张标定图…」）；
+#: * ``coarse`` —— 整屏粗定位（「这是一张 Windows 桌面截图。」）。
+#:
+#: ⚠️ **整屏第二遍**（``whole2nd``）**也**以「这是一张 Windows 桌面截图。」开头，
+#: 但它**带着上一次失败的原因** → 判它要**先**看那个标志（见
+#: :func:`prompt_stage`），不能只按前缀判。
+_STAGE_BY_PROMPT_PREFIX: tuple[tuple[str, str], ...] = (
+    ("这是一张从 Windows 桌面截图里裁出的小区域", STAGE_REFINE),
+    ("这是一张标定图", STAGE_CALIB),
+    ("这是一张 Windows 桌面截图。", STAGE_COARSE),
+)
+
+#: **整屏第二遍**的标志：它的提示词里带着上一次失败的原因
+#: （``ground/prompt.py::whole_screen_prompt`` 的「上一次没能给出可用的位置」）。
+_WHOLE_SECOND_MARKER = "上一次没能给出可用的位置"
+
+
+def prompt_stage(prompt: str) -> str:
+    """**从提示词判定这一条回答属于哪一级**（阶段标签）。
+
+    * ``coarse`` —— 整屏粗定位；
+    * ``whole2nd`` —— 整屏第二遍（**带着上一次没能给出可用的位置**）；
+    * ``refine`` —— crop 内的精定位；
+    * ``calib`` —— 标定探针；
+    * ``unknown`` —— 认不出来（**旧缓存没有标签**时也是它）。
+
+    ⚠️ **判「整屏第二遍」要**先**看标志、再看前缀** —— 两者的开头一样。
+    ⚠️ **这只是标签**：**不参与任何坐标换算**，也不改变任何判定。
+    """
+    text = prompt or ""
+    if _WHOLE_SECOND_MARKER in text:
+        return STAGE_WHOLE_SECOND
+    for prefix, stage in _STAGE_BY_PROMPT_PREFIX:
+        if text.startswith(prefix):
+            return stage
+    return STAGE_UNKNOWN
+
+
 class MemoizingModelCaller:
     """**应答记忆**的模型端口包装（评测侧）：同一次请求（提示词 + 画面）只问一次。
 
@@ -348,16 +403,30 @@ class MemoizingModelCaller:
     JSONL 缓存、下次运行**先读缓存**。这样**跨进程**的两轮（例如
     「只换 crop 尺寸」）也能**共用同一次粗定位回答** → 那一对是**真配对**，
     差异里**不混模型随机性**。
+
+    **阶段标签**（施工清单第 ⑨ 条：「每条回答打阶段标签 coarse / whole2nd /
+    refine」）：缓存条目里落一个 ``stage`` 字段（由 :func:`prompt_stage`
+    从**提示词**判定）→ **事后**能分辨「哪一级被复用了」。
+    ⚠️ **它只是标签**：**不参与任何坐标换算**，也不改变任何判定。
+    ⚠️ **旧缓存没有标签** → 读回来记 ``unknown``（**不猜**）。
     """
 
     def __init__(self, inner: ModelCaller, *, cache_path: Path | str | None = None):
         self._inner = inner
         self._cache: dict[tuple[str, str], Any] = {}
+        #: **每条缓存条目的阶段标签**（请求键 → 标签）。
+        self._stage_by_key: dict[tuple[str, str], str] = {}
         self._lock = threading.Lock()
         #: 真正发出去的请求数。
         self.calls = 0
         #: 复用（没再问）的回答数。
         self.replays = 0
+        #: **按阶段统计**：发出去的请求数。
+        self.sent_by_stage: dict[str, int] = {}
+        #: **按阶段统计**：复用（没再问）的条数。
+        self.replayed_by_stage: dict[str, int] = {}
+        #: **最后一次用的提示词**（反查服务端实际尺寸时要用 —— 逐字相同的那条）。
+        self.last_prompt = ""
         #: **落盘缓存**（跨进程复用）。
         self._cache_path = Path(cache_path) if cache_path else None
         self._disk: dict[str, Any] = {}
@@ -372,7 +441,11 @@ class MemoizingModelCaller:
                 key = record.get("key")
                 reply = record.get("reply")
                 if key and reply is not None:
-                    self._disk[str(key)] = reply
+                    #: **旧缓存没有标签** → 记 ``unknown``（**不猜**）。
+                    self._disk[str(key)] = {
+                        "reply": reply,
+                        "stage": str(record.get("stage") or STAGE_UNKNOWN),
+                    }
 
     @staticmethod
     def _disk_key(prompt: str, image_key: str) -> str:
@@ -389,18 +462,29 @@ class MemoizingModelCaller:
         thinking_disabled: bool = False,
     ) -> Any:
         key = (prompt, _image_key(image_base64, images_base64))
+        #: **阶段标签**（从提示词判定）—— 只是标签，不参与任何坐标换算。
+        stage = prompt_stage(prompt)
         with self._lock:
+            self.last_prompt = prompt
             cached = self._cache.get(key)
             if cached is not None:
                 self.replays += 1
+                self._bump(
+                    self.replayed_by_stage, self._stage_by_key.get(key, stage)
+                )
                 return cached
         if self._cache_path is not None:
-            record = self._disk.get(self._disk_key(*key))
-            if record is not None:
+            entry = self._disk.get(self._disk_key(*key))
+            if entry is not None:
+                reply = _reply_from_dict(entry["reply"])
                 with self._lock:
-                    self._cache.setdefault(key, _reply_from_dict(record))
+                    self._cache.setdefault(key, reply)
+                    #: **读缓存也带上标签**（旧缓存没有 → ``unknown``）。
+                    label = str(entry.get("stage") or STAGE_UNKNOWN)
+                    self._stage_by_key.setdefault(key, label)
                     self.replays += 1
-                return self._cache[key]
+                    self._bump(self.replayed_by_stage, label)
+                return reply
         reply = self._inner.complete(
             prompt,
             effort=effort,
@@ -411,16 +495,36 @@ class MemoizingModelCaller:
         )
         with self._lock:
             self._cache.setdefault(key, reply)
+            self._stage_by_key.setdefault(key, stage)
             self.calls += 1
+            self._bump(self.sent_by_stage, stage)
         if self._cache_path is not None:
-            self._write_disk(key, reply)
+            self._write_disk(key, reply, stage)
         return reply
 
-    def _write_disk(self, key: tuple[str, str], reply: Any) -> None:
+    @staticmethod
+    def _bump(counter: dict[str, int], stage: str) -> None:
+        counter[stage] = counter.get(stage, 0) + 1
+
+    def stage_report(self) -> dict[str, Any]:
+        """**阶段标签的分布**（发出去的 / 复用的各按阶段计数）。"""
+        return {
+            "sent": dict(sorted(self.sent_by_stage.items())),
+            "replayed": dict(sorted(self.replayed_by_stage.items())),
+            "note": (
+                "阶段标签**只用于事后分辨哪一级被复用**；"
+                "它**不参与任何坐标换算**，也不改变任何判定。"
+                "旧缓存没有标签 → 记 ``unknown``"
+            ),
+        }
+
+    def _write_disk(self, key: tuple[str, str], reply: Any, stage: str) -> None:
         """把这一条回答写进落盘缓存（**单次 write + flush**，行不撕裂）。"""
         assert self._cache_path is not None
         payload = {
             "key": self._disk_key(*key),
+            #: **阶段标签**（事后分辨哪一级被复用了；不参与任何坐标换算）。
+            "stage": stage,
             "reply": _reply_to_dict(reply),
         }
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -841,6 +945,107 @@ def summarize(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
     }
 
 
+#: **近失带的宽度**（物理像素）。
+#:
+#: WCAG 2.2 SC 2.5.8 的 24 CSS px @150% DPI = **36 物理 px**
+#: （语义是「近到可能激活了隔壁控件」）—— 验收线 B 组要校准的就是这一档。
+NEAR_MISS_BAND_PX = 36.0
+
+
+def _percentile(sorted_values: Sequence[float], fraction: float) -> float | None:
+    """**一个**百分位（最近秩口径，与本模块 telemetry 里的 p50 / p90 同一套）。
+
+    ⚠️ 与 :mod:`minicode.eval.stats` 的**插值**口径不同 —— 那里那个是
+    「统计模块的口径」，这里这个是「埋点汇总的口径」→ **不跨口径对账**。
+    """
+    if not sorted_values:
+        return None
+    index = min(len(sorted_values) - 1, int(fraction * len(sorted_values)))
+    return sorted_values[index]
+
+
+def near_miss_calibration(
+    outcomes: Sequence[ArmOutcome],
+    taus: Sequence[float] = (5, 10, 20, 50, 100),
+) -> dict[str, Any]:
+    """**近失带的离线校准**（验收线 B 组 / 施工清单第 ① 条埋点的下游用法）。
+
+    对每个 τ 给两个数：
+
+    * ``hits_failing_band`` —— **本来命中**（``hit=True``）的样本里
+      ``dist_to_bbox > τ`` 的条数（= 会被这个近失带**判失败**的条数）；
+    * ``misses_rescued`` —— **本来没命中**（``hit=False``）的样本里
+      ``dist_to_bbox <= τ`` 的条数（= 会被这个近失带**捞回来**的条数）。
+
+    另外给 ``dist_to_bbox`` 的 p50 / p90，以及「**找对**」（命中）与
+    「**挑错**」（没命中）两个子集各自的 p50。
+
+    ⚠️ **口径**：``dist_to_bbox`` 是**到 GT 框的距离**（框内 = 0）→
+    **命中 ⟺ 距离为 0**（框边界上的舍入例外除外）→
+    「找对」子集的 p50 **恒为 0**。
+    ⚠️ 它**不是**真机 e2e 那个「到控件**中心**的落点误差中位」——
+    一个是**到矩形**、一个是**到中心**，**两个量不许混用**。
+
+    **纯函数**：只用已经落盘的 ``dist_to_bbox``，**不额外发模型调用**。
+    """
+    hits = [outcome for outcome in outcomes if outcome.hit]
+    misses = [outcome for outcome in outcomes if not outcome.hit]
+    distances = sorted(
+        outcome.dist_to_bbox for outcome in outcomes if outcome.dist_to_bbox is not None
+    )
+    hit_distances = sorted(
+        outcome.dist_to_bbox for outcome in hits if outcome.dist_to_bbox is not None
+    )
+    miss_distances = sorted(
+        outcome.dist_to_bbox for outcome in misses if outcome.dist_to_bbox is not None
+    )
+
+    def _sweep(tau: float) -> dict[str, Any]:
+        return {
+            "tau_px": tau,
+            "hits_failing_band": sum(
+                1
+                for outcome in hits
+                if outcome.dist_to_bbox is not None and outcome.dist_to_bbox > tau
+            ),
+            "misses_rescued": sum(
+                1
+                for outcome in misses
+                if outcome.dist_to_bbox is not None and outcome.dist_to_bbox <= tau
+            ),
+        }
+
+    p50 = _percentile(distances, 0.5)
+    p90 = _percentile(distances, 0.9)
+    hit_p50 = _percentile(hit_distances, 0.5)
+    miss_p50 = _percentile(miss_distances, 0.5)
+    return {
+        "samples": len(outcomes),
+        "hits": len(hits),
+        "misses": len(misses),
+        "dist_to_bbox": {
+            "n": len(distances),
+            "p50": round(p50, 1) if p50 is not None else None,
+            "p90": round(p90, 1) if p90 is not None else None,
+            "max": round(distances[-1], 1) if distances else None,
+        },
+        #: 「找对」子集（命中）与「挑错」子集（没命中）各自的 p50。
+        "p50_by_subset": {
+            "hit": round(hit_p50, 1) if hit_p50 is not None else None,
+            "miss": round(miss_p50, 1) if miss_p50 is not None else None,
+        },
+        #: 逐 τ 的扫描（**判失败** / **捞回来** 各多少条）。
+        "taus": [_sweep(tau) for tau in taus],
+        #: **验收的那一档**（36 px 近失带）。
+        "band_36px": _sweep(NEAR_MISS_BAND_PX),
+        "note": (
+            "dist_to_bbox = 到 GT 框的距离（框内 = 0）→ **命中 ⟺ 距离为 0**；"
+            "「找对」子集的 p50 恒为 0，**不是**真机 e2e 那个"
+            "「到控件中心的落点误差」—— 两个量不许混用"
+        ),
+    }
+
+
 def _telemetry_summary(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
     """**第 ① 条埋点**的汇总（crop 含住率 / 假命中 / 落点来源 / 图像 token）。"""
     opened = [outcome for outcome in outcomes if outcome.crop_contains_target is not None]
@@ -900,6 +1105,8 @@ def _telemetry_summary(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
                     sum(image_tokens) / len(image_tokens) if image_tokens else 0.0
                 ),
             },
+            #: **近失带的离线校准**（验收线 B 组）—— 纯算术，**不发模型调用**。
+            "near_miss_calibration": near_miss_calibration(outcomes),
         }
     }
 
@@ -914,6 +1121,7 @@ def _paired(
     *,
     label_left: str,
     label_right: str,
+    coarse_arm: Sequence[ArmOutcome] = (),
 ) -> dict[str, Any]:
     """**配对比较**（施工清单第 ⑨ 条）：同批样本、复用同一次上游回答。
 
@@ -921,21 +1129,36 @@ def _paired(
     * ``p`` —— **mid-p McNemar**（双侧，α=0.05）；
     * ``delta`` 与 95% CI —— **配对 bootstrap**（2000 次，按 task 聚类）；
     * ``d`` —— 不一致对占比（噪声地板）；
-    * 按「粗定位对 / 错」**分层**（预注册的次要分析）。
+    * 按「**粗定位命中 / 没命中**」**分层**（预注册的次要分析）。
+
+    ⚠️ **分层键 = 粗定位那一臂的命中与否**（``coarse_arm`` 里那条的 ``hit``），
+    **不是**「有没有粗点」—— 「有没有粗点」判的是「模型答没答」，
+    不是「模型答对没答对」，用它分层得到的结论**不可用**。
+
+    ⚠️ **分层变量必须先于被测步确定**（否则是 collider 偏差）：
+    粗定位那一级在被测的 crop 精定位**之前**就定了 →
+    条件在**先于处理的变量**上 → 不构成 collider
+    （依据见 ``docs/research/vision-final-plan.md``「评测设计」§2）。
     """
     from .stats import mcnemar_midp, paired_bootstrap_delta, wilson_ci
 
     right_by_id = {outcome.sample_id: outcome for outcome in right}
+    coarse_by_id = {outcome.sample_id: outcome for outcome in coarse_arm}
     pairs: list[tuple[bool, bool]] = []
     coarse_hit_pairs: list[tuple[bool, bool]] = []
     coarse_miss_pairs: list[tuple[bool, bool]] = []
+    unclassified = 0
     for outcome in left:
         peer = right_by_id.get(outcome.sample_id)
         if peer is None:
             continue
         pair = (outcome.hit, peer.hit)
         pairs.append(pair)
-        if peer.coarse_point is not None:
+        coarse_outcome = coarse_by_id.get(outcome.sample_id)
+        if coarse_outcome is None:
+            #: 粗定位臂里没有这一条 → **分不了层**（不塞进任何一桶）。
+            unclassified += 1
+        elif coarse_outcome.hit:
             coarse_hit_pairs.append(pair)
         else:
             coarse_miss_pairs.append(pair)
@@ -967,9 +1190,15 @@ def _paired(
         ),
         "wilson_left": list(wilson_ci(sum(1 for pair in pairs if pair[0]), n)),
         "wilson_right": list(wilson_ci(sum(1 for pair in pairs if pair[1]), n)),
-        #: **按「粗定位对 / 错」分层**（预注册的次要分析）。
+        #: **按「粗定位命中 / 没命中」分层**（预注册的次要分析）。
         "strata": {
-            "coarse_available": {
+            "variable": "coarse_only 臂的 hit（粗定位命中与否）",
+            "note": (
+                "分层变量必须**先于被测步**确定（粗定位在精定位之前）"
+                "→ 不构成 collider 偏差"
+            ),
+            "unclassified_samples": unclassified,
+            "coarse_hit": {
                 "samples": len(coarse_hit_pairs),
                 "delta_pp": (
                     paired_bootstrap_delta(coarse_hit_pairs).delta * 100
@@ -977,7 +1206,7 @@ def _paired(
                     else None
                 ),
             },
-            "coarse_unavailable": {
+            "coarse_miss": {
                 "samples": len(coarse_miss_pairs),
                 "delta_pp": (
                     paired_bootstrap_delta(coarse_miss_pairs).delta * 100
@@ -987,6 +1216,28 @@ def _paired(
             },
         },
     }
+
+
+def paired_comparison(
+    left: Sequence[ArmOutcome],
+    right: Sequence[ArmOutcome],
+    *,
+    label_left: str,
+    label_right: str,
+    coarse_arm: Sequence[ArmOutcome] = (),
+) -> dict[str, Any]:
+    """**配对比较**（对外口径的入口）—— 报告里「Δ / p / CI」这一段的唯一来源。
+
+    实现住在 :func:`_paired`（本模块内部）；这个函数是它的**公开外壳**，
+    给别的模块（命令行报告的切分统计）用。
+    """
+    return _paired(
+        left,
+        right,
+        label_left=label_left,
+        label_right=label_right,
+        coarse_arm=coarse_arm,
+    )
 
 
 def compare_arms(
@@ -1079,7 +1330,11 @@ def compare_arms(
         #: 配对 bootstrap 的 Δ 95% CI。**CI 跨 0 就不能写「改进成立」。**
         "paired": {
             "on_demand_vs_always": _paired(
-                on_demand, always, label_left="on_demand", label_right="always"
+                on_demand,
+                always,
+                label_left="on_demand",
+                label_right="always",
+                coarse_arm=coarse_only,
             ),
             **(
                 {
@@ -1088,6 +1343,7 @@ def compare_arms(
                         coarse_only,
                         label_left="always",
                         label_right="coarse_only",
+                        coarse_arm=coarse_only,
                     )
                 }
                 if coarse_only

@@ -38,7 +38,8 @@ from typing import Any
 from minicode.e2e.visual import (
     PromptCapturingCaller,
     RecordingSink,
-    reverse_lookup_from_log,
+    measure_text_tokens,
+    reverse_lookup_model_input,
 )
 from minicode.ground.gate import default_gate_params
 from minicode.model.client import ModelClient
@@ -51,11 +52,14 @@ from .formats import SCREENSPOT_PRO, self_check_hit_rate
 from .sspro import (
     GATE_INPUT_SOURCES,
     OFFICIAL_ROWS,
+    ArmOutcome,
     MemoizingModelCaller,
     compare_arms,
     gate_params_snapshot,
     load_samples,
     model_input_target_sizes,
+    near_miss_calibration,
+    paired_comparison,
     render_table,
     run_arms,
     stratified_subset,
@@ -116,7 +120,7 @@ def main(argv=None) -> int:
         default=55,
         help=(
             "每个 (平台 × 文本/图标) 分层取几条（默认 55 → 共 330 条）"
-            "—— 42 条的 Wilson 区间约 ±15 pp，分不开 38.1% 与 57.1%；"
+            "—— 42 条的 Wilson 区间约 ±15 pp，分不开 38.1%% 与 57.1%%；"
             "方案改动 8：≥300 条分层抽样（固定 seed）"
         ),
     )
@@ -134,8 +138,8 @@ def main(argv=None) -> int:
         help=(
             "输出预算（默认 8192）—— 粗定位那一级**曾经**用 2000，"
             "被思考链吃光（「HTTP 200 但没有文本输出」丢样本）；"
-            "4096 档残余无文本率 0.56%（19/3404），"
-            "8192 档按幂律外推 0.03~0.07%（施工清单第 ② 条）"
+            "4096 档残余无文本率 0.56%%（19/3404），"
+            "8192 档按幂律外推 0.03~0.07%%（施工清单第 ② 条）"
         ),
     )
     parser.add_argument(
@@ -161,7 +165,7 @@ def main(argv=None) -> int:
         default=0,
         help=(
             "裁剪窗口宽（物理像素）；0 = **自适应**"
-            "（当前物理帧的 50% 线性尺寸、绝对下限 512 —— 施工清单第 ⑤ 条）"
+            "（当前物理帧的 50%% 线性尺寸、绝对下限 512 —— 施工清单第 ⑤ 条）"
         ),
     )
     parser.add_argument(
@@ -182,20 +186,49 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--limit", type=int, default=0, help="最多跑多少条样本（0 = 不限；调试用）"
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "跑**全量**样本（本地有图的那些），**不做**分层抽样"
+            "（施工清单第 ⑨ 条）"
+        ),
+    )
+    parser.add_argument(
+        "--confirmation-split",
+        action="store_true",
+        help=(
+            "把样本切成「**调参集 / 确认集**」两段（**不重叠**），"
+            "报告里分别给 Δ / p / CI（施工清单第 ⑨ 条）。"
+            "调参集 = 分层抽样的那一批；确认集 = 其余**本地有图**的样本。"
+            "⚠️ **它要跑全量**（确认集不在抽样里）—— "
+            "**本轮不要求跑全量**，跑不跑由调用方决定"
+        ),
+    )
     args = parser.parse_args(argv)
 
     started = time.time()
     dataset = Path(args.dataset)
     samples = load_samples(dataset)
     print(f"=== 数据集：{len(samples)} 条（{dataset}）===")
-    chosen = stratified_subset(samples, args.per_stratum, seed=args.seed)
-    missing = [sample for sample in chosen if not sample.image_path.exists()]
+    #: **分层抽样**的那一批 = **调参集**（施工清单第 ⑨ 条）。
+    tuning = stratified_subset(samples, args.per_stratum, seed=args.seed)
+    local_ids = {sample.sample_id for sample in samples if sample.image_path.exists()}
+    tuning = [sample for sample in tuning if sample.sample_id in local_ids]
+    if args.full or args.confirmation_split:
+        #: **全量** = 本地**有图**的全部样本（不做抽样）。
+        chosen = [sample for sample in samples if sample.sample_id in local_ids]
+    else:
+        chosen = list(tuning)
+    missing = len(samples) - len(chosen)
     if missing:
-        print(f"⚠️ 有 {len(missing)} 条样本的图片不在本地（数据集没下全），跳过它们")
-        chosen = [sample for sample in chosen if sample.image_path.exists()]
+        print(f"⚠️ 有 {missing} 条样本的图片不在本地（数据集没下全），跳过它们")
     if args.limit:
         chosen = chosen[: args.limit]
-    print(f"分层抽样后：{len(chosen)} 条（种子 {args.seed}）")
+    if args.full or args.confirmation_split:
+        print(f"全量：{len(chosen)} 条（本地有图的全部样本，不做抽样）")
+    else:
+        print(f"分层抽样后：{len(chosen)} 条（种子 {args.seed}）")
     for key in sorted({(s.platform, s.ui_type) for s in chosen}):
         count = sum(1 for s in chosen if (s.platform, s.ui_type) == key)
         print(f"  {key[0]}/{key[1]}: {count} 条")
@@ -299,7 +332,11 @@ def main(argv=None) -> int:
             "total_samples": len(samples),
             "evaluated_samples": len(chosen),
             "seed": args.seed,
-            "sampling": "按 (平台 × 文本/图标) 分层，每层固定条数（确定性）",
+            "sampling": (
+                "全量（本地有图的样本，不做抽样）"
+                if args.full or args.confirmation_split
+                else "按 (平台 × 文本/图标) 分层，每层固定条数（确定性）"
+            ),
         },
         "model": {
             "id": config.model,
@@ -324,6 +361,10 @@ def main(argv=None) -> int:
         "model_calls": {
             "sent": memoized.calls,
             "replayed": memoized.replays,
+            #: **阶段标签**（施工清单第 ⑨ 条）：每条回答属于哪一级
+            #: （coarse / whole2nd / refine / calib）→ **事后**分辨哪一级被复用。
+            #: ⚠️ **只是标签**：**不参与任何坐标换算**，也不改变任何判定。
+            "stages": memoized.stage_report(),
             "note": (
                 "应答记忆端口：两臂**共用同一次粗定位回答**"
                 "（模型端不确定，各自重问会把随机性混进对比里）。"
@@ -346,6 +387,15 @@ def main(argv=None) -> int:
         },
         "official_rows": list(OFFICIAL_ROWS),
         "table_markdown": table,
+        #: **近失带的离线校准**（验收线 B 组）—— 纯算术，**不发模型调用**。
+        "near_miss_calibration": {
+            arm: near_miss_calibration(outcomes)
+            for arm, outcomes in (
+                ("on_demand", on_demand),
+                ("always", always),
+                ("coarse_only", coarse_only),
+            )
+        },
         "outcomes": {
             "on_demand": [outcome.to_dict() for outcome in on_demand],
             "always": [outcome.to_dict() for outcome in always],
@@ -357,6 +407,17 @@ def main(argv=None) -> int:
         },
         "elapsed_seconds": round(time.time() - started, 1),
     }
+    if args.confirmation_split:
+        #: **调参集 / 确认集**两段（**不重叠**）—— 施工清单第 ⑨ 条。
+        report["confirmation_split"] = _confirmation_split_report(
+            tuning_ids={sample.sample_id for sample in tuning},
+            run_ids={sample.sample_id for sample in chosen},
+            arms={
+                "on_demand": on_demand,
+                "always": always,
+                "coarse_only": coarse_only,
+            },
+        )
     path = out_dir / "sspro-report.json"
     path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -366,6 +427,75 @@ def main(argv=None) -> int:
     _print_summary(report, comparison)
     print(f"记录已写入：{path}")
     return 0
+
+
+def _segment_report(
+    sample_ids: set[str],
+    arms: dict[str, list[ArmOutcome]],
+    *,
+    definition: str,
+) -> dict[str, Any]:
+    """一段样本（调参集 / 确认集）的 **N / 命中率 / Δ / p / 95% CI**。
+
+    * ``arms`` —— 每一段里**每一臂**的 ``N``、命中条数、命中率；
+    * ``paired`` —— 段内的**配对比较**（mid-p McNemar + 配对 bootstrap CI）。
+
+    ⚠️ **口径**：段内仍然是**配对**（同一条样本的两臂不可拆开）；
+    Δ = 右臂 − 左臂；CI 跨 0 就**不许**写「改进成立」。
+    """
+    subset = {
+        arm: [outcome for outcome in outcomes if outcome.sample_id in sample_ids]
+        for arm, outcomes in arms.items()
+    }
+    arm_stats: dict[str, Any] = {}
+    for arm, items in sorted(subset.items()):
+        hits = sum(1 for outcome in items if outcome.hit)
+        arm_stats[arm] = {
+            "samples": len(items),
+            "hits": hits,
+            "hit_rate": (hits / len(items)) if items else None,
+        }
+    paired: dict[str, Any] = {}
+    for left, right in (("on_demand", "always"), ("always", "coarse_only")):
+        if left not in subset or right not in subset or not subset[left]:
+            continue
+        paired[f"{left}_vs_{right}"] = paired_comparison(
+            subset[left],
+            subset[right],
+            label_left=left,
+            label_right=right,
+            coarse_arm=subset.get("coarse_only", ()),
+        )
+    return {"definition": definition, "arms": arm_stats, "paired": paired}
+
+
+def _confirmation_split_report(
+    *,
+    tuning_ids: set[str],
+    run_ids: set[str],
+    arms: dict[str, list[ArmOutcome]],
+) -> dict[str, Any]:
+    """**调参集 / 确认集**两段（**不重叠**）的统计（施工清单第 ⑨ 条）。
+
+    * **调参集** = 分层抽样的那一批（阈值在那批上选）；
+    * **确认集** = 本轮跑的样本里**其余**的那些（阈值不在它们身上选过）。
+
+    ⚠️ **两段不许重叠** → ``overlap_samples`` 必须为 0（落进报告，可核对）。
+    """
+    confirmation_ids = run_ids - tuning_ids
+    return {
+        "overlap_samples": len(tuning_ids & confirmation_ids),
+        "tuning": _segment_report(
+            tuning_ids,
+            arms,
+            definition="分层抽样的那一批（--per-stratum / --seed 决定）",
+        ),
+        "confirmation": _segment_report(
+            confirmation_ids,
+            arms,
+            definition="其余**本地有图**的样本（与调参集**不重叠**）",
+        ),
+    }
 
 
 def _calibrate(
@@ -413,13 +543,19 @@ def _calibrate(
     scale = outcome.detected_scale
     #: **准入判定**（A-1 的真闸门：等价族分歧 ≤ 4 px **且** K 轮命中率 ≥ 0.6）。
     admission = CalibrationAdmission(outcome).admit()
-    #: **反查服务端实际看到的那张图**（反查不出 → ``None`` → 报告里写 unknown）。
-    server_input = _reverse_lookup(client, sink, declared, args)
+    #: **服务端实际看到的那张图**：盒子反查（**诊断**）+ 相等断言（**闸门**）。
+    server = _server_scale_evidence(client, sink, declared, args)
+    server_input = server["server_model_input_size"]
+    kept = server["image_token_assertion"]["server_kept_size"]
     print(
         f"标定 {width}×{height}：标度 {scale.value}（判定 {outcome.scale_verdict}）"
         f"｜声明的模型输入 {declared[0]}×{declared[1]}"
         f"｜服务端实际 "
         f"{f'{server_input[0]}×{server_input[1]}' if server_input else 'unknown'}"
+        f"｜图像 token 观测 {server['observed_image_tokens']}"
+        f"｜期望 {server['expected_image_tokens']}"
+        f"｜**服务端没再缩："
+        f"{'是' if kept else ('否' if kept is False else 'unknown')}**"
         f"｜最大误差 {best.max_error_px:.2f} px"
         f"｜{outcome.rounds} 轮命中率 {outcome.hit_rate:.2f}"
         f"｜视觉通道准入 {'可用' if admission.available else '不可用'}"
@@ -454,9 +590,16 @@ def _calibrate(
         #: **声明尺寸**（我们自己缩到一半再送模型的那张图 —— 坐标换算的分母）。
         "declared_model_input_size": list(declared),
         #: **反查出来的服务端实际尺寸**（反查不出 → ``"unknown"``，不填猜的数）。
+        #: ⚠️ 这是**诊断**（「服务端**大概**缩到了多大」，±28 px 的盒子）。
         "server_model_input_size": (
             list(server_input) if server_input is not None else "unknown"
         ),
+        #: **相等断言**（**闸门**，与上面的**诊断**分开）：
+        #: 观测到的图像 token 数 vs 期望值 ``ceil(W/28) × ceil(H/28)``。
+        #: 相等（容差 ±2）⇒ 服务端**没有**再缩 ⇒ 该次请求的坐标系**可信**。
+        "observed_image_tokens": server["observed_image_tokens"],
+        "expected_image_tokens": server["expected_image_tokens"],
+        "image_token_assertion": server["image_token_assertion"],
         "max_error_px": round(best.max_error_px, 3),
         #: **A-1 的真闸门**（准入门看的就是这两条）：
         #:
@@ -482,20 +625,70 @@ def _calibrate(
     }
 
 
-def _reverse_lookup(client, sink, declared: tuple[int, int], args) -> tuple[int, int] | None:
-    """**用 token 数反查**服务端实际看到的那张图（反查不出 → ``None``）。
+def _server_scale_evidence(
+    client, sink, declared: tuple[int, int], args
+) -> dict[str, Any]:
+    """服务端实际看到的那张图：**盒子反查**（诊断）+ **相等断言**（闸门）。
+
+    * **盒子**（``±28 px``，:func:`minicode.calib.calibrate.estimate_model_input_from_tokens`）
+      = 「服务端**大概**缩到了多大」→ **诊断**；
+    * **相等断言**（:func:`minicode.calib.calibrate.assert_server_kept_image_tokens`）
+      = 「服务端**有没有**再缩」→ **闸门**：相等 ⇒ 该次请求的坐标系**可信**，
+      不等 ⇒ **不可信**。
+
+    ⚠️ **两件事分开**：盒子回答「大概多大」，断言回答「能不能信」——
+    盒子的结果**不能**拿来当闸门。
 
     * 图像那部分的 token 数 = 服务端报的总输入 token − 纯文字那部分；
-    * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次；
-    * 反查不出（token 数对不上任何尺寸 / 文字那部分量不出来）→ ``None``
-      —— 调用方记 ``unknown``，**不许填一个猜的数**。
+    * 纯文字那部分**量出来**：把**逐字相同**的提示词不带图再发一次
+      （**与反查共用同一次测量** → **不额外发模型调用**）；
+    * 量不出来 → 全部记 ``unknown``（**不许填一个猜的数**）。
 
-    实现只有一处：:func:`minicode.e2e.visual.reverse_lookup_from_log`
-    （反查口径不许有第二份）。
+    反查的实现只有一处：:func:`minicode.e2e.visual.reverse_lookup_model_input`
+    （它转调 :mod:`minicode.calib.calibrate` 里那一份）。
     """
-    return reverse_lookup_from_log(
-        client, sink, declared, max_tokens=args.max_tokens
+    from minicode.calib.calibrate import (
+        assert_server_kept_image_tokens,
+        expected_image_tokens,
+        observed_image_tokens,
     )
+
+    expected = expected_image_tokens(declared)
+    unknown: dict[str, Any] = {
+        "server_model_input_size": None,
+        "observed_image_tokens": None,
+        "expected_image_tokens": expected,
+        "image_token_assertion": assert_server_kept_image_tokens(
+            None, declared
+        ).to_dict(),
+    }
+    #: ⚠️ **先取这条请求日志**，再量纯文字 ——
+    #: 量纯文字会再发一次请求，把 ``sink.last`` 覆盖掉。
+    record = getattr(sink, "last", None)
+    prompt = getattr(client, "last_prompt", "")
+    if record is None or not prompt:
+        return unknown
+    observed_total = getattr(record, "total_input_tokens", None)
+    if observed_total is None:
+        return unknown
+    text_tokens = measure_text_tokens(
+        client, prompt, effort=record.effort, max_tokens=args.max_tokens
+    )
+    if text_tokens is None:
+        return unknown
+    observed = observed_image_tokens(observed_total, text_tokens)
+    assertion = assert_server_kept_image_tokens(observed, declared)
+    size = reverse_lookup_model_input(
+        observed_total,
+        text_tokens,
+        declared[0] / declared[1] if declared[1] else 0.0,
+    )
+    return {
+        "server_model_input_size": size,
+        "observed_image_tokens": observed,
+        "expected_image_tokens": expected,
+        "image_token_assertion": assertion.to_dict(),
+    }
 
 
 def _print_summary(report: dict, comparison: dict) -> None:
@@ -577,6 +770,59 @@ def _print_summary(report: dict, comparison: dict) -> None:
             )
     print("=== 那张 7 行表 ===")
     print(report["table_markdown"])
+    _print_near_miss(report)
+    _print_confirmation_split(report)
+
+
+def _print_near_miss(report: dict) -> None:
+    """**近失带的离线校准**（验收线 B 组）—— 纯算术，不发模型调用。"""
+    calibration = (report.get("near_miss_calibration") or {}).get("always")
+    if not calibration:
+        return
+    print("=== 近失带的离线校准（验收线 B 组；纯算术，不发模型调用）===")
+    distance = calibration["dist_to_bbox"]
+    subsets = calibration["p50_by_subset"]
+    print(
+        f"dist_to_bbox：p50 {distance['p50']}｜p90 {distance['p90']}"
+        f"｜「找对」p50 {subsets['hit']}｜「挑错」p50 {subsets['miss']}"
+    )
+    for item in calibration["taus"]:
+        print(
+            f"  τ={item['tau_px']:>5} px：判失败 {item['hits_failing_band']} 条"
+            f"｜捞回来 {item['misses_rescued']} 条"
+        )
+    band = calibration["band_36px"]
+    print(
+        f"  36 px 近失带：判失败 {band['hits_failing_band']} 条"
+        f"｜捞回来 {band['misses_rescued']} 条"
+    )
+
+
+def _print_confirmation_split(report: dict) -> None:
+    """**调参集 / 确认集**两段的 Δ / p / CI。"""
+    split = report.get("confirmation_split")
+    if not split:
+        return
+    print(
+        "=== 调参集 / 确认集（两段不重叠；重叠条数 "
+        f"{split['overlap_samples']}）==="
+    )
+    for name, label in (("tuning", "调参集"), ("confirmation", "确认集")):
+        segment = split[name]
+        arms = segment["arms"]
+        rates = "｜".join(
+            f"{arm} {item['hit_rate'] * 100:.1f}%（{item['hits']}/{item['samples']}）"
+            for arm, item in arms.items()
+            if item["hit_rate"] is not None
+        )
+        print(f"  {label}：{rates}")
+        for key, item in segment["paired"].items():
+            print(
+                f"    {key}（n={item['samples']}）：Δ {item['delta_pp']:+.2f} pp"
+                f"｜95% CI [{item['delta_ci95_pp'][0]:+.2f}, {item['delta_ci95_pp'][1]:+.2f}] pp"
+                f"｜mid-p p={item['mcnemar_midp_p']:.4f}"
+                f"｜CI 不跨 0：{'是' if item['ci_excludes_zero'] else '否'}"
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -6,6 +6,11 @@
 * **两臂对比的判据算得对**（硬判据 + 防掩盖的逐子集容忍度）；
 * **那张 7 行表**的形状与标注（官方 5 行必须标「官方自报，不作硬对比」）。
 
+外加施工清单第 ⑨ 条与第 ⑥ 条落在本模块的三处接线：
+**配对分层键**、**近失带离线校准**、**记忆缓存的阶段标签**，
+以及标定链的**相等断言**（实现住在 :mod:`minicode.calib.calibrate`；
+用例放在这里是因为**本轮的写权限只给了 eval 的测试文件**）。
+
 本模块**不打真桌面、不花钱**：全部用构造出来的样本与结果。
 """
 
@@ -16,13 +21,20 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from minicode.calib.calibrate import (
+    IMAGE_TOKEN_ASSERTION_TOLERANCE_TOKENS,
+    assert_server_kept_image_tokens,
+)
 from minicode.eval.sspro import (
     GATE_INPUT_SOURCES,
     OFFICIAL_ROWS,
     ArmOutcome,
+    MemoizingModelCaller,
     SsproSample,
     compare_arms,
     load_samples,
+    near_miss_calibration,
+    prompt_stage,
     render_table,
     stratified_subset,
     summarize,
@@ -33,6 +45,8 @@ from minicode.ground.gate import (
     GateInputs,
     evaluate_gate,
 )
+from minicode.model.client import ModelReply
+from minicode.model.effort import Effort
 
 
 def _sample(
@@ -44,6 +58,8 @@ def _sample(
     refine_enabled: bool = False,
     gate_hit: bool = False,
     size: tuple[int, int] = (2560, 1440),
+    coarse_point: tuple[float, float] | None = (10.0, 10.0),
+    dist_to_bbox: float | None = None,
 ) -> ArmOutcome:
     return ArmOutcome(
         sample_id=sample_id,
@@ -53,7 +69,7 @@ def _sample(
         application="app",
         hit=hit,
         landing_point=(10, 10),
-        coarse_point=(10.0, 10.0),
+        coarse_point=coarse_point,
         gate_hit=gate_hit,
         gate_reasons=("target_tiny",) if gate_hit else (),
         gate_undecidable=("target_area_ratio",),
@@ -62,6 +78,7 @@ def _sample(
         fallback_cause="",
         model_calls=3,
         error="",
+        dist_to_bbox=dist_to_bbox,
     )
 
 
@@ -329,6 +346,194 @@ class GateInputSourceTests(unittest.TestCase):
             GATE_INPUT_SOURCES["consistency"].startswith("不可判定"),
             msg=GATE_INPUT_SOURCES["consistency"],
         )
+
+
+class PairedStrataTests(unittest.TestCase):
+    """配对分层的**键** = **粗定位命中与否**（施工清单第 ⑨ 条）。
+
+    ⚠️ 分层变量必须**先于**被测步确定（粗定位在精定位之前）→ 不构成 collider。
+    """
+
+    def _strata(self, always, coarse_only):
+        comparison = compare_arms(always, always, coarse_only=coarse_only)
+        return comparison["paired"]["always_vs_coarse_only"]["strata"]
+
+    def test_each_sample_lands_in_its_own_bucket(self):
+        strata = self._strata(
+            [_sample("a", hit=True), _sample("b", hit=False)],
+            [_sample("a", hit=True), _sample("b", hit=False)],
+        )
+        self.assertEqual(strata["coarse_hit"]["samples"], 1)
+        self.assertEqual(strata["coarse_miss"]["samples"], 1)
+
+    def test_stratum_is_not_keyed_on_whether_a_coarse_point_exists(self):
+        """**没有粗点但粗定位命中** → 归「粗定位命中」那一桶。
+
+        （旧口径按「有没有粗点」分层 → 这一条会掉进另一桶 → 结论不可用。）
+        """
+        strata = self._strata(
+            [_sample("a", hit=True)],
+            [_sample("a", hit=True, coarse_point=None)],
+        )
+        self.assertEqual(strata["coarse_hit"]["samples"], 1)
+        self.assertEqual(strata["coarse_miss"]["samples"], 0)
+
+    def test_a_coarse_point_that_missed_lands_in_coarse_miss(self):
+        """**有粗点但粗定位挑错了** → 归「粗定位没命中」那一桶。"""
+        strata = self._strata(
+            [_sample("a", hit=False)],
+            [_sample("a", hit=False)],
+        )
+        self.assertEqual(strata["coarse_miss"]["samples"], 1)
+        self.assertEqual(strata["coarse_hit"]["samples"], 0)
+
+    def test_the_stratum_variable_is_written_down(self):
+        strata = self._strata([_sample("a")], [_sample("a")])
+        self.assertIn("hit", strata["variable"])
+        self.assertIn("collider", strata["note"])
+
+
+class NearMissCalibrationTests(unittest.TestCase):
+    """**近失带的离线校准**（验收线 B 组）—— 纯算术，不发模型调用。"""
+
+    def test_sweep_counts_hits_failed_and_misses_rescued(self):
+        outcomes = [
+            _sample("a", hit=True, dist_to_bbox=0.0),
+            _sample("b", hit=False, dist_to_bbox=8.0),
+            _sample("c", hit=False, dist_to_bbox=30.0),
+            _sample("d", hit=False, dist_to_bbox=226.0),
+        ]
+        calibration = near_miss_calibration(outcomes)
+        by_tau = {item["tau_px"]: item for item in calibration["taus"]}
+        self.assertEqual(sorted(by_tau), [5, 10, 20, 50, 100])
+        self.assertEqual(by_tau[5]["misses_rescued"], 0)
+        self.assertEqual(by_tau[10]["misses_rescued"], 1)
+        self.assertEqual(by_tau[50]["misses_rescued"], 2)
+        self.assertEqual(by_tau[100]["misses_rescued"], 2)
+        self.assertEqual(calibration["band_36px"]["misses_rescued"], 2)
+
+    def test_a_hit_far_from_the_box_would_be_judged_failed(self):
+        outcomes = [
+            _sample("a", hit=True, dist_to_bbox=100.0),
+            _sample("b", hit=False, dist_to_bbox=8.0),
+        ]
+        calibration = near_miss_calibration(outcomes, taus=(5,))
+        self.assertEqual(calibration["taus"][0]["hits_failing_band"], 1)
+        self.assertEqual(calibration["taus"][0]["misses_rescued"], 0)
+
+    def test_distance_percentiles_and_subset_medians(self):
+        outcomes = [
+            _sample("a", hit=True, dist_to_bbox=0.0),
+            _sample("b", hit=False, dist_to_bbox=8.0),
+            _sample("c", hit=False, dist_to_bbox=30.0),
+            _sample("d", hit=False, dist_to_bbox=226.0),
+        ]
+        calibration = near_miss_calibration(outcomes)
+        self.assertEqual(calibration["dist_to_bbox"]["p50"], 30.0)
+        self.assertEqual(calibration["dist_to_bbox"]["p90"], 226.0)
+        #: 「找对」子集（命中）→ 距离恒为 0（框内 = 0）。
+        self.assertEqual(calibration["p50_by_subset"]["hit"], 0.0)
+        self.assertEqual(calibration["p50_by_subset"]["miss"], 30.0)
+
+
+class _FakeCaller:
+    """假模型端口（只回固定文本，不发真请求）。"""
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        effort: Effort | str | None = None,
+        max_tokens: int = 2000,
+        image_base64: str | None = None,
+        images_base64=(),
+        thinking_disabled: bool = False,
+    ) -> ModelReply:
+        self.prompts.append(prompt)
+        return ModelReply(
+            text='{"bbox": [1, 2, 3, 4]}',
+            model="fake-model",
+            endpoint="fake-endpoint",
+            effort=Effort.LOW,
+            http_status=200,
+            latency_ms=1.0,
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+
+class MemoStageTests(unittest.TestCase):
+    """记忆缓存的**阶段标签**（施工清单第 ⑨ 条）。"""
+
+    COARSE_PROMPT = "这是一张 Windows 桌面截图。\n这张图是 2560×1440。\n请找出元素。"
+
+    def test_stage_is_read_off_the_prompt(self):
+        self.assertEqual(prompt_stage(self.COARSE_PROMPT), "coarse")
+        self.assertEqual(
+            prompt_stage("这是一张 Windows 桌面截图。\n（上一次没能给出可用的位置：空）"),
+            "whole2nd",
+        )
+        self.assertEqual(
+            prompt_stage("这是一张从 Windows 桌面截图里裁出的小区域（未缩放）。"),
+            "refine",
+        )
+        self.assertEqual(prompt_stage("这是一张标定图，这张图是 2560×1440。"), "calib")
+        self.assertEqual(prompt_stage("认不出来的提示词"), "unknown")
+
+    def test_cache_entry_carries_the_stage_label(self):
+        with TemporaryDirectory() as directory:
+            cache = Path(directory) / "memo.jsonl"
+            caller = MemoizingModelCaller(_FakeCaller(), cache_path=cache)
+            caller.complete(self.COARSE_PROMPT)
+            records = [
+                json.loads(line)
+                for line in cache.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["stage"], "coarse")
+            self.assertEqual(caller.stage_report()["sent"], {"coarse": 1})
+
+    def test_legacy_cache_without_a_label_reads_as_unknown(self):
+        with TemporaryDirectory() as directory:
+            cache = Path(directory) / "memo.jsonl"
+            first = MemoizingModelCaller(_FakeCaller(), cache_path=cache)
+            first.complete(self.COARSE_PROMPT)
+            record = json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+            record.pop("stage")
+            cache.write_text(
+                json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            second = MemoizingModelCaller(_FakeCaller(), cache_path=cache)
+            second.complete(self.COARSE_PROMPT)
+            self.assertEqual(second.calls, 0)
+            self.assertEqual(second.replays, 1)
+            self.assertEqual(second.stage_report()["replayed"], {"unknown": 1})
+
+
+class ImageTokenAssertionTests(unittest.TestCase):
+    """标定链的**相等断言**（施工清单第 ⑥ 条）—— 闸门，与「±28 px 盒子」分开。"""
+
+    def test_equal_tokens_mean_the_server_kept_the_size(self):
+        assertion = assert_server_kept_image_tokens(3406, (2048, 1280))
+        self.assertEqual(assertion.expected_image_tokens, 3404)
+        self.assertEqual(assertion.difference_tokens, 2)
+        self.assertTrue(assertion.server_kept_size)
+
+    def test_unequal_tokens_mean_the_coordinate_system_is_untrustworthy(self):
+        assertion = assert_server_kept_image_tokens(1334, (2048, 1280))
+        self.assertFalse(assertion.server_kept_size)
+
+    def test_unmeasured_stays_unknown(self):
+        assertion = assert_server_kept_image_tokens(None, (2048, 1280))
+        self.assertIsNone(assertion.server_kept_size)
+        self.assertIsNone(assertion.difference_tokens)
+
+    def test_the_tolerance_is_a_named_constant(self):
+        self.assertEqual(IMAGE_TOKEN_ASSERTION_TOLERANCE_TOKENS, 2)
 
 
 if __name__ == "__main__":
