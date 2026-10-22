@@ -45,7 +45,11 @@ from minicode.ground.gate import default_gate_params
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.effort import Effort
-from minicode.model.image import model_input_size_for
+from minicode.model.image import (
+    MODEL_INPUT_MAX_HEIGHT_PX,
+    MODEL_INPUT_MAX_WIDTH_PX,
+    model_input_size_for,
+)
 from minicode.model.request_log import JsonlRequestLog
 
 from .formats import SCREENSPOT_PRO, self_check_hit_rate
@@ -175,6 +179,17 @@ def main(argv=None) -> int:
         help="裁剪窗口高（物理像素）；0 = 自适应（同上）",
     )
     parser.add_argument(
+        "--model-input",
+        default="",
+        help=(
+            "**档位**（WxH）—— 声明「模型实际看到的那张整屏图」的尺寸上界。"
+            "不填 = **生产档 2016×1260**（`model/image.py` 的常量）；"
+            "填 `1536x960` = 跑**对照臂**（施工清单 T2）。"
+            "⚠️ **档位是 CLI 参数而不是源码常量** —— 两臂要能并排跑、"
+            "配对判定（McNemar）才成立"
+        ),
+    )
+    parser.add_argument(
         "--memo-cache",
         default="",
         help=(
@@ -236,6 +251,16 @@ def main(argv=None) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     config = load_config()
+    #: **档位**（施工清单 T2）：不填 = 生产档（``model/image.py`` 的常量）。
+    #: 填了 → 那两个数就是上界（``model_input_size_for`` 仍是**声明尺寸的唯一来源**）。
+    if args.model_input:
+        tier_width, tier_height = _parse_size(args.model_input)
+    else:
+        tier_width, tier_height = MODEL_INPUT_MAX_WIDTH_PX, MODEL_INPUT_MAX_HEIGHT_PX
+    print(
+        f"=== 档位：{tier_width}×{tier_height}（整屏模型输入上界）"
+        f"{'｜生产档' if not args.model_input else '｜对照臂'} ==="
+    )
     #: 请求日志：落盘 + **记住最后一条**（反查服务端实际尺寸要用）。
     sink = RecordingSink(_LockedSink(JsonlRequestLog(out_dir / "model-requests.jsonl")))
     #: 模型调用端口：**记住最后一次用的提示词**（反查时要逐字相同）。
@@ -252,7 +277,9 @@ def main(argv=None) -> int:
     model_input_by_size: dict[tuple[int, int], tuple[int, int]] = {}
     calibrations: list[dict[str, object]] = []
     for width, height in sizes:
-        record = _calibrate(memoized, sink, config.model, width, height, args)
+        record = _calibrate(
+            memoized, sink, config.model, width, height, args, (tier_width, tier_height)
+        )
         scale_by_size[(width, height)] = record["scale"]
         #: **声明的模型输入尺寸** = 坐标换算的分母（两臂共用同一个）。
         model_input_by_size[(width, height)] = tuple(record["declared_model_input_size"])
@@ -343,6 +370,11 @@ def main(argv=None) -> int:
             "endpoint": config.base_url,
             "effort": args.effort,
             "max_tokens": args.max_tokens,
+            #: **档位**（施工清单 T2）—— 整屏模型输入尺寸的上界。
+            #: ⚠️ **每个图像尺寸的实际声明尺寸仍按那张图算**
+            #: （``model_input_size_for`` 是声明尺寸的唯一来源）。
+            "model_input_tier": [tier_width, tier_height],
+            "model_input_tier_is_production": not bool(args.model_input),
             #: **裁剪几何的口径**（自适应 → 报口径，不报一个固定数；
             #: 显式指定固定尺寸时报那一对像素）。
             "crop_geometry": crop_label,
@@ -502,7 +534,7 @@ def _confirmation_split_report(
 
 
 def _calibrate(
-    client, sink, model_id: str, width: int, height: int, args
+    client, sink, model_id: str, width: int, height: int, args, tier: tuple[int, int]
 ) -> dict[str, object]:
     """给一个图像尺寸跑一次标定（真调模型）。
 
@@ -524,7 +556,10 @@ def _calibrate(
     from minicode.calib.tolerance import CALIBRATION_MIN_HIT_RATE
 
     #: **声明的模型输入尺寸**（按**这张图**的尺寸算）。
-    declared = model_input_size_for(width, height)
+    #: ⚠️ **档位是 CLI 参数**（施工清单 T2）—— 不填就用生产档的上界。
+    declared = model_input_size_for(
+        width, height, max_width=tier[0], max_height=tier[1]
+    )
     try:
         outcome = CalibrationProbe(
             client,
