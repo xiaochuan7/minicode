@@ -970,6 +970,62 @@ def model_input_target_sizes(
     return summary
 
 
+def refine_model_input_target_sizes(
+    samples: Sequence[SsproSample],
+    outcomes: Sequence[ArmOutcome],
+) -> dict[str, Any]:
+    """**目标在「送进精定位的那张图」里的像素尺寸**分布（按 ui_type 分层）。
+
+    ⚠️ **与 :func:`model_input_target_sizes` 是两个口径，不许混用**：
+
+    * ``model_input_target_sizes`` —— 目标在**整屏**模型输入图里的尺寸
+      （受**档位**限制：2016 档的 icon 中位 15.75 px，**天花板就在那儿**）；
+    * **本函数** —— 目标在**精定位那张图**（crop 1:1 裁出后**重采样放大**）里的尺寸
+      = 目标的物理边长 × **实际用的放大倍数**。
+      这是施工清单 **T3** 的那个数（「icon 表观中位 ≥ 30 px」）**真正对应的口径**。
+
+    口径：GT 框的**较大边**（物理像素）× 该样本**实际用到的放大倍数**。
+    """
+    by_id = {sample.sample_id: sample for sample in samples}
+    by_type: dict[str, list[float]] = {}
+    for outcome in outcomes:
+        factor = outcome.refine_upscale_factor
+        if not factor:
+            continue
+        sample = by_id.get(outcome.sample_id)
+        if sample is None:
+            continue
+        side = max(
+            sample.bbox[2] - sample.bbox[0], sample.bbox[3] - sample.bbox[1]
+        ) * factor
+        by_type.setdefault(outcome.ui_type or "unknown", []).append(side)
+    return _size_summary(by_type)
+
+
+def _size_summary(by_type: dict[str, list[float]]) -> dict[str, Any]:
+    """一组尺寸分布的汇总形状（**两个口径共用**）。"""
+    summary: dict[str, Any] = {}
+    for ui_type, sizes in sorted(by_type.items()):
+        ordered = sorted(sizes)
+        middle = len(ordered) // 2
+        summary[ui_type] = {
+            "samples": len(ordered),
+            "median_px": round(ordered[middle], 2),
+            "min_px": round(ordered[0], 2),
+            "p10_px": round(ordered[max(0, int(len(ordered) * 0.1) - 1)], 2),
+            "max_px": round(ordered[-1], 2),
+            "below_16px": sum(1 for value in ordered if value < 16.0),
+            "below_16px_rate": round(
+                sum(1 for value in ordered if value < 16.0) / len(ordered), 4
+            ),
+            "below_30px": sum(1 for value in ordered if value < 30.0),
+            "below_30px_rate": round(
+                sum(1 for value in ordered if value < 30.0) / len(ordered), 4
+            ),
+        }
+    return summary
+
+
 def summarize(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
     """一批结果的汇总（整体 / 文本 / 图标 / 平台 / 分组 + 门控埋点）。"""
     gate_samples = [

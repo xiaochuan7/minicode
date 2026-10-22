@@ -65,6 +65,7 @@ from .sspro import (
     model_input_target_sizes,
     near_miss_calibration,
     paired_comparison,
+    refine_model_input_target_sizes,
     render_table,
     run_arms,
     stratified_subset,
@@ -511,6 +512,11 @@ def main(argv=None) -> int:
         #: **目标在「模型输入图」里的像素尺寸**（验收线 F 组看这个数）。
         "model_input_target_sizes": model_input_target_sizes(
             chosen, model_input_by_size
+        ),
+        #: **目标在「送进精定位的那张图」里的尺寸**（T3 的口径：crop 放大之后）。
+        #: ⚠️ **与上面那个不是同一个口径**（那个是**整屏**的，受档位天花板限制）。
+        "refine_model_input_target_sizes": refine_model_input_target_sizes(
+            chosen, always
         ),
         "comparison": comparison,
         "model_calls": {
