@@ -823,6 +823,87 @@ def _telemetry_summary(outcomes: Sequence[ArmOutcome]) -> dict[str, Any]:
 SUBSET_TOLERANCE_PP = 1.0
 
 
+def _paired(
+    left: Sequence[ArmOutcome],
+    right: Sequence[ArmOutcome],
+    *,
+    label_left: str,
+    label_right: str,
+) -> dict[str, Any]:
+    """**配对比较**（施工清单第 ⑨ 条）：同批样本、复用同一次上游回答。
+
+    * ``b`` / ``c`` —— 2×2 表里两个不一致格的计数；
+    * ``p`` —— **mid-p McNemar**（双侧，α=0.05）；
+    * ``delta`` 与 95% CI —— **配对 bootstrap**（2000 次，按 task 聚类）；
+    * ``d`` —— 不一致对占比（噪声地板）；
+    * 按「粗定位对 / 错」**分层**（预注册的次要分析）。
+    """
+    from .stats import mcnemar_midp, paired_bootstrap_delta, wilson_ci
+
+    right_by_id = {outcome.sample_id: outcome for outcome in right}
+    pairs: list[tuple[bool, bool]] = []
+    coarse_hit_pairs: list[tuple[bool, bool]] = []
+    coarse_miss_pairs: list[tuple[bool, bool]] = []
+    for outcome in left:
+        peer = right_by_id.get(outcome.sample_id)
+        if peer is None:
+            continue
+        pair = (outcome.hit, peer.hit)
+        pairs.append(pair)
+        if peer.coarse_point is not None:
+            coarse_hit_pairs.append(pair)
+        else:
+            coarse_miss_pairs.append(pair)
+    b = sum(1 for first, second in pairs if first and not second)
+    c = sum(1 for first, second in pairs if not first and second)
+    both = sum(1 for first, second in pairs if first and second)
+    neither = sum(1 for first, second in pairs if not first and not second)
+    bootstrap = paired_bootstrap_delta(pairs)
+    n = len(pairs)
+    return {
+        "left": label_left,
+        "right": label_right,
+        "samples": n,
+        "table": {
+            "both_hit": both,
+            "left_only": b,
+            "right_only": c,
+            "both_miss": neither,
+        },
+        #: **不一致对占比**（π_d 的估计 —— 噪声地板）。
+        "discordance": ((b + c) / n) if n else 0.0,
+        #: mid-p McNemar（双侧）。
+        "mcnemar_midp_p": mcnemar_midp(b, c),
+        #: Δ = 右臂命中率 − 左臂命中率，配对 bootstrap 的 95% CI。
+        "delta_pp": bootstrap.delta * 100,
+        "delta_ci95_pp": [bootstrap.ci_low * 100, bootstrap.ci_high * 100],
+        "ci_excludes_zero": (
+            bootstrap.ci_low > 0 or bootstrap.ci_high < 0
+        ),
+        "wilson_left": list(wilson_ci(sum(1 for pair in pairs if pair[0]), n)),
+        "wilson_right": list(wilson_ci(sum(1 for pair in pairs if pair[1]), n)),
+        #: **按「粗定位对 / 错」分层**（预注册的次要分析）。
+        "strata": {
+            "coarse_available": {
+                "samples": len(coarse_hit_pairs),
+                "delta_pp": (
+                    paired_bootstrap_delta(coarse_hit_pairs).delta * 100
+                    if coarse_hit_pairs
+                    else None
+                ),
+            },
+            "coarse_unavailable": {
+                "samples": len(coarse_miss_pairs),
+                "delta_pp": (
+                    paired_bootstrap_delta(coarse_miss_pairs).delta * 100
+                    if coarse_miss_pairs
+                    else None
+                ),
+            },
+        },
+    }
+
+
 def compare_arms(
     on_demand: Sequence[ArmOutcome],
     always: Sequence[ArmOutcome],
@@ -909,6 +990,30 @@ def compare_arms(
         **(
             {"coarse_only": summarize(coarse_only)} if coarse_only else {}
         ),
+        #: **配对比较**（施工清单第 ⑨ 条）：主检验 = 配对 mid-p McNemar +
+        #: 配对 bootstrap 的 Δ 95% CI。**CI 跨 0 就不能写「改进成立」。**
+        "paired": {
+            "on_demand_vs_always": _paired(
+                on_demand, always, label_left="on_demand", label_right="always"
+            ),
+            **(
+                {
+                    "always_vs_coarse_only": _paired(
+                        always,
+                        coarse_only,
+                        label_left="always",
+                        label_right="coarse_only",
+                    )
+                }
+                if coarse_only
+                else {}
+            ),
+            "note": (
+                "配对 = 同批样本、复用同一次上游回答；"
+                "Δ = 右臂 − 左臂；CI 是配对 bootstrap（2000 次，按 task 聚类）。"
+                "⚠️ **CI 跨 0 就不许写「改进成立」**"
+            ),
+        },
     }
 
 

@@ -130,11 +130,12 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=4096,
+        default=8192,
         help=(
-            "输出预算（默认 4096）—— 粗定位那一级**曾经**用 2000，"
+            "输出预算（默认 8192）—— 粗定位那一级**曾经**用 2000，"
             "被思考链吃光（「HTTP 200 但没有文本输出」丢样本）；"
-            "现在通道的默认就是 4096（`ground.channel.DEFAULT_MAX_TOKENS`）"
+            "4096 档残余无文本率 0.56%（19/3404），"
+            "8192 档按幂律外推 0.03~0.07%（施工清单第 ② 条）"
         ),
     )
     parser.add_argument(
@@ -546,6 +547,21 @@ def _print_summary(report: dict, comparison: dict) -> None:
         + f"（N={per_target['samples']}）"
     )
     print(f"防假象自检（GT 中心当预测点）：{report['self_check_hit_rate'] * 100:.1f}%")
+    paired = comparison.get("paired") or {}
+    if paired:
+        print("=== 配对比较（mid-p McNemar + 配对 bootstrap 95% CI）===")
+        for key in ("on_demand_vs_always", "always_vs_coarse_only"):
+            item = paired.get(key)
+            if not item:
+                continue
+            print(
+                f"  {item['left']} → {item['right']}（n={item['samples']}）"
+                f"：Δ {item['delta_pp']:+.2f} pp"
+                f"｜95% CI [{item['delta_ci95_pp'][0]:+.2f}, {item['delta_ci95_pp'][1]:+.2f}] pp"
+                f"｜mid-p p={item['mcnemar_midp_p']:.4f}"
+                f"｜不一致对占比 {item['discordance'] * 100:.1f}%"
+                f"｜CI 不跨 0：{'是' if item['ci_excludes_zero'] else '否'}"
+            )
     print("=== 那张 7 行表 ===")
     print(report["table_markdown"])
 

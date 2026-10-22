@@ -19,6 +19,7 @@ from pathlib import Path
 
 from minicode.lock import acquire, release
 
+from .checks import landing_rule_summary
 from .report import build_report, render_markdown
 from .runner import TaskRunner
 from .wave1 import WAVE1_TASKS
@@ -113,8 +114,8 @@ def _parse_args(argv):
         default="",
         help=(
             "**人工代跑**的结果（JSON 文件）："
-            '{"W-2": {"verdict": "pass", "note": "人工把缩放改成 125%", '
-            '"context": {"scale_value": "125%"}}} —— '
+            '{"W-2": {"verdict": "pass", "note": "人工把缩放改成 125%%", '
+            '"context": {"scale_value": "125%%"}}} —— '
             "人代跑完的结果带进来**单独统计**，仍不混进自动通过率"
         ),
     )
@@ -255,6 +256,10 @@ def main(argv=None) -> int:
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
         report = build_report(outcomes, title=title)
+        #: **落点三档的 wave 级汇总**（施工清单第 ⑧ 条）：
+        #: 三档分布 + 视觉步骤可判率 + ``landing_error_px`` 的口径版本。
+        #: ⚠️ **换了算法，历史 ``landing_error_px`` 不可比** —— 报告里带着版本号。
+        report["landing"] = landing_rule_summary(outcomes)
         (out_dir / "e2e-report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
         )

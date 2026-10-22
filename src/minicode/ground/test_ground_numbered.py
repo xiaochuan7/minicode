@@ -30,7 +30,11 @@ from minicode.ground.candidates import (
     iou,
     merge_candidate_sources,
 )
-from minicode.ground.channel import TwoStageGrounder, default_crop_size
+from minicode.ground.channel import (
+    DEFAULT_NUMBERED_MAX_TOKENS,
+    TwoStageGrounder,
+    default_crop_size,
+)
 from minicode.ground.gate import GateMode
 from minicode.ground.prompt import (
     CandidateLine,
@@ -575,7 +579,11 @@ class NumberedBranchTests(unittest.TestCase):
         self.assertEqual(result.model_calls, 3)
 
     def test_the_numbered_call_gets_its_own_budget(self):
-        """**编号分支单独给一份预算**（默认 4000）—— 思考链与输出共用预算。"""
+        """**编号分支单独给一份预算**（默认 8192）—— 思考链与输出共用预算。
+
+        ⚠️ **2026-10-22（施工清单第 ② 条）**：4000 → **8192**
+        （编号分支 2000 档的无文本率 10.87%~21.43% 是所有分支里最高的）。
+        """
 
         class _Source:
             def candidates(self, frame, description):
@@ -584,7 +592,8 @@ class NumberedBranchTests(unittest.TestCase):
         model = _StubModel(_reply(json.dumps({"chosen": 1})))
         grounder = self._grounder(model, _Source())
         grounder.locate(_request("甲", _frame()))
-        self.assertEqual(model.calls[0]["max_tokens"], 4000)
+        self.assertEqual(model.calls[0]["max_tokens"], DEFAULT_NUMBERED_MAX_TOKENS)
+        self.assertEqual(DEFAULT_NUMBERED_MAX_TOKENS, 8192)
 
     def test_without_candidates_the_point_path_is_used_and_recorded(self):
         """**无候选** → 走点式分支，并**显式记录「无候选」**（不猜、不假装）。"""
