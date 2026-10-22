@@ -1,12 +1,13 @@
-"""**留出集重评**的外部行为单测（工单 M23）。
+"""**分组 K 折留出集重评**的外部行为单测（工单 M23；施工清单 ⑨ 改切分设计）。
 
 钉死六件事：
 
-* **切分**是规则驱动的（层内按样本 ID 字典序交替）、可复核、每次都一样；
+* **切分**是**按 app/platform 分组**的 K 折（组不拆开、可复核、每次都一样），
+  **不按 index / 样本序分半**；
 * **一致性距离判不了时给区间，不给点估计**（宁可低估，不许高估）；
 * **偏离容差**同样按「记录给不出的部分给区间」处理；
-* **调参只看 A**，选中的参数带取值来源串（未校准的写「工程阈值·未验证」）；
-* **结论判据**：B 上的差值 ≤ 噪声量级 → 判「不成立」；
+* **调参只看训练折**，选中的参数带取值来源串（未校准的写「工程阈值·未验证」）；
+* **结论判据**：留出折上的差值 ≤ 噪声量级 → 判「不成立」；
 * **离线重建与当时的跑批是同一回事**（用记录参数重放，两臂的命中逐条复现）。
 
 本模块**不打真桌面、不花钱、不调模型**：全部用构造出来的记录与样本。
@@ -21,17 +22,20 @@ from tempfile import TemporaryDirectory
 
 from minicode.eval.holdout import (
     CONSISTENT,
+    DEVIATION_CANDIDATES,
     INCONSISTENT,
+    KFOLD_DEFAULT,
     PATH_REFINE,
     PATH_WHOLE_SCREEN,
-    SPLIT_EVAL,
-    SPLIT_TUNING,
     UNDECIDABLE,
+    FoldResult,
     HoldoutSample,
+    KFoldResult,
     RefinePath,
     build_report,
     evaluate_half,
     gate_opens_at,
+    grouped_folds,
     load_recorded_run,
     reconstruct,
     render_report,
@@ -39,7 +43,6 @@ from minicode.eval.holdout import (
     run_holdout,
     score_always,
     score_on_demand,
-    split_samples,
     tune_gate_params,
 )
 
@@ -51,7 +54,8 @@ RECORDED_DEVIATION = 128.0
 def _sample(
     sample_id: str,
     *,
-    split: str = SPLIT_TUNING,
+    fold: int = 0,
+    group_key: str = "app/windows",
     stratum: str = "windows/text",
     consistency: str = CONSISTENT,
     coarse_invalid: bool = False,
@@ -78,7 +82,8 @@ def _sample(
     return HoldoutSample(
         sample_id=sample_id,
         stratum=stratum,
-        split=split,
+        fold=fold,
+        group_key=group_key,
         coarse_point=None if coarse_invalid else (10.0, 10.0),
         coarse_hit=None if coarse_invalid else coarse_hit,
         always_coarse_hit=None if coarse_invalid else coarse_hit,
@@ -98,39 +103,54 @@ def _sample(
 
 
 class SplitTests(unittest.TestCase):
-    """切分：规则写在代码里，可复核，每次都一样。"""
+    """切分：按 app/platform 分组 K 折（组不拆开、可复核、每次都一样）。"""
 
-    def test_alternates_inside_each_stratum_by_sample_id(self):
-        split = split_samples({"windows/text": ["d", "b", "a", "c"]})
-        self.assertEqual(split.of("a"), SPLIT_TUNING)
-        self.assertEqual(split.of("b"), SPLIT_EVAL)
-        self.assertEqual(split.of("c"), SPLIT_TUNING)
-        self.assertEqual(split.of("d"), SPLIT_EVAL)
+    def test_a_group_never_gets_split_across_folds(self):
+        split = grouped_folds({"app/windows": ["a", "b", "c"]}, folds=3)
+        folds = {split.of(sample_id) for sample_id in ("a", "b", "c")}
+        self.assertEqual(len(folds), 1)
 
-    def test_both_halves_keep_the_same_stratum_composition(self):
-        split = split_samples(
-            {
-                "windows/text": ["w1", "w2", "w3", "w4"],
-                "macos/icon": ["x1", "x2", "x3", "x4"],
-            }
+    def test_every_sample_lands_in_exactly_one_fold(self):
+        split = grouped_folds(
+            {"app/windows": ["a", "b"], "app/macos": ["c"], "app/linux": ["d", "e"]},
+            folds=2,
         )
-        self.assertEqual(len(split.ids(SPLIT_TUNING)), 4)
-        self.assertEqual(len(split.ids(SPLIT_EVAL)), 4)
-        windows = [sid for sid in split.assignment if sid.startswith("w")]
-        macos = [sid for sid in split.assignment if sid.startswith("x")]
-        self.assertEqual(len(windows), 4)
-        self.assertEqual(len(macos), 4)
+        self.assertEqual(sorted(split.assignment), ["a", "b", "c", "d", "e"])
+        self.assertEqual(len(split.ids(0)) + len(split.ids(1)), 5)
 
-    def test_same_ids_always_give_the_same_assignment(self):
-        strata = {"windows/text": ["a", "b", "c"], "linux/icon": ["p", "q"]}
-        first = split_samples(strata)
-        second = split_samples(dict(reversed(list(strata.items()))))
+    def test_folds_are_balanced_by_sample_count(self):
+        """组不拆开的前提下，各折条数尽量接近（贪心：放进当前最小的那一折）。"""
+        split = grouped_folds({"a": ["1", "2", "3", "4", "5", "6"], "b": ["7", "8", "9", "10"], "c": ["11", "12", "13"]}, folds=2)
+        self.assertEqual(sorted(len(split.ids(fold)) for fold in range(2)), [6, 7])
+
+    def test_same_groups_always_give_the_same_assignment(self):
+        groups = {"app/windows": ["a", "b", "c"], "app/macos": ["d"]}
+        first = grouped_folds(groups, folds=2)
+        second = grouped_folds(dict(reversed(list(groups.items()))), folds=2)
         self.assertEqual(dict(first.assignment), dict(second.assignment))
 
+    def test_default_fold_count_is_five(self):
+        self.assertEqual(KFOLD_DEFAULT, 5)
+
     def test_rule_is_written_down(self):
-        split = split_samples({"windows/text": ["a"]})
-        self.assertIn("样本 ID", split.rule)
-        self.assertIn("交替", split.rule)
+        split = grouped_folds({"app/windows": ["a"]})
+        self.assertIn("分组", split.rule)
+        self.assertIn("index", split.rule)
+
+    def test_the_split_is_not_by_index(self):
+        """样本 ID 的字典序**不决定**归属（组内顺序被打乱也不变）。"""
+        split = grouped_folds({"app/windows": ["z", "a", "m"]}, folds=1)
+        self.assertEqual(len(split.ids(0)), 3)
+
+
+class DeviationCandidateTests(unittest.TestCase):
+    """⑨：偏离容差的候选网格扩到 {24,…,128,∞}。"""
+
+    def test_candidates_are_the_expanded_grid(self):
+        self.assertEqual(
+            tuple(DEVIATION_CANDIDATES),
+            (24.0, 32.0, 40.0, 48.0, 56.0, 64.0, 80.0, 96.0, 128.0, 1e9),
+        )
 
 
 class GateDecisionTests(unittest.TestCase):
@@ -226,10 +246,10 @@ class ScoreTests(unittest.TestCase):
 
 
 class TuningTests(unittest.TestCase):
-    """调参：只在 A 上，结果带取值来源串。"""
+    """调参：只在训练折上，结果带取值来源串。"""
 
     def test_picks_the_largest_tolerance_among_the_tied_best(self):
-        """A 上各个容差打平 → 取**最大**的那个（门控开得最少 = 省调用）。"""
+        """训练折上各个容差打平 → 取**最大**的那个（门控开得最少 = 省调用）。"""
         samples = [
             _sample("a1", consistency=CONSISTENT, coarse_hit=True, refine_hit=True),
             _sample("a2", consistency=INCONSISTENT, coarse_hit=False, refine_hit=True),
@@ -252,8 +272,8 @@ class TuningTests(unittest.TestCase):
         tuning = tune_gate_params(samples, RECORDED_TOLERANCE, RECORDED_DEVIATION)
         self.assertIn("工程阈值·未验证", tuning.params.consistency_source)
         self.assertIn("工程阈值·未验证", tuning.params.deviation_source)
-        self.assertIn("未在评估半 B 上调", tuning.params.consistency_source)
-        self.assertIn("未在评估半 B 上调", tuning.params.deviation_source)
+        self.assertIn("未在留出折上调", tuning.params.consistency_source)
+        self.assertIn("未在留出折上调", tuning.params.deviation_source)
 
     def test_other_params_keep_their_own_sources(self):
         samples = [_sample("a1", consistency=CONSISTENT)]
@@ -261,54 +281,33 @@ class TuningTests(unittest.TestCase):
         self.assertIn("未验证", tuning.params.area_ratio_source)
         self.assertIn("工程阈值·未验证", tuning.params.confidence_source)
 
-    def test_only_the_tuning_half_is_used(self):
-        """调参只看 A —— 扫参表里的样本数就是 A 半的条数（不是全批）。"""
+    def test_only_the_training_folds_are_used(self):
+        """调参只看训练折 —— 扫参表里的样本数就是训练折的条数。"""
         on_demand = [
             _outcome(
-                "s1",
+                f"s{index}",
                 hit=True,
                 coarse_point=[10.0, 10.0],
                 gate_hit=True,
                 gate_reasons=["coarse_inconsistent"],
-            ),
-            _outcome(
-                "s2",
-                hit=True,
-                coarse_point=[10.0, 10.0],
-                gate_hit=True,
-                gate_reasons=["coarse_inconsistent"],
-            ),
-            _outcome(
-                "s3",
-                hit=True,
-                coarse_point=[10.0, 10.0],
-                gate_hit=True,
-                gate_reasons=["coarse_inconsistent"],
-            ),
-            _outcome(
-                "s4",
-                hit=True,
-                coarse_point=[10.0, 10.0],
-                gate_hit=True,
-                gate_reasons=["coarse_inconsistent"],
-            ),
+            )
+            for index in range(1, 5)
         ]
         always = list(on_demand)
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            _dataset(root, [_annotation(name) for name in ("s1", "s2", "s3", "s4")])
+            _dataset(root, [_annotation(f"s{index}") for index in range(1, 5)])
             report_path = root / "sspro-report.json"
             report_path.write_text(
                 json.dumps(_recorded_payload(on_demand, always)), encoding="utf-8"
             )
             run = load_recorded_run(report_path)
-            evaluation = run_holdout(run, root)
-        self.assertEqual(evaluation.report["split"]["counts"], {"A": 2, "B": 2})
-        for candidate in evaluation.tuning.candidates:
-            self.assertEqual(candidate.on_demand.samples, 2)
-            self.assertEqual(candidate.always.samples, 2)
-        self.assertEqual(evaluation.result_a.samples, 2)
-        self.assertEqual(evaluation.result_b.samples, 2)
+            evaluation = run_holdout(run, root, folds=2)
+        for item in evaluation.kfold.folds:
+            for candidate in item.tuning.candidates:
+                self.assertEqual(candidate.on_demand.samples, len(item.train_ids))
+                self.assertEqual(candidate.always.samples, len(item.train_ids))
+            self.assertEqual(item.result.samples, len(item.test_ids))
 
 
 class HalfEvaluationTests(unittest.TestCase):
@@ -316,7 +315,7 @@ class HalfEvaluationTests(unittest.TestCase):
 
     def _evaluate(self, samples):
         return evaluate_half(
-            SPLIT_EVAL,
+            "折 0",
             samples,
             RECORDED_TOLERANCE,
             RECORDED_TOLERANCE,
@@ -325,10 +324,10 @@ class HalfEvaluationTests(unittest.TestCase):
         )
 
     def test_delta_within_noise_is_not_a_conclusion(self):
-        """B 上差值 0，噪声（两臂粗定位点不同）> 0 → 判「不成立」。"""
+        """留出折上差值 0，噪声（两臂粗定位点不同）> 0 → 判「不成立」。"""
         samples = [
-            _sample("b1", split=SPLIT_EVAL, flip=True, coarse_differs=True),
-            _sample("b2", split=SPLIT_EVAL),
+            _sample("b1", fold=1, flip=True, coarse_differs=True),
+            _sample("b2", fold=1),
         ]
         result = self._evaluate(samples)
         self.assertEqual(result.delta_pp, 0.0)
@@ -337,11 +336,11 @@ class HalfEvaluationTests(unittest.TestCase):
         self.assertEqual(result.conclusion, "不成立")
 
     def test_delta_above_noise_and_not_worse_is_a_conclusion(self):
-        """B 上差值 50 pp > 噪声 0 pp，且门控开 ≥ 门控关 → 判「成立」。"""
+        """留出折上差值 50 pp > 噪声 0 pp，且门控开 ≥ 门控关 → 判「成立」。"""
         samples = [
             _sample(
                 "b1",
-                split=SPLIT_EVAL,
+                fold=1,
                 consistency=INCONSISTENT,
                 coarse_hit=False,
                 refine_hit=True,
@@ -349,7 +348,7 @@ class HalfEvaluationTests(unittest.TestCase):
             ),
             _sample(
                 "b2",
-                split=SPLIT_EVAL,
+                fold=1,
                 consistency=INCONSISTENT,
                 coarse_hit=False,
                 refine_hit=True,
@@ -364,18 +363,18 @@ class HalfEvaluationTests(unittest.TestCase):
 
     def test_gate_off_rate_is_reported(self):
         samples = [
-            _sample("b1", split=SPLIT_EVAL, consistency=CONSISTENT),
-            _sample("b2", split=SPLIT_EVAL, consistency=INCONSISTENT),
+            _sample("b1", fold=1, consistency=CONSISTENT),
+            _sample("b2", fold=1, consistency=INCONSISTENT),
         ]
         result = self._evaluate(samples)
         self.assertAlmostEqual(result.gate_off_rate, 0.5)
 
     def test_noise_reports_both_measures(self):
         samples = [
-            _sample("b1", split=SPLIT_EVAL, flip=True, coarse_differs=True),
-            _sample("b2", split=SPLIT_EVAL, coarse_differs=True),
-            _sample("b3", split=SPLIT_EVAL),
-            _sample("b4", split=SPLIT_EVAL),
+            _sample("b1", fold=1, flip=True, coarse_differs=True),
+            _sample("b2", fold=1, coarse_differs=True),
+            _sample("b3", fold=1),
+            _sample("b4", fold=1),
         ]
         result = self._evaluate(samples)
         self.assertEqual(result.flips, 1)
@@ -387,8 +386,8 @@ class HalfEvaluationTests(unittest.TestCase):
     def test_flips_are_attributed_to_the_gate_or_to_the_noise(self):
         """两臂粗定位点**不同**的翻转 → 噪声；相同的 → 只能来自门控。"""
         samples = [
-            _sample("b1", split=SPLIT_EVAL, flip=True, coarse_differs=True),
-            _sample("b2", split=SPLIT_EVAL, flip=True, coarse_differs=False),
+            _sample("b1", fold=1, flip=True, coarse_differs=True),
+            _sample("b2", fold=1, flip=True, coarse_differs=False),
         ]
         result = self._evaluate(samples)
         self.assertEqual(result.flips_noise_attributable, 1)
@@ -489,10 +488,11 @@ class ReconstructionTests(unittest.TestCase):
                 json.dumps(_recorded_payload(on_demand, always)), encoding="utf-8"
             )
             run = load_recorded_run(report_path)
-            split = split_samples({"windows/text": ["s1"]})
+            split = grouped_folds({"app/windows": ["s1"]}, folds=2)
             samples = reconstruct(run, root, split)
         self.assertEqual(samples[0].coarse_hit, True)
-        self.assertEqual(samples[0].split, SPLIT_TUNING)
+        self.assertEqual(samples[0].fold, split.of("s1"))
+        self.assertEqual(samples[0].group_key, "app/windows")
         self.assertTrue(
             replay_check(samples, RECORDED_TOLERANCE, RECORDED_DEVIATION)["consistent"]
         )
@@ -527,7 +527,7 @@ class ReconstructionTests(unittest.TestCase):
                 json.dumps(_recorded_payload(on_demand, always)), encoding="utf-8"
             )
             run = load_recorded_run(report_path)
-            split = split_samples({"windows/text": ["s1", "s2"]})
+            split = grouped_folds({"app/windows": ["s1", "s2"]}, folds=2)
             samples = reconstruct(run, root, split)
         check = replay_check(samples, RECORDED_TOLERANCE, RECORDED_DEVIATION)
         self.assertTrue(check["consistent"])
@@ -545,54 +545,70 @@ class ReconstructionTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
-    """报告：每条样本的归属、两半的数、噪声、体检都要在里面。"""
+    """报告：切分、各折阈值分布、逐样本归属都要在里面。"""
 
     def _report(self) -> dict:
         samples = [
-            _sample("a1", split=SPLIT_TUNING),
-            _sample("b1", split=SPLIT_EVAL, flip=True, coarse_differs=True),
+            _sample("a1", fold=0, group_key="app/windows"),
+            _sample("b1", fold=1, group_key="app/macos", flip=True, coarse_differs=True),
         ]
         tuning = tune_gate_params(samples[:1], RECORDED_TOLERANCE, RECORDED_DEVIATION)
-        result_a = evaluate_half(
-            SPLIT_TUNING,
-            samples[:1],
-            RECORDED_TOLERANCE,
-            RECORDED_TOLERANCE,
-            RECORDED_DEVIATION,
-            RECORDED_DEVIATION,
-        )
-        result_b = evaluate_half(
-            SPLIT_EVAL,
+        result = evaluate_half(
+            "折 1",
             samples[1:],
             RECORDED_TOLERANCE,
             RECORDED_TOLERANCE,
             RECORDED_DEVIATION,
             RECORDED_DEVIATION,
         )
-        split = split_samples({"windows/text": ["a1", "b1"]})
+        kfold = KFoldResult(
+            folds=(
+                FoldResult(
+                    fold=0,
+                    train_ids=("b1",),
+                    test_ids=("a1",),
+                    tuning=tuning,
+                    result=result,
+                ),
+            )
+        )
+        split = grouped_folds({"app/windows": ["a1"], "app/macos": ["b1"]}, folds=2)
         run = load_recorded_run_from_payload(_recorded_payload([], []))
-        return build_report(run, ".scratch/sspro", split, samples, tuning, result_a, result_b)
+        return build_report(run, ".scratch/sspro", split, samples, kfold)
 
-    def test_every_sample_carries_its_half(self):
+    def test_every_sample_carries_its_fold(self):
         report = self._report()
-        self.assertEqual(report["split"]["assignment"], {"a1": "A", "b1": "B"})
-        self.assertEqual(report["split"]["counts"], {"A": 1, "B": 1})
+        self.assertEqual(report["split"]["assignment"], {"a1": 0, "b1": 1})
+        self.assertEqual(report["split"]["counts"], {"0": 1, "1": 1})
+
+    def test_report_states_the_threshold_distribution(self):
+        """各折选中阈值的分布（中位数 + 极差）—— 不许只报一个数。"""
+        report = self._report()
+        distribution = report["threshold_distribution"]
+        self.assertIn("median", distribution["tolerance_px"])
+        self.assertIn("range", distribution["tolerance_px"])
+        self.assertIn("median", distribution["deviation_px"])
+        self.assertIn("range", distribution["deviation_px"])
+
+    def test_report_carries_the_held_out_hit_rates(self):
+        report = self._report()
+        rows = report["held_out_summary"]["folds"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fold"], 0)
+        self.assertIn("on_demand_accuracy", rows[0])
 
     def test_report_states_which_delta_is_the_conclusion(self):
         report = self._report()
-        self.assertTrue(report["conclusion"]["delta_pp_on_a_is_tuning_process_only"])
-        self.assertIn("结论", report["conclusion"]["rule"])
+        self.assertIn("留出折", report["conclusion"]["rule"])
 
     def test_report_carries_the_comparability_health_checks(self):
         report = self._report()
-        self.assertIn("coarse_shared_a", report["comparability"])
-        self.assertIn("coarse_shared_b", report["comparability"])
         self.assertEqual(report["comparability"]["model_calls"]["replayed"], 4)
 
-    def test_markdown_has_the_split_the_sweep_and_the_samples(self):
+    def test_markdown_has_the_split_the_folds_and_the_samples(self):
         markdown = render_report(self._report())
         self.assertIn("切分", markdown)
-        self.assertIn("调参", markdown)
+        self.assertIn("各折选中阈值的分布", markdown)
         self.assertIn("a1", markdown)
         self.assertIn("b1", markdown)
 

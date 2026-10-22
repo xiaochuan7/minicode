@@ -753,12 +753,152 @@ def _scan_summary(outcomes: Sequence[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _paired_size_comparison(
+    hits_by_size: dict[int, dict[str, bool]],
+    sizes: Sequence[int],
+) -> list[dict[str, Any]]:
+    """**同一条样本上**比较两个 crop 尺寸的**配对**结果。
+
+    两臂**复用同一次粗定位回答**（应答记忆端口：键 = 提示词 + 画面哈希）→
+    两臂的 crop 窗口**以同一个粗定位点为中心**（唯一差别是窗口尺寸），
+    差异里**不混**上游的构成差，只剩精定位那一级的模型重抽。
+
+    每对尺寸给：2×2 计数（都中 / 只中 A / 只中 B / 都没中）、Δ（百分点）、
+    **mid-p McNemar** 的 p 值、配对 bootstrap 的 Δ 与 95% CI。
+    """
+    from minicode.eval.stats import mcnemar_midp, paired_bootstrap_delta
+
+    rows: list[dict[str, Any]] = []
+    ordered = [int(size) for size in sizes]
+    for index, size_a in enumerate(ordered):
+        for size_b in ordered[index + 1 :]:
+            shared = sorted(set(hits_by_size[size_a]) & set(hits_by_size[size_b]))
+            pairs = [
+                (bool(hits_by_size[size_a][sid]), bool(hits_by_size[size_b][sid]))
+                for sid in shared
+            ]
+            both = sum(1 for a_hit, b_hit in pairs if a_hit and b_hit)
+            only_a = sum(1 for a_hit, b_hit in pairs if a_hit and not b_hit)
+            only_b = sum(1 for a_hit, b_hit in pairs if not a_hit and b_hit)
+            neither = len(pairs) - both - only_a - only_b
+            delta_pp = (only_b - only_a) / len(pairs) * 100 if pairs else 0.0
+            bootstrap = paired_bootstrap_delta(pairs)
+            rows.append(
+                {
+                    "size_a": size_a,
+                    "size_b": size_b,
+                    "samples": len(pairs),
+                    "both_hit": both,
+                    "only_a_hit": only_a,
+                    "only_b_hit": only_b,
+                    "neither_hit": neither,
+                    "discordance": (only_a + only_b) / len(pairs) if pairs else 0.0,
+                    "delta_pp": delta_pp,
+                    "mcnemar_midp_p": mcnemar_midp(only_a, only_b),
+                    "bootstrap_delta": bootstrap.delta,
+                    "bootstrap_ci_low": bootstrap.ci_low,
+                    "bootstrap_ci_high": bootstrap.ci_high,
+                }
+            )
+    return rows
+
+
+def _kfold_size_selection(
+    hits_by_size: dict[int, dict[str, bool]],
+    sizes: Sequence[int],
+    samples: Sequence[SsproSample],
+    curve: Sequence[dict[str, Any]],
+    folds: int = 5,
+) -> dict[str, Any]:
+    """**分组 K 折**选尺寸：训练折选、留出折评（施工清单 ⑨ 的切分纪律）。
+
+    分组键 = app（或 group）× platform；**同组不拆开**；
+    **绝不按 index / 样本序分半**（那批切分带 −5.63 ± 0.57 pp 的构成差）。
+    """
+    from minicode.eval.holdout import grouped_folds
+
+    groups: dict[str, list[str]] = {}
+    for sample in samples:
+        groups.setdefault(
+            f"{sample.application}/{sample.platform}", []
+        ).append(sample.sample_id)
+    split = grouped_folds(groups, folds)
+    medians = {
+        int(entry["crop_size"]): entry["all"]["landing_error_px"].get("median")
+        for entry in curve
+    }
+
+    def _accuracy(size: int, sample_ids: Sequence[str]) -> float:
+        hits = hits_by_size[size]
+        members = [sid for sid in sample_ids if sid in hits]
+        if not members:
+            return 0.0
+        return sum(1 for sid in members if hits[sid]) / len(members)
+
+    rows: list[dict[str, Any]] = []
+    for fold in range(split.folds):
+        train_ids = [
+            sid for sid, value in split.assignment.items() if value != fold
+        ]
+        test_ids = split.ids(fold)
+        #: 选尺寸：命中率最高；并列取**中位误差更小**的；再并列取**更小**的尺寸
+        #: （更小 = 更省算力）。
+        chosen = min(
+            sizes,
+            key=lambda size: (
+                -_accuracy(size, train_ids),
+                medians.get(size) if medians.get(size) is not None else float("inf"),
+                size,
+            ),
+        )
+        rows.append(
+            {
+                "fold": fold,
+                "selected_size": chosen,
+                "train_samples": len(train_ids),
+                "test_samples": len(test_ids),
+                "held_out_accuracy": _accuracy(chosen, test_ids),
+                "held_out_hits": sum(
+                    1 for sid in test_ids if hits_by_size[chosen].get(sid)
+                ),
+            }
+        )
+    selected = sorted(row["selected_size"] for row in rows)
+    total = sum(row["test_samples"] for row in rows)
+    weighted = sum(row["held_out_accuracy"] * row["test_samples"] for row in rows)
+    middle = len(selected) // 2
+    median = (
+        selected[middle]
+        if len(selected) % 2
+        else (selected[middle - 1] + selected[middle]) / 2
+    )
+    return {
+        "folds": rows,
+        "folds_count": split.folds,
+        "rule": (
+            "按 app/platform 分组 K 折：**训练折选尺寸、留出折评**；"
+            "选尺寸 = 训练折命中率最高（并列取中位误差更小、再并列取更小的尺寸）"
+        ),
+        "selected_size_distribution": {
+            "values": selected,
+            "median": median,
+            "min": selected[0] if selected else 0,
+            "max": selected[-1] if selected else 0,
+            "range": (selected[-1] - selected[0]) if selected else 0,
+        },
+        "held_out_samples": total,
+        "held_out_accuracy": (weighted / total if total else 0.0),
+    }
+
+
 def _run_crop_scan(args) -> int:
-    """**crop 尺寸扫描**（误差-尺寸曲线；**A 半调 / B 半评**）。
+    """**crop 尺寸扫描**（误差-尺寸曲线；**分组 K 折选尺寸 / 配对比较**）。
 
     * **同一批样本**（分层抽样，种子固定）× :data:`CROP_SCAN_SIZES` 七个尺寸；
-    * **A 半调 / B 半评**：A 半（**交错**取样，两半的分层构成相同）用来**选**
-      尺寸，B 半用来**评**它 —— M23 已证明「同批调参 + 同批评估 = 作废」；
+    * **分组 K 折**：按 app/platform 分组，**训练折选尺寸、留出折评**
+      （施工清单 ⑨：绝不按 index / 样本序分半）；
+    * **同一条样本上比较两个 crop 尺寸**（配对比较）：两臂**复用同一次粗定位
+      回答**、**crop 窗口以同一个粗定位点为中心** → 差值里不混构成差；
     * 走**点式路径**（不接候选源）：粗定位 → crop 精定位 → 落点；
     * **七个尺寸共用同一次粗定位回答**（应答记忆端口）——
       否则七个尺寸的差异里混着模型的随机性。
@@ -819,11 +959,8 @@ def _run_crop_scan(args) -> int:
     #: **应答记忆**：七个尺寸共用同一次粗定位回答（差异里不许混模型的随机性）。
     memoized = MemoizingModelCaller(client)
 
-    # -- A 半调 / B 半评（**交错**取样 → 两半的分层构成相同）----------------
-    half_a = [sample for index, sample in enumerate(chosen) if index % 2 == 0]
-    half_b = [sample for index, sample in enumerate(chosen) if index % 2 == 1]
-
     curve: list[dict[str, Any]] = []
+    hits_by_size: dict[int, dict[str, bool]] = {}
     for size in sizes:
         def _run(sample: SsproSample, size: int = size) -> dict[str, Any]:
             try:
@@ -860,36 +997,29 @@ def _run_crop_scan(args) -> int:
                 records.append(record)
                 if index % 20 == 0 or index == len(chosen):
                     print(f"  [{size}px] {index}/{len(chosen)}", flush=True)
-        entry = {
-            "crop_size": size,
-            "all": _scan_summary(records),
-            "a_half": _scan_summary(
-                [r for r in records if r["sample_id"] in {s.sample_id for s in half_a}]
-            ),
-            "b_half": _scan_summary(
-                [r for r in records if r["sample_id"] in {s.sample_id for s in half_b}]
-            ),
+        hits_by_size[size] = {
+            str(record["sample_id"]): bool(record["hit"]) for record in records
         }
+        entry = {"crop_size": size, "all": _scan_summary(records)}
         curve.append(entry)
         print(
             f"  {size}px：整体命中 {entry['all']['hits']}/{entry['all']['samples']} "
             f"（{entry['all']['click_accuracy']:.1%}）"
-            f"｜A 半 {entry['a_half']['click_accuracy']:.1%}"
-            f"｜B 半 {entry['b_half']['click_accuracy']:.1%}"
             f"｜中位误差 {entry['all']['landing_error_px'].get('median')}",
             flush=True,
         )
         # **每个尺寸落一次盘**（跑挂了也留着已跑的那几格）。
-        _write_scan(out_dir, curve, half_a, half_b, memoized, started, args, sizes)
+        _write_scan(out_dir, curve, hits_by_size, chosen, memoized, started, args, sizes)
 
-    # -- **按 A 半的数据定**最终尺寸；B 半只用来评 --------------------------
+    # -- **按分组 K 折**定最终尺寸；留出折只用来评 ----------------------
     payload = _write_scan(
-        out_dir, curve, half_a, half_b, memoized, started, args, sizes
+        out_dir, curve, hits_by_size, chosen, memoized, started, args, sizes
     )
+    selection = payload["kfold_selection"]
     print(
-        f"按 A 半定下的尺寸：{payload['chosen_by_a_half']} px"
-        f"（A 半 {payload['chosen_a_half']['click_accuracy']:.1%}"
-        f"｜B 半 {payload['chosen_b_half']['click_accuracy']:.1%}）"
+        f"分组 K 折选出的尺寸：{selection['selected_size_distribution']['values']} px"
+        f"（中位数 {selection['selected_size_distribution']['median']:g}）"
+        f"｜留出集命中率 {selection['held_out_accuracy']:.1%}"
     )
     print(f"记录已写入：{out_dir / 'crop-scan.json'}")
     return 0
@@ -898,36 +1028,36 @@ def _run_crop_scan(args) -> int:
 def _write_scan(
     out_dir: Path,
     curve: list[dict[str, Any]],
-    half_a: Sequence[SsproSample],
-    half_b: Sequence[SsproSample],
+    hits_by_size: dict[int, dict[str, bool]],
+    samples: Sequence[SsproSample],
     memoized,
     started: float,
     args,
     sizes: Sequence[int],
 ) -> dict[str, Any]:
     """把扫描结果落盘（**每跑完一个尺寸就落一次**）并返回那份 payload。"""
-
-    def _key(entry: dict[str, Any]) -> tuple:
-        stats = entry["a_half"]
-        error = stats["landing_error_px"].get("median")
-        return (
-            -stats["click_accuracy"],
-            error if error is not None else float("inf"),
-            entry["crop_size"],
-        )
-
-    chosen_entry = min(curve, key=_key)
+    done = [int(entry["crop_size"]) for entry in curve]
+    paired = _paired_size_comparison(hits_by_size, done)
+    selection = _kfold_size_selection(hits_by_size, done, samples, curve)
     payload = {
         "source": "sspro/crop-scan",
         "seed": args.seed,
         "per_stratum": args.per_stratum,
-        "samples": len(half_a) + len(half_b),
+        "samples": len(samples),
         "crop_sizes": list(sizes),
-        "split": "A 半调 / B 半评（交错取样，两半分层构成相同）",
+        "split": (
+            "按 app/platform **分组 K 折**（训练折选尺寸、留出折评）—— "
+            "施工清单 ⑨：绝不按 index / 样本序分半"
+        ),
         "curve": curve,
-        "chosen_by_a_half": chosen_entry["crop_size"],
-        "chosen_a_half": chosen_entry["a_half"],
-        "chosen_b_half": chosen_entry["b_half"],
+        "paired_comparison": paired,
+        "paired_comparison_note": (
+            "**同一条样本上**比较两个 crop 尺寸：两臂复用同一次粗定位回答、"
+            "crop 窗口以同一个粗定位点为中心 → 差值里不混构成差；"
+            "`mcnemar_midp_p` = mid-p McNemar 的 p 值，"
+            "`bootstrap_ci_*` = 配对 bootstrap 的 95% CI"
+        ),
+        "kfold_selection": selection,
         "model_calls_sent": memoized.calls,
         "model_calls_replayed": memoized.replays,
         "elapsed_seconds": round(time.time() - started, 1),
@@ -965,7 +1095,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--crop-scan",
         action="store_true",
-        help="**crop 尺寸扫描**（误差-尺寸曲线；A 半调 / B 半评）",
+        help="**crop 尺寸扫描**（误差-尺寸曲线；分组 K 折选尺寸 + 同一样本上的配对比较）",
     )
     parser.add_argument(
         "--crop-sizes",

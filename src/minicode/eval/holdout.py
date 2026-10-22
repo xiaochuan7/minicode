@@ -1,8 +1,23 @@
-"""**门控结论的留出集重评**（工单 M23）。
+"""**门控结论的留出集重评**（工单 M23；施工清单 ⑨ 改切分设计）。
 
 M8 的门控结论（门控开 59.5% ≥ 门控关 57.1%）是**在同一批样本上调参数**得到的
 （一致性容差 128 px → 16 px）—— **同批调参 + 同批评估 = 过拟合**。
-本模块把判定改成**留出集**判定：**阈值只在样本 A 上调，结论只看样本 B**。
+本模块把判定改成**留出集**判定：**阈值只在训练折上调，结论只看留出折**。
+
+## 切分：**按 app/platform 分组 K 折**（施工清单 ⑨）
+
+⚠️ **「按 index 分半」作废**：那种切分带 **−5.63 ± 0.57 pp 的构成差**
+（7 个 crop 尺寸 7/7 同号），两批不相交、构成不同 → 差值里混着构成差、
+不是效应（出处见 ``docs/research/vision-root-cause.md``「为什么必须换设计」）。
+
+现在的切分纪律：
+
+* **分组键 = app（或 group）× platform**（样本上有什么字段就用什么）；
+  **同组样本不拆开**（同组必落在同一折）；
+* **K 折（默认 5）**：**折外选阈值、折内评** —— 每折用**训练折**选参数，
+  在**留出折**上评（留出折的样本**一条都不进调参**）；
+* **报各折选中阈值的分布**（中位数 + 极差）—— 不许只报一个数；
+* **绝不按 index / 样本序分半**（代码里没有这种切分）。
 
 ## 输入：已记录的跑批产物（**不重调模型**）
 
@@ -65,16 +80,20 @@ from .sspro import ArmOutcome, load_samples
 
 __all__ = [
     "ArmScore",
-    "HalfResult",
+    "FoldResult",
+    "FoldSplit",
     "HoldoutEvaluation",
     "HoldoutSample",
+    "KFOLD_DEFAULT",
+    "KFoldResult",
     "RefinePath",
     "RecordedRun",
-    "Split",
     "Tuning",
     "build_report",
     "evaluate_half",
+    "fold_samples",
     "gate_opens_at",
+    "grouped_folds",
     "load_recorded_run",
     "main",
     "reconstruct",
@@ -83,13 +102,11 @@ __all__ = [
     "run_holdout",
     "score_always",
     "score_on_demand",
-    "split_samples",
     "tune_gate_params",
 ]
 
-#: **两半的名字**：``A`` = 调参半，``B`` = 评估半（结论只看 B）。
-SPLIT_TUNING = "A"
-SPLIT_EVAL = "B"
+#: **分组 K 折**的默认折数（施工清单 ⑨）。
+KFOLD_DEFAULT = 5
 
 #: **一致性容差的候选网格**（物理像素）。
 #:
@@ -114,19 +131,20 @@ TOLERANCE_CANDIDATES: tuple[float, ...] = (
 
 #: **偏离容差的候选网格**（物理像素）。
 #:
-#: 覆盖记录里的那一档（128）与其下；末尾的 ``1e9`` = 「永不因偏离而回落」。
+#: 施工清单 ⑨ 把它扩到 ``{24, 32, 40, 48, 56, 64, 80, 96, 128, ∞}``：
+#: 旧的 ``{0, 8, 16, …, 192, 256, 512}`` 两头都太粗，且**小于 24 px 的偏离**
+#: 在这一批记录里判不出差别（判不了 → 只给区间 → 悲观下界变差）。
+#: 末尾的 ``1e9`` = 「永不因偏离而回落」。
 DEVIATION_CANDIDATES: tuple[float, ...] = (
-    0.0,
-    8.0,
-    16.0,
+    24.0,
     32.0,
+    40.0,
     48.0,
+    56.0,
     64.0,
+    80.0,
     96.0,
     128.0,
-    192.0,
-    256.0,
-    512.0,
     1e9,
 )
 
@@ -148,47 +166,73 @@ PATH_REFINE = "refine"
 
 
 # ---------------------------------------------------------------------------
-# 切分
+# 切分：按 app/platform 分组 K 折
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class Split:
-    """**两半的切分结果**。"""
+class FoldSplit:
+    """**按分组 K 折**的切分结果。"""
 
-    #: 样本 ID → ``"A"``（调参）/ ``"B"``（评估）。
-    assignment: Mapping[str, str]
+    #: 样本 ID → **折号**（0 … K-1）。
+    assignment: Mapping[str, int]
+    #: 分组键 → 折号（**同组必在同一折**）。
+    group_assignment: Mapping[str, int]
+    #: 折数 K。
+    folds: int
+    #: 切分规则（写进代码，不是手挑）。
     rule: str
 
-    def ids(self, half: str) -> list[str]:
-        """某一半的样本 ID（升序）。"""
-        return sorted(sid for sid, value in self.assignment.items() if value == half)
+    def ids(self, fold: int) -> list[str]:
+        """某折的样本 ID（升序）。"""
+        return sorted(sid for sid, value in self.assignment.items() if value == fold)
 
-    def of(self, sample_id: str) -> str:
-        """某条样本属于哪一半。"""
+    def of(self, sample_id: str) -> int:
+        """某条样本属于哪一折。"""
         return self.assignment[sample_id]
 
+    def groups(self, fold: int) -> list[str]:
+        """某折包含哪些分组（升序）。"""
+        return sorted(key for key, value in self.group_assignment.items() if value == fold)
 
-#: **切分规则**（写进代码，不是手挑 —— 工单 M23 AC 1）。
-SPLIT_RULE = (
-    "按 (平台 × 文本/图标) 分层；层内按**样本 ID 字典序**排序；"
-    "排序后**交替**分配 —— 第 1、3、5… 条进 A（调参），第 2、4、6… 条进 B（评估）。"
-    "→ 两半的层构成完全相同、条数差 ≤ 1，且归属**只由样本 ID 决定**"
-    "（同一个 ID 集合永远得到同一个归属）。"
+
+#: **分组 K 折的切分规则**（写进代码，不是手挑 —— 施工清单 ⑨）。
+KFOLD_RULE = (
+    "按 **app（或 group）× platform** 分组；**同组样本不拆开**（同组必在同一折）；"
+    "组按「条数降序、分组键字典序」排序后，依次放进**当前条数最少**的那一折"
+    "（并列取折号小的）→ 各折条数尽量接近；"
+    "**绝不按 index / 样本序分半**（那批切分带 −5.63 ± 0.57 pp 的构成差）。"
 )
 
 
-def split_samples(sample_ids_by_stratum: Mapping[str, Sequence[str]]) -> Split:
-    """把样本切成 A（调参）/ B（评估）两半 —— **规则见** :data:`SPLIT_RULE`。
+def grouped_folds(
+    sample_ids_by_group: Mapping[str, Sequence[str]], folds: int = KFOLD_DEFAULT
+) -> FoldSplit:
+    """把样本切成 **K 折**（分组键 → 折号）—— **规则见** :data:`KFOLD_RULE`。
 
-    ``sample_ids_by_stratum`` 是「层 → 该层的样本 ID 列表」。
+    ``sample_ids_by_group`` 是「分组键 → 该组的样本 ID 列表」；
+    分组键取 **app（或 group）× platform**（调用方给什么就用什么）。
     """
-    assignment: dict[str, str] = {}
-    for stratum in sorted(sample_ids_by_stratum):
-        ordered = sorted(sample_ids_by_stratum[stratum])
-        for index, sample_id in enumerate(ordered):
-            assignment[sample_id] = SPLIT_TUNING if index % 2 == 0 else SPLIT_EVAL
-    return Split(assignment=assignment, rule=SPLIT_RULE)
+    if folds <= 0:
+        raise ValueError("folds 必须为正")
+    groups = sorted(sample_ids_by_group)
+    #: 组按「条数降序、键升序」排序 → 分配顺序**只由数据决定**（可复核）。
+    ordered = sorted(groups, key=lambda key: (-len(sample_ids_by_group[key]), key))
+    sizes = [0] * folds
+    group_assignment: dict[str, int] = {}
+    assignment: dict[str, int] = {}
+    for key in ordered:
+        fold = min(range(folds), key=lambda index: (sizes[index], index))
+        group_assignment[key] = fold
+        sizes[fold] += len(sample_ids_by_group[key])
+        for sample_id in sample_ids_by_group[key]:
+            assignment[sample_id] = fold
+    return FoldSplit(
+        assignment=assignment,
+        group_assignment=group_assignment,
+        folds=folds,
+        rule=KFOLD_RULE,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -306,12 +350,15 @@ class HoldoutSample:
 
     * ``coarse_hit`` —— 门控关掉精定位时**直接用粗定位点**落点的命中；
     * ``od_path`` / ``always_path`` —— 两臂**走精定位路径**时的结果；
-    * ``consistency`` —— 记录那一轮的一致性判定（``d`` 的区间由它给出）。
+    * ``consistency`` —— 记录那一轮的一致性判定（``d`` 的区间由它给出）；
+    * ``group_key`` —— 分组键（app/group × platform）→ **K 折的分组依据**；
+    * ``fold`` —— 折号（0 … K-1）。
     """
 
     sample_id: str
     stratum: str
-    split: str
+    fold: int
+    group_key: str
     coarse_point: tuple[float, float] | None
     coarse_hit: bool | None
     always_coarse_hit: bool | None
@@ -329,11 +376,12 @@ class HoldoutSample:
     model_calls: int
 
     def to_dict(self) -> dict[str, Any]:
-        """落盘形状（每条样本属于哪一半 —— 工单 M23 AC 1）。"""
+        """落盘形状（每条样本属于哪一折 —— 施工清单 ⑨）。"""
         return {
             "sample_id": self.sample_id,
             "stratum": self.stratum,
-            "split": self.split,
+            "fold": self.fold,
+            "group_key": self.group_key,
             "coarse_point": list(self.coarse_point) if self.coarse_point else None,
             "coarse_hit": self.coarse_hit,
             "always_coarse_hit": self.always_coarse_hit,
@@ -419,7 +467,7 @@ def _coarse_hit(
 def reconstruct(
     run: RecordedRun,
     dataset_root: str | Path,
-    split: Split,
+    split: FoldSplit,
 ) -> list[HoldoutSample]:
     """把记录重建成**逐样本的事实表**（不留一手猜测）。
 
@@ -459,7 +507,8 @@ def reconstruct(
             HoldoutSample(
                 sample_id=sample_id,
                 stratum=f"{on_demand.platform}/{on_demand.ui_type}",
-                split=split.of(sample_id),
+                fold=split.of(sample_id),
+                group_key=f"{on_demand.application}/{on_demand.platform}",
                 coarse_point=on_demand.coarse_point,
                 coarse_hit=coarse_hit,
                 always_coarse_hit=always_coarse_hit,
@@ -739,7 +788,7 @@ class ParameterCandidate:
 
 @dataclass(frozen=True)
 class Tuning:
-    """**在 A 上调出来的门控参数**（含取值来源串）。"""
+    """**在训练折上调出来的门控参数**（含取值来源串）。"""
 
     tolerance_px: float
     deviation_px: float
@@ -758,26 +807,27 @@ class Tuning:
         }
 
 
-#: **调参规则**（写进代码，不许手挑 —— 工单 M23 AC 2）。
+#: **调参规则**（写进代码，不许手挑 —— 工单 M23 AC 2；施工清单 ⑨ 换成折外选阈）。
 TUNING_RULE = (
-    "只在 A（调参半）上扫「一致性容差 × 偏离容差」的候选网格；"
-    "每个候选用**悲观下界**算 A 的「门控开」命中率；"
+    "只在**训练折**上扫「一致性容差 × 偏离容差」的候选网格；"
+    "每个候选用**悲观下界**算训练折的「门控开」命中率；"
     "取下界最大者；并列时取**判不了的条数最少**的（结论要可复核），"
     "再并列取**一致性容差最大**的（门控开得最少 = 省模型调用），"
-    "再并列取**偏离容差最大**的。B 上不许再调任何参数。"
+    "再并列取**偏离容差最大**的。**留出折**上不许再调任何参数。"
 )
 
 
 def tune_gate_params(
-    samples_a: Sequence[HoldoutSample],
+    samples_train: Sequence[HoldoutSample],
     recorded_tolerance_px: float,
     recorded_deviation_px: float,
     tolerance_candidates: Sequence[float] = TOLERANCE_CANDIDATES,
     deviation_candidates: Sequence[float] = DEVIATION_CANDIDATES,
 ) -> Tuning:
-    """**在 A 上调**门控参数（返回选中的那一组 + 整个扫参过程）。
+    """**在训练折上调**门控参数（返回选中的那一组 + 整个扫参过程）。
 
-    ⚠️ **B 的样本一条都不进这里** —— 调参只看 A（工单 M23 AC 2）。
+    ⚠️ **留出折的样本一条都不进这里** —— 调参只看训练折
+    （工单 M23 AC 2；施工清单 ⑨ 的「折外选阈值、折内评」）。
 
     「目标占比」与「置信度」两条条件**不在网格里**：在**本模块重放的那批
     历史记录**里它们**不可判定**（那一轮粗定位只给点不给框；模型不报置信度），
@@ -795,13 +845,13 @@ def tune_gate_params(
     for tolerance in tolerance_candidates:
         for deviation in deviation_candidates:
             on_demand = score_on_demand(
-                samples_a,
+                samples_train,
                 tolerance,
                 recorded_tolerance_px,
                 deviation,
                 recorded_deviation_px,
             )
-            always = score_always(samples_a, deviation, recorded_deviation_px)
+            always = score_always(samples_train, deviation, recorded_deviation_px)
             scored.append(
                 ParameterCandidate(
                     tolerance_px=tolerance,
@@ -810,8 +860,10 @@ def tune_gate_params(
                     always=always,
                     delta_pp_lower=(on_demand.accuracy - always.accuracy) * 100,
                     delta_pp_upper=(
-                        (on_demand.hits_upper - always.hits_upper) / len(samples_a) * 100
-                        if samples_a
+                        (on_demand.hits_upper - always.hits_upper)
+                        / len(samples_train)
+                        * 100
+                        if samples_train
                         else 0.0
                     ),
                 )
@@ -833,16 +885,16 @@ def tune_gate_params(
         confidence_source=defaults.confidence_source,
         consistency_tolerance_px=best.tolerance_px,
         consistency_source=(
-            f"工单 M23 留出集重评：在**调参半 A** 上按「A 半命中率（悲观下界）最大、"
+            f"工单 M23 留出集重评：在**训练折**上按「命中率（悲观下界）最大、"
             f"并列取最大容差」的规则选出 = {best.tolerance_px:g} px；"
-            f"**未在评估半 B 上调**；**未经独立校准** → 工程阈值·未验证"
+            f"**未在留出折上调**；**未经独立校准** → 工程阈值·未验证"
         ),
         deviation_tolerance_px=best.deviation_px,
         deviation_source=(
-            f"工单 M23 留出集重评：在**调参半 A** 上按同一规则选出 = "
+            f"工单 M23 留出集重评：在**训练折**上按同一规则选出 = "
             f"{best.deviation_px:g} px（两臂共用同一条回落规则 → 对「门控开 vs 门控关」"
             f"的差值只经由「门控关掉了精定位」的那几条起作用）；"
-            f"**未在评估半 B 上调**；**未经独立校准** → 工程阈值·未验证"
+            f"**未在留出折上调**；**未经独立校准** → 工程阈值·未验证"
         ),
     )
     return Tuning(
@@ -856,9 +908,10 @@ def tune_gate_params(
 
 @dataclass(frozen=True)
 class HalfResult:
-    """**某一半**（A 或 B）的评估结果。"""
+    """**一组样本**（K 折里 = 某个留出折）的评估结果。"""
 
-    half: str
+    #: 这组样本的标签（K 折里 = ``"折 0"`` 这种）。
+    label: str
     samples: int
     on_demand: ArmScore
     always: ArmScore
@@ -891,7 +944,7 @@ class HalfResult:
     def to_dict(self) -> dict[str, Any]:
         """落盘形状。"""
         return {
-            "half": self.half,
+            "label": self.label,
             "samples": self.samples,
             "on_demand": self.on_demand.to_dict(),
             "always_hits": self.always_hits,
@@ -935,7 +988,7 @@ class HalfResult:
 
 
 def evaluate_half(
-    half: str,
+    label: str,
     samples: Sequence[HoldoutSample],
     tolerance_px: float,
     recorded_tolerance_px: float,
@@ -944,7 +997,7 @@ def evaluate_half(
     *,
     tolerance_pp: float = SUBSET_TOLERANCE_PP,
 ) -> HalfResult:
-    """**在给定参数下评估某一半**（结论按工单 M23 AC 3/AC 4 判）。
+    """**在给定参数下评估一组样本**（K 折里 = 某个留出折）。
 
     * 硬判据：门控开 ≥ 门控关；
     * 噪声判据：**差值必须超过噪声量级**（否则判「不成立」）——
@@ -1015,7 +1068,7 @@ def evaluate_half(
         if sample.always_coarse_hit is True and sample.always_path.hit is False
     )
     return HalfResult(
-        half=half,
+        label=label,
         samples=total,
         on_demand=score,
         always=always,
@@ -1081,24 +1134,169 @@ def _area_stats(samples: Sequence[HoldoutSample]) -> dict[str, Any]:
     }
 
 
-def half_samples(samples: Sequence[HoldoutSample], half: str) -> list[HoldoutSample]:
-    """某一半的样本。"""
-    return [sample for sample in samples if sample.split == half]
+def fold_samples(samples: Sequence[HoldoutSample], fold: int) -> list[HoldoutSample]:
+    """**留出折**的样本。"""
+    return [sample for sample in samples if sample.fold == fold]
+
+
+def training_samples(samples: Sequence[HoldoutSample], fold: int) -> list[HoldoutSample]:
+    """**训练折**的样本（除该折以外的全部折）。"""
+    return [sample for sample in samples if sample.fold != fold]
+
+
+def tune_on_training_folds(
+    samples: Sequence[HoldoutSample],
+    fold: int,
+    recorded_tolerance_px: float,
+    recorded_deviation_px: float,
+) -> Tuning:
+    """**在训练折上选阈值**（留出折的样本一条都不进这里）。
+
+    施工清单 ⑨ 的「折外选阈值、折内评」—— 调参只看训练折。
+    """
+    return tune_gate_params(
+        training_samples(samples, fold),
+        recorded_tolerance_px,
+        recorded_deviation_px,
+    )
+
+
+def evaluate_held_out(
+    samples: Sequence[HoldoutSample],
+    fold: int,
+    tuning: Tuning,
+    recorded_tolerance_px: float,
+    recorded_deviation_px: float,
+) -> HalfResult:
+    """**在留出折上评**（参数已在训练折上定好，这里不再调任何参数）。"""
+    return evaluate_half(
+        f"折 {fold}",
+        fold_samples(samples, fold),
+        tuning.tolerance_px,
+        recorded_tolerance_px,
+        tuning.deviation_px,
+        recorded_deviation_px,
+    )
+
+
+@dataclass(frozen=True)
+class FoldResult:
+    """**一折**的结果：阈值在**训练折**上选、在**留出折**上评。"""
+
+    #: 折号（0 … K-1）。
+    fold: int
+    #: 训练折的样本 ID（其余折）。
+    train_ids: tuple[str, ...]
+    #: 留出折的样本 ID。
+    test_ids: tuple[str, ...]
+    #: 在训练折上选中的门控参数。
+    tuning: Tuning
+    #: 留出折上的评估结果。
+    result: HalfResult
+
+    def to_dict(self) -> dict[str, Any]:
+        """落盘形状。"""
+        return {
+            "fold": self.fold,
+            "train_samples": len(self.train_ids),
+            "test_samples": len(self.test_ids),
+            "train_ids": list(self.train_ids),
+            "test_ids": list(self.test_ids),
+            "selected_tolerance_px": self.tuning.tolerance_px,
+            "selected_deviation_px": self.tuning.deviation_px,
+            "tuning": self.tuning.to_dict(),
+            "held_out": self.result.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class KFoldResult:
+    """**K 折**的整体结果（各折阈值分布 + 各折留出集命中率）。"""
+
+    folds: tuple[FoldResult, ...]
+
+    @property
+    def tolerances(self) -> tuple[float, ...]:
+        """各折选中的一致性容差。"""
+        return tuple(item.tuning.tolerance_px for item in self.folds)
+
+    @property
+    def deviations(self) -> tuple[float, ...]:
+        """各折选中的偏离容差。"""
+        return tuple(item.tuning.deviation_px for item in self.folds)
+
+    def threshold_distribution(self) -> dict[str, Any]:
+        """**各折选中阈值的分布**（中位数 + 极差）—— 不许只报一个数。"""
+        return {
+            "tolerance_px": _distribution(self.tolerances),
+            "deviation_px": _distribution(self.deviations),
+            "note": "1e9 = ∞（永不因偏离而回落）",
+        }
+
+    def held_out_summary(self) -> dict[str, Any]:
+        """**各折留出集上的命中率**（门控开 / 门控关 / 差值）。"""
+        rows = [
+            {
+                "fold": item.fold,
+                "samples": item.result.samples,
+                "on_demand_accuracy": item.result.on_demand.accuracy,
+                "always_accuracy": item.result.always_accuracy,
+                "delta_pp": item.result.delta_pp,
+                "noise_magnitude_pp": item.result.noise_magnitude_pp,
+                "conclusion": item.result.conclusion,
+            }
+            for item in self.folds
+        ]
+        total = sum(row["samples"] for row in rows)
+        weighted_on = sum(row["on_demand_accuracy"] * row["samples"] for row in rows)
+        weighted_always = sum(row["always_accuracy"] * row["samples"] for row in rows)
+        return {
+            "folds": rows,
+            "samples": total,
+            "on_demand_accuracy": (weighted_on / total if total else 0.0),
+            "always_accuracy": (weighted_always / total if total else 0.0),
+            "delta_pp": (
+                (weighted_on - weighted_always) / total * 100 if total else 0.0
+            ),
+            "note": "命中率取**悲观下界**；汇总按各折条数加权",
+        }
+
+
+def _distribution(values: Sequence[float]) -> dict[str, Any]:
+    """一组数的分布（**中位数 + 极差**）。"""
+    ordered = sorted(values)
+    if not ordered:
+        return {"values": [], "median": 0.0, "min": 0.0, "max": 0.0, "range": 0.0}
+    count = len(ordered)
+    middle = count // 2
+    median = (
+        ordered[middle] if count % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    )
+    return {
+        "values": list(ordered),
+        "median": median,
+        "min": ordered[0],
+        "max": ordered[-1],
+        "range": ordered[-1] - ordered[0],
+    }
 
 
 def build_report(
     run: RecordedRun,
     dataset_root: str | Path,
-    split: Split,
+    split: FoldSplit,
     samples: Sequence[HoldoutSample],
-    tuning: Tuning,
-    result_a: HalfResult,
-    result_b: HalfResult,
+    kfold: KFoldResult,
 ) -> dict[str, Any]:
-    """**落盘用的报告**（工单 M23 AC 1~AC 6 的每一项都有落点）。"""
+    """**落盘用的报告**（切分纪律、各折阈值分布、各折留出集命中率都有落点）。"""
+    folds = range(split.folds)
     return {
         "ticket": "M23",
-        "purpose": "把 C-16 的门控判定改成**留出集**判定：阈值在 A 上调，结论只看 B",
+        "design": "施工清单 ⑨：按 app/platform **分组 K 折**（折外选阈值、折内评）",
+        "purpose": (
+            "把门控判定改成**分组 K 折留出集**判定："
+            "阈值在训练折上调，结论只看留出折"
+        ),
         "input": {
             "recorded_run": str(run.path),
             "dataset": str(dataset_root),
@@ -1113,47 +1311,44 @@ def build_report(
         },
         "split": {
             "rule": split.rule,
-            "counts": {half: len(split.ids(half)) for half in (SPLIT_TUNING, SPLIT_EVAL)},
+            "folds": split.folds,
+            "counts": {str(fold): len(split.ids(fold)) for fold in folds},
+            "groups": {str(fold): split.groups(fold) for fold in folds},
+            "group_assignment": dict(split.group_assignment),
             "strata": {
-                half: {
+                str(fold): {
                     stratum: sum(
                         1
                         for sample in samples
-                        if sample.split == half and sample.stratum == stratum
+                        if sample.fold == fold and sample.stratum == stratum
                     )
                     for stratum in sorted({sample.stratum for sample in samples})
                 }
-                for half in (SPLIT_TUNING, SPLIT_EVAL)
+                for fold in folds
             },
             "target_area_ratio": {
-                half: _area_stats(half_samples(samples, half))
-                for half in (SPLIT_TUNING, SPLIT_EVAL)
+                str(fold): _area_stats(fold_samples(samples, fold)) for fold in folds
             },
-            "assignment": {sample.sample_id: sample.split for sample in samples},
+            "assignment": {sample.sample_id: sample.fold for sample in samples},
         },
-        "tuning": tuning.to_dict(),
-        "result_a": result_a.to_dict(),
-        "result_b": result_b.to_dict(),
+        "folds": [item.to_dict() for item in kfold.folds],
+        "threshold_distribution": kfold.threshold_distribution(),
+        "held_out_summary": kfold.held_out_summary(),
         "conclusion": {
-            "verdict": result_b.conclusion,
-            "delta_pp_on_b": result_b.delta_pp,
-            "noise_magnitude_pp_on_b": result_b.noise_magnitude_pp,
             "rule": (
-                "B 上的差值是**结论**；A 上的差值只是**调参过程量**。"
-                "判据：B 上门控开 ≥ 门控关，**且** B 上的差值 > 噪声量级；"
-                "否则判「不成立」。"
+                "每折的差值是**该折的结论**（参数在训练折上选、在留出折上评）；"
+                "汇总差值按各折条数加权。判据：留出折上门控开 ≥ 门控关，"
+                "**且**差值 > 噪声量级；否则该折判「不成立」。"
             ),
-            "delta_pp_on_a_is_tuning_process_only": True,
-            "delta_pp_on_a": result_a.delta_pp,
-            "gate_off_rate_on_b": result_b.gate_off_rate,
-            "gate_off_rate_gt_zero_on_b": result_b.gate_off_rate > GATE_OFF_RATE_MIN,
+            "aggregate_delta_pp": kfold.held_out_summary()["delta_pp"],
+            "verdicts": {
+                str(item.fold): item.result.conclusion for item in kfold.folds
+            },
         },
         "comparability": {
-            "coarse_shared_a": result_a.coarse_shared,
-            "coarse_shared_b": result_b.coarse_shared,
             "model_calls": dict(run.model_calls),
             "note": (
-                "`coarse_shared` = 两臂粗定位点完全相同的条数；"
+                "各折的 `held_out.coarse_shared` = 两臂粗定位点完全相同的条数；"
                 "`model_calls.replayed` = 应答记忆端口复用了多少条回答"
                 "（整轮的值；两臂共用同一次模型应答就是靠它）"
             ),
@@ -1168,125 +1363,78 @@ def build_report(
 def render_report(report: Mapping[str, Any]) -> str:
     """把报告渲染成 markdown（人读的版本）。"""
     split = report["split"]
-    tuning = report["tuning"]
-    result_a = report["result_a"]
-    result_b = report["result_b"]
-    conclusion = report["conclusion"]
+    distribution = report["threshold_distribution"]
+    summary = report["held_out_summary"]
     lines: list[str] = []
-    lines.append("# M23 · 门控结论按留出集重评")
+    lines.append("# M23 · 门控结论按分组 K 折重评")
     lines.append("")
     lines.append(
-        f"**结论：B 上的差值 {conclusion['delta_pp_on_b']:+.1f} pp "
-        f"vs 噪声量级 {conclusion['noise_magnitude_pp_on_b']:.1f} pp → "
-        f"{conclusion['verdict']}**"
-    )
-    lines.append("")
-    lines.append(
-        f"- A（调参）{result_a['samples']} 条，B（评估）{result_b['samples']} 条"
+        f"- 切分：**按 app/platform 分组 K 折**（K = {split['folds']}）｜"
+        f"各折条数 {' / '.join(str(split['counts'][str(fold)]) for fold in range(split['folds']))}"
     )
     lines.append(
-        f"- A 上：门控开 {result_a['on_demand']['accuracy_lower_bound'] * 100:.1f}% ｜"
-        f"门控关 {result_a['always_accuracy'] * 100:.1f}% ｜"
-        f"差 **{result_a['delta_pp']:+.1f} pp**（**调参过程量**，不是结论）"
-    )
-    lines.append(
-        f"- B 上：门控开 {result_b['on_demand']['accuracy_lower_bound'] * 100:.1f}% ｜"
-        f"门控关 {result_b['always_accuracy'] * 100:.1f}% ｜"
-        f"差 **{result_b['delta_pp']:+.1f} pp**（**这是结论**）"
-    )
-    lines.append(
-        f"- B 上噪声量级：翻转 {result_b['noise']['flip_count']} 条"
-        f"（{result_b['noise']['flip_pp']:.1f} pp；其中门控可归因 "
-        f"{result_b['noise']['flips_gate_attributable']} 条、"
-        f"噪声可归因 {result_b['noise']['flips_noise_attributable']} 条）｜"
-        f"两臂粗定位点不同 {result_b['noise']['coarse_differs_count']} 条"
-        f"（{result_b['noise']['coarse_differs_ratio_pp']:.1f} pp）"
-    )
-    lines.append(
-        f"- B 上门控关闭率 {conclusion['gate_off_rate_on_b'] * 100:.1f}%"
-        f"（> 0：{'是' if conclusion['gate_off_rate_gt_zero_on_b'] else '否'}）"
+        f"- 留出集命中率（加权）：门控开 {summary['on_demand_accuracy'] * 100:.1f}% ｜"
+        f"门控关 {summary['always_accuracy'] * 100:.1f}% ｜"
+        f"差 **{summary['delta_pp']:+.1f} pp**"
     )
     lines.append("")
     lines.append("## 切分")
     lines.append("")
     lines.append(f"规则：{split['rule']}")
     lines.append("")
-    lines.append("| 半 | 条数 | 目标占比中位数 | 目标占比 p90 | ≤ 默认阈值的占比 |")
+    lines.append("| 折 | 条数 | 分组 | 目标占比中位数 | 目标占比 p90 |")
     lines.append("|---|---|---|---|---|")
-    for half, label in ((SPLIT_TUNING, "A（调参）"), (SPLIT_EVAL, "B（评估）")):
-        area = split["target_area_ratio"][half]
+    for fold in range(split["folds"]):
+        area = split["target_area_ratio"][str(fold)]
         lines.append(
-            f"| {label} | {split['counts'][half]} | {area.get('median_pct', 0):.4f}% | "
-            f"{area.get('p90_pct', 0):.4f}% | "
-            f"{area.get('share_le_default_threshold_pct', 0):.1f}% |"
+            f"| {fold} | {split['counts'][str(fold)]} | "
+            f"{'、'.join(split['groups'][str(fold)])} | "
+            f"{area.get('median_pct', 0):.4f}% | {area.get('p90_pct', 0):.4f}% |"
         )
     lines.append("")
-    lines.append("## 调参（只在 A 上）")
+    lines.append("## 各折选中阈值的分布")
     lines.append("")
-    lines.append(f"规则：{tuning['rule']}")
-    lines.append("")
-    lines.append(
-        f"**选中：一致性容差 {tuning['tolerance_px']:g} px ／ "
-        f"偏离容差 {tuning['deviation_px']:g} px**"
-    )
-    lines.append("")
-    lines.append(
-        "一致性容差（在选中的偏离容差下扫）："
-    )
-    lines.append("")
-    lines.append(
-        "| 容差 (px) | A 的门控开命中率（下界） | A 的门控关 | 差 (pp) | 判不了的条数 |"
-    )
-    lines.append("|---|---|---|---|---|")
-    for candidate in _candidates_at(tuning, deviation_px=tuning["deviation_px"]):
-        lines.append(
-            f"| {candidate['tolerance_px']:g} | "
-            f"{candidate['on_demand']['accuracy_lower_bound'] * 100:.1f}% | "
-            f"{candidate['always']['accuracy_lower_bound'] * 100:.1f}% | "
-            f"{candidate['delta_pp_lower']:+.1f} | "
-            f"{candidate['on_demand']['undetermined_samples']} |"
-        )
-    lines.append("")
-    lines.append(
-        "偏离容差（在选中的一致性容差下扫）："
-    )
-    lines.append("")
-    lines.append(
-        "| 偏离容差 (px) | A 的门控开命中率（下界） | A 的门控关 | 差 (pp) | 判不了的条数 |"
-    )
-    lines.append("|---|---|---|---|---|")
-    for candidate in _candidates_at(tuning, tolerance_px=tuning["tolerance_px"]):
-        lines.append(
-            f"| {candidate['deviation_px']:g} | "
-            f"{candidate['on_demand']['accuracy_lower_bound'] * 100:.1f}% | "
-            f"{candidate['always']['accuracy_lower_bound'] * 100:.1f}% | "
-            f"{candidate['delta_pp_lower']:+.1f} | "
-            f"{candidate['on_demand']['undetermined_samples']} |"
-        )
-    lines.append("")
-    lines.append("| 参数 | 取值 | 取值来源 |")
-    lines.append("|---|---|---|")
-    for key, source_key, label in (
-        ("area_ratio_threshold", "area_ratio_source", "目标占比阈值"),
-        ("confidence_threshold", "confidence_source", "置信度阈值"),
-        ("consistency_tolerance_px", "consistency_source", "一致性容差"),
-        ("deviation_tolerance_px", "deviation_source", "偏离容差"),
+    for key, label in (
+        ("tolerance_px", "一致性容差 (px)"),
+        ("deviation_px", "偏离容差 (px)"),
     ):
+        item = distribution[key]
         lines.append(
-            f"| {label} | {tuning['params'][key]:g} | {tuning['params'][source_key]} |"
+            f"- {label}：中位数 **{item['median']:g}** ｜极差 "
+            f"[{item['min']:g}, {item['max']:g}]（跨度 {item['range']:g}）｜"
+            f"逐折取值 {item['values']}"
+        )
+    lines.append("")
+    lines.append("## 各折（训练折选阈 → 留出折评）")
+    lines.append("")
+    lines.append(
+        "| 折 | 训练条数 | 留出条数 | 一致性容差 | 偏离容差 | "
+        "留出集门控开 | 留出集门控关 | 差 (pp) | 判定 |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
+    for row in summary["folds"]:
+        fold = row["fold"]
+        item = next(fold_item for fold_item in report["folds"] if fold_item["fold"] == fold)
+        lines.append(
+            f"| {fold} | {item['train_samples']} | {item['test_samples']} | "
+            f"{item['selected_tolerance_px']:g} | {item['selected_deviation_px']:g} | "
+            f"{row['on_demand_accuracy'] * 100:.1f}% | "
+            f"{row['always_accuracy'] * 100:.1f}% | {row['delta_pp']:+.1f} | "
+            f"{row['conclusion']} |"
         )
     lines.append("")
     lines.append("## 逐样本")
     lines.append("")
     lines.append(
-        "| 样本 | 层 | 半 | 粗定位命中 | 门控关命中 | 记录命中 | "
+        "| 样本 | 层 | 折 | 分组 | 粗定位命中 | 门控关命中 | 记录命中 | "
         "一致性 | 精定位路径 | 偏离 (px) | 粗定位点 | 命中翻转 |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for sample in report["samples"]:
         deviation = sample["od_path"]["deviation"]
         lines.append(
-            f"| {sample['sample_id']} | {sample['stratum']} | {sample['split']} | "
+            f"| {sample['sample_id']} | {sample['stratum']} | {sample['fold']} | "
+            f"{sample['group_key']} | "
             f"{_mark(sample['coarse_hit'])} | {_mark(sample['always_coarse_hit'])} | "
             f"{_mark(sample['recorded_hit'])} | "
             f"{sample['consistency']} | {sample['od_path']['kind']} | "
@@ -1296,15 +1444,6 @@ def render_report(report: Mapping[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
-
-
-def _candidates_at(tuning: Mapping[str, Any], **match: float) -> list[dict[str, Any]]:
-    """扫参表里符合给定参数的那一列（一维切片）。"""
-    return [
-        candidate
-        for candidate in tuning["candidates"]
-        if all(candidate[key] == value for key, value in match.items())
-    ]
 
 
 def _mark(value: Any) -> str:
@@ -1318,58 +1457,65 @@ def _mark(value: Any) -> str:
 
 @dataclass(frozen=True)
 class HoldoutEvaluation:
-    """**留出集重评**的完整结果。"""
+    """**分组 K 折留出集重评**的完整结果。"""
 
     run: RecordedRun
     dataset_root: str
-    split: Split
+    split: FoldSplit
     samples: tuple[HoldoutSample, ...]
-    tuning: Tuning
-    result_a: HalfResult
-    result_b: HalfResult
+    kfold: KFoldResult
     report: dict[str, Any]
 
 
-def run_holdout(run: RecordedRun, dataset_root: str | Path) -> HoldoutEvaluation:
-    """**跑一遍留出集重评**：切分 → 重建 → **只在 A 上调参** → 两半各自评估。
+def run_holdout(
+    run: RecordedRun, dataset_root: str | Path, folds: int = KFOLD_DEFAULT
+) -> HoldoutEvaluation:
+    """**跑一遍分组 K 折的留出集重评**：分组切分 → 重建 → **每折：训练折调参、留出折评**。
 
-    ⚠️ **调参那一步只看 A**（:func:`tune_gate_params` 的入参是 A 半的样本），
-    B 半在参数定下来之后才被评估 —— 这是工单 M23 的核心纪律。
+    ⚠️ **每折的调参只看训练折**（:func:`tune_on_training_folds`），
+    留出折在参数定下来之后才被评估 —— 施工清单 ⑨ 的「折外选阈值、折内评」。
     """
-    strata: dict[str, list[str]] = {}
+    groups: dict[str, list[str]] = {}
     for outcome in run.on_demand.values():
-        strata.setdefault(f"{outcome.platform}/{outcome.ui_type}", []).append(outcome.sample_id)
-    split = split_samples(strata)
+        groups.setdefault(
+            f"{outcome.application}/{outcome.platform}", []
+        ).append(outcome.sample_id)
+    split = grouped_folds(groups, folds)
     samples = reconstruct(run, dataset_root, split=split)
-    samples_a = half_samples(samples, SPLIT_TUNING)
-    samples_b = half_samples(samples, SPLIT_EVAL)
 
-    tuning = tune_gate_params(samples_a, run.recorded_tolerance_px, run.recorded_deviation_px)
-    result_a = evaluate_half(
-        SPLIT_TUNING,
-        samples_a,
-        tuning.tolerance_px,
-        run.recorded_tolerance_px,
-        tuning.deviation_px,
-        run.recorded_deviation_px,
-    )
-    result_b = evaluate_half(
-        SPLIT_EVAL,
-        samples_b,
-        tuning.tolerance_px,
-        run.recorded_tolerance_px,
-        tuning.deviation_px,
-        run.recorded_deviation_px,
-    )
-    report = build_report(run, dataset_root, split, samples, tuning, result_a, result_b)
+    fold_results: list[FoldResult] = []
+    for fold in range(split.folds):
+        tuning = tune_on_training_folds(
+            samples, fold, run.recorded_tolerance_px, run.recorded_deviation_px
+        )
+        result = evaluate_held_out(
+            samples,
+            fold,
+            tuning,
+            run.recorded_tolerance_px,
+            run.recorded_deviation_px,
+        )
+        fold_results.append(
+            FoldResult(
+                fold=fold,
+                train_ids=tuple(
+                    sorted(sample.sample_id for sample in training_samples(samples, fold))
+                ),
+                test_ids=tuple(
+                    sorted(sample.sample_id for sample in fold_samples(samples, fold))
+                ),
+                tuning=tuning,
+                result=result,
+            )
+        )
+    kfold = KFoldResult(folds=tuple(fold_results))
+    report = build_report(run, dataset_root, split, samples, kfold)
     return HoldoutEvaluation(
         run=run,
         dataset_root=str(dataset_root),
         split=split,
         samples=tuple(samples),
-        tuning=tuning,
-        result_a=result_a,
-        result_b=result_b,
+        kfold=kfold,
         report=report,
     )
 
@@ -1380,54 +1526,59 @@ def run_holdout(run: RecordedRun, dataset_root: str | Path) -> HoldoutEvaluation
 
 
 def main(argv=None) -> int:
-    """``python -m minicode.eval.holdout`` —— 留出集重评（不重调模型）。"""
+    """``python -m minicode.eval.holdout`` —— 分组 K 折留出集重评（不重调模型）。"""
     parser = argparse.ArgumentParser(
         prog="minicode.eval.holdout",
-        description="ScreenSpot-Pro 门控结论的留出集重评（工单 M23）",
+        description="ScreenSpot-Pro 门控结论的分组 K 折留出集重评（工单 M23 / 施工清单 ⑨）",
     )
     parser.add_argument("--run", required=True, help="M8 那轮的 sspro-report.json")
     parser.add_argument("--dataset", required=True, help="ScreenSpot-Pro 数据集根目录")
     parser.add_argument("--out", required=True, help="报告落盘目录")
+    parser.add_argument(
+        "--folds", type=int, default=KFOLD_DEFAULT, help="K 折的折数（默认 5）"
+    )
     args = parser.parse_args(argv)
 
     run = load_recorded_run(args.run)
-    evaluation = run_holdout(run, args.dataset)
-    samples = list(evaluation.samples)
-    tuning = evaluation.tuning
-    result_a = evaluation.result_a
-    result_b = evaluation.result_b
+    evaluation = run_holdout(run, args.dataset, folds=args.folds)
+    kfold = evaluation.kfold
+    distribution = kfold.threshold_distribution()
+    summary = kfold.held_out_summary()
     report = evaluation.report
-    samples_a = half_samples(samples, SPLIT_TUNING)
-    samples_b = half_samples(samples, SPLIT_EVAL)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "holdout-report.json").write_text(
+    (out_dir / "kfold.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    (out_dir / "holdout-report.md").write_text(render_report(report) + "\n", encoding="utf-8")
+    (out_dir / "kfold.md").write_text(render_report(report) + "\n", encoding="utf-8")
 
-    print(f"切分：A {len(samples_a)} 条 / B {len(samples_b)} 条")
     print(
-        f"调参（只在 A 上）：一致性容差 {tuning.tolerance_px:g} px ／"
-        f"偏离容差 {tuning.deviation_px:g} px"
+        f"切分：按 app/platform 分组 {args.folds} 折｜各折条数 "
+        + " / ".join(str(len(evaluation.split.ids(fold))) for fold in range(args.folds))
+    )
+    for item in kfold.folds:
+        print(
+            f"  折 {item.fold}：训练 {len(item.train_ids)} 条 → 留出 {len(item.test_ids)} 条｜"
+            f"选中 一致性容差 {item.tuning.tolerance_px:g} px ／"
+            f"偏离容差 {item.tuning.deviation_px:g} px｜"
+            f"留出集 门控开 {item.result.on_demand.accuracy * 100:.1f}% ｜"
+            f"门控关 {item.result.always_accuracy * 100:.1f}% ｜"
+            f"差 {item.result.delta_pp:+.1f} pp → **{item.result.conclusion}**"
+        )
+    tolerance = distribution["tolerance_px"]
+    deviation = distribution["deviation_px"]
+    print(
+        f"各折选中阈值：一致性容差 中位数 {tolerance['median']:g} px、"
+        f"极差 [{tolerance['min']:g}, {tolerance['max']:g}]；"
+        f"偏离容差 中位数 {deviation['median']:g} px、"
+        f"极差 [{deviation['min']:g}, {deviation['max']:g}]"
     )
     print(
-        f"A：门控开 {result_a.on_demand.accuracy * 100:.1f}% ｜"
-        f"门控关 {result_a.always_accuracy * 100:.1f}% ｜差 {result_a.delta_pp:+.1f} pp"
-        "（调参过程量）"
+        f"留出集（加权）：门控开 {summary['on_demand_accuracy'] * 100:.1f}% ｜"
+        f"门控关 {summary['always_accuracy'] * 100:.1f}% ｜差 {summary['delta_pp']:+.1f} pp"
     )
-    print(
-        f"B：门控开 {result_b.on_demand.accuracy * 100:.1f}% ｜"
-        f"门控关 {result_b.always_accuracy * 100:.1f}% ｜差 {result_b.delta_pp:+.1f} pp（结论）"
-    )
-    print(
-        f"B 的噪声量级：翻转 {result_b.flips} 条（{result_b.noise_flip_pp:.1f} pp）｜"
-        f"两臂粗定位点不同 {result_b.coarse_differs} 条"
-        f"（{result_b.noise_coarse_differs_pp:.1f} pp）"
-    )
-    print(f"判定：**{result_b.conclusion}**")
-    print(f"报告已写入：{out_dir / 'holdout-report.json'}")
+    print(f"报告已写入：{out_dir / 'kfold.json'}")
     return 0
 
 
