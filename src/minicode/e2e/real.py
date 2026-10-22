@@ -566,6 +566,10 @@ class WindowsDesktopExecutor:
             expectation=step.expectation,
             control_type=step.control_type,
         )
+        #: **把目标窗口置前**（**动作之前**）：本机实测「设置」不在前台时，
+        #: 窗口那条路与桌面根都是 **0 个元素** → 视觉通道的整屏第二遍也容易
+        #: 答**负出口**（「这张图里没有对应的元素」）→ 这一步就废了。
+        _bring_to_front(int(getattr(wiring.anchor, "hwnd", 0) or 0))
         before = len(wiring.sink.traces)
         result = wiring.seam.run(request)
         traces = wiring.sink.traces[before:]
