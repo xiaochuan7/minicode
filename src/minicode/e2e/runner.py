@@ -272,7 +272,15 @@ class TaskRunner:
         manual_steps = [step.id for step in task.steps if step.human_confirm]
         if task.human_confirm or manual_steps:
             return self._pending_human(task, manual_steps)
-        blocked = self.executor.preflight()
+        # -- 前置检查：**异常也要兜住** -------------------------------------
+        # ⚠️ 回归守卫（2026-10-22 实测）：浏览器的 ``preflight`` 会在页面
+        # 正在导航时抛 ``Execution context was destroyed``（playwright 的
+        # 竞态）→ 异常从 ``run()`` 逃出去 → **整轮 wave 崩掉、报告没落盘**。
+        # 一张票的前置检查失败 = **那一张票**的环境不可达，**不是**整轮的死。
+        try:
+            blocked = self.executor.preflight()
+        except Exception as exc:  # noqa: BLE001 —— 前置检查的异常一律兜住
+            blocked = f"前置检查失败（{type(exc).__name__}: {exc}）"
         if blocked:
             return TaskOutcome(
                 task_id=task.id,
