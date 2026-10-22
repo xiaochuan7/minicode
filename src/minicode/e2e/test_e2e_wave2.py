@@ -467,6 +467,59 @@ class Wave2LandingRuleTests(unittest.TestCase):
         self.assertTrue(LANDING_ERROR_PX_VERSION)
 
 
+class Wave2Cc1CapabilityTests(unittest.TestCase):
+    """**CC-1.A**：能力表**如实记录** + 落点落在选中框内。
+
+    ⚠️ **2026-10-22 用户拍板**：本机 cc-switch 树**同名撞车 6 处** →
+    能力表判 ``sparse`` 是**应用现状**，不是能力缺陷 →
+    **不许因为 ``sparse`` 判失败**（原条款硬要求 ``usable``，已去掉）。
+    """
+
+    def _clause(self):
+        return next(c for c in task_by_id("CC-1").clauses if c.id == "CC-1.A")
+
+    def _evidence(self, *, capability, landing=(120, 130), rect=(100, 100, 200, 200)):
+        truth = TargetTruth(center=(150, 150), rect=rect, source="cc-switch 条目的控件矩形")
+        context = {"landing_truths": {"CC-1.1": truth.to_dict()}}
+        if capability is not None:
+            context["capability"] = capability
+        return TaskEvidence(
+            task=task_by_id("CC-1"),
+            steps=(
+                StepOutcome(step_id="CC-1.1", landing_point=landing, channel="desktop"),
+            ),
+            context=context,
+        )
+
+    def test_a_sparse_capability_table_is_not_a_failure(self):
+        """能力表是 ``sparse`` 且落点在选中框内 → 条款**成立**。"""
+        ok, detail = self._clause().check(self._evidence(capability="sparse"))
+        self.assertTrue(ok, detail)
+        self.assertIn("sparse", detail)
+
+    def test_the_clause_still_judges_the_landing(self):
+        """能力表记对了、落点选错了元素 → 条款**不成立**（仍然要判）。"""
+        ok, detail = self._clause().check(
+            self._evidence(capability="sparse", landing=(400, 400))
+        )
+        self.assertFalse(ok)
+        self.assertIn("C 错选", detail)
+
+    def test_a_missing_capability_reading_is_undecidable(self):
+        """能力表**没测过** → 判不了（不是「测了，结果不成立」）。"""
+        ok, detail = self._clause().check(self._evidence(capability=None))
+        self.assertFalse(ok)
+        self.assertIn("没测过", detail)
+
+    def test_without_the_control_rect_the_landing_is_undecidable(self):
+        """**没有控件矩形** → 判不了（写清缺哪条真值）。"""
+        ok, detail = self._clause().check(
+            self._evidence(capability="sparse", rect=None)
+        )
+        self.assertFalse(ok)
+        self.assertIn("判不了", detail)
+
+
 class ModalDetectionTests(unittest.TestCase):
     """**模态弹窗的检测**（纯函数，不碰真桌面）。"""
 

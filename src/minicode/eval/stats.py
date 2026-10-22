@@ -181,7 +181,7 @@ def _percentile(sorted_values: Sequence[float], q: float) -> float:
     return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
 
 
-def mde(n: int, discordance: float, delta: float | None = None) -> float:
+def mde(n: int, discordance: float) -> float:
     """**最小可检测效应**（**百分点**）。
 
     配对近似 ``N ≈ 7.849 · π_d / Δ²`` 反解出 Δ：
@@ -189,16 +189,14 @@ def mde(n: int, discordance: float, delta: float | None = None) -> float:
     ``mde = sqrt(7.849 · π_d / n) · 100``（返回值是**百分点**）。
 
     * ``n`` —— 样本量（配对样本数）；
-    * ``discordance`` —— 不一致率 ``π_d``（0~1）；
-    * ``delta`` —— **可选**：目标效应（百分点）。它**不改变**返回值；
-      它的用处是让调用点自解释 —— 把 ``delta`` 与返回的 MDE 比：
-      ``delta ≥ MDE`` → 这个样本量**够**判出它；``delta < MDE`` → 不够
-      （要多少条看 ``N = 7.849 · π_d / Δ²``）。
+    * ``discordance`` —— 不一致率 ``π_d``（0~1）。
+
+    ⚠️ **没有「目标效应」参数**（2026-10-22）：那个参数**不改变返回值**，
+    只为调用点自解释 → 典型的投机性 generality（全仓只有测试在调）→ 删掉。
+    「这个样本量够不够判出 Δ」由调用点自己比：``Δ ≥ mde(n, π_d)`` 即够。
     """
     if n <= 0:
         raise ValueError("n 必须为正")
     if not 0.0 <= discordance <= 1.0:
         raise ValueError("discordance 必须在 0..1 之间")
-    if delta is not None and delta <= 0:
-        raise ValueError("delta 必须是正的百分点")
     return math.sqrt(MDE_CONSTANT * discordance / n) * 100

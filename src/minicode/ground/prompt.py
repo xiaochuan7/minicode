@@ -35,12 +35,18 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from minicode.model.answer_text import (
+    answer_line_body,
+    answer_line_payload,
+    is_truncated,
+    json_array,
+    json_payload,
+)
 from minicode.uia.pointer import parse_chosen_numbers
 from minicode.verification.ocr import normalize_ocr_text
 
@@ -390,73 +396,6 @@ def _edit_distance(left: str, right: str) -> int:
     return previous[-1]
 
 
-def _json_payload(text: str) -> Any:
-    """从回答里取出 JSON（允许前后有话）。"""
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-
-
-def _json_array(text: str) -> Any:
-    """从回答里取出**顶层方括号**数组（官方协议那种 ``[[x1,y1,x2,y2]]``）。"""
-    start = text.find("[")
-    end = text.rfind("]")
-    if start < 0 or end <= start:
-        return None
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-
-
-#: **答案行**的行首标记（官方通用 API 评测协议的读法：末行 ``Answer: [...]``）。
-#:
-#: 一手：https://github.com/modelscope/evalscope/blob/main/evalscope/benchmarks/screenspot_pro/screenspot_pro_adapter.py
-_ANSWER_LINE = re.compile(
-    r"^\s*(?:answer|answer\.|final answer|答案)\s*[:：]?\s*(?P<body>.+)$",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def _answer_line_body(text: str) -> str | None:
-    """回答里**最后一条答案行**的正文（没有答案行 → ``None``）。"""
-    matches = list(_ANSWER_LINE.finditer(text or ""))
-    if not matches:
-        return None
-    return matches[-1].group("body")
-
-
-def answer_line_payload(text: str) -> Any | None:
-    """**答案行优先**：回答里有一行 ``Answer: …`` / ``答案：…`` → 只读那一行。
-
-    没有答案行 → 返回 ``None``（调用方读整段回答）。
-
-    ⚠️ **取最后一条**答案行（官方协议读的是**末行**答案）。
-    """
-    body = _answer_line_body(text)
-    if body is None:
-        return None
-    payload = _json_payload(body)
-    if payload is not None:
-        return payload
-    return _json_array(body)
-
-
-def is_truncated(text: str) -> bool:
-    """回答**被截断**了吗（括号不配对）？
-
-    官方协议：**截断 = 0 分**（截断的回答不许被"抢救"成一个坐标）。
-    """
-    if not text:
-        return True
-    return text.count("{") > text.count("}") or text.count("[") > text.count("]")
-
-
 def _as_pair(value: Any) -> tuple[float, float] | None:
     """把 ``[x, y]`` / ``{"x": .., "y": ..}`` 读成一对数值。"""
     if isinstance(value, dict):
@@ -477,7 +416,7 @@ def parse_point(text: str) -> tuple[float, float]:
 
     解析不出来 → :class:`GroundingParseError`（**显式失败**，不猜）。
     """
-    pair = _as_pair(_json_payload(text))
+    pair = _as_pair(json_payload(text))
     if pair is not None:
         return pair
     match = re.search(
@@ -507,7 +446,7 @@ def parse_optional_point(text: str) -> tuple[float, float] | None:
     """
     payload = answer_line_payload(text)
     if payload is None:
-        payload = _json_payload(text)
+        payload = json_payload(text)
     if isinstance(payload, dict) and payload.get("x") is None and payload.get("y") is None:
         return None
     pair = _as_pair(payload)
@@ -556,7 +495,8 @@ def parse_coarse_target(text: str) -> CoarseTarget:
     * ``{"bbox": [x1, y1, x2, y2], "text": "…"}`` —— 框 + 自报文字（**要的就是这个**）；
     * ``{"bbox": [x1, y1, x2, y2]}`` —— 只有框（**落点取框中心**）；
     * ``{"bbox": [x, y, x, y]}`` —— **退化成点**的框（中心即该点）；
-    * ``{"bbox": null, "text": ""}`` —— **负出口**（元素不在这张图里）；
+    * ``{"bbox": null, "text": ""}`` —— **负出口**（元素不在这张图里；
+      **只认这一种形状**：``bbox`` 键存在且值就是 ``null``）；
     * ``{"point": [x, y]}`` / ``{"x": .., "y": ..}`` / ``[x, y]`` —— 只有点
       （``point`` 字段生产提示词已不再问，**但仍然认**）；
     * ``[[x1, y1, x2, y2]]`` —— 官方协议那种顶层数组。
@@ -570,7 +510,7 @@ def parse_coarse_target(text: str) -> CoarseTarget:
 
     读不出来 → :class:`GroundingParseError`（**显式失败**，不猜、不按数值大小猜量纲）。
     """
-    body = _answer_line_body(text)
+    body = answer_line_body(text)
     segment = body if body is not None else text
     if is_truncated(segment):
         raise GroundingParseError(
@@ -578,7 +518,7 @@ def parse_coarse_target(text: str) -> CoarseTarget:
         )
     payload = answer_line_payload(text)
     if payload is None:
-        payload = _json_payload(text)
+        payload = json_payload(text)
     if isinstance(payload, dict):
         bbox = _box_of(payload.get("bbox"))
         point = _pair_of(payload.get("point"))
@@ -586,8 +526,18 @@ def parse_coarse_target(text: str) -> CoarseTarget:
             point = _pair_of([payload.get("x"), payload.get("y")])
         reported = payload.get("text")
         reported_text = reported if isinstance(reported, str) else ""
-        if bbox is None and point is None and payload.get("bbox") is None:
+        if (
+            bbox is None
+            and point is None
+            and "bbox" in payload
+            and payload["bbox"] is None
+        ):
             # **负出口**：``{"bbox": null, "text": ""}`` —— 元素不在这张图里。
+            #
+            # ⚠️ **只认「bbox 键存在且值就是 null」这一种**（2026-10-22 拍板）：
+            # ``{"text": "x"}`` / ``{}`` 这种**格式不符**的回答**不是**负出口 →
+            # 读不出就**显式失败**（抛 :class:`GroundingParseError`），
+            # 不许把它说成「模型说没有这个元素」。
             return CoarseTarget(text=reported_text, negative=True)
         if bbox is not None or point is not None:
             return CoarseTarget(bbox=bbox, point=point, text=reported_text)
@@ -601,7 +551,7 @@ def parse_coarse_target(text: str) -> CoarseTarget:
         if point is not None:
             return CoarseTarget(point=point)
     # 顶层的方括号数组（前面可能还有一句话）。
-    array = _json_array(segment)
+    array = json_array(segment)
     if array is not None:
         inner = array[0] if len(array) == 1 and isinstance(array[0], list) else array
         bbox = _box_of(inner)

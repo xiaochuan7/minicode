@@ -51,6 +51,7 @@ from .checks import (
     verification_source_is_structure,
     window_title_matches_picked,
 )
+from .runner import TaskEvidence
 from .tasks import Clause, Step, Task
 
 __all__ = [
@@ -60,6 +61,7 @@ __all__ = [
     "LANDING_NEAR_MISS_PX",
     "LANDING_ERROR_PX_VERSION",
     "landing_rule_summary",
+    "capability_recorded_and_landing_in_picked",
 ]
 
 #: E-3 往会话输入框里打的那段中文（含 emoji —— 代理对要正确）。
@@ -310,6 +312,37 @@ E3 = Task(
 # CC-1 ~ CC-3：cc-switch（原生窗口，完整树）
 # ---------------------------------------------------------------------------
 
+
+def capability_recorded_and_landing_in_picked(
+    evidence: TaskEvidence,
+) -> tuple[bool, str]:
+    """CC-1.A：**能力表如实记录**（取什么值就记什么）**且**落点落在**选中框**内。
+
+    ⚠️ **2026-10-22 用户拍板**：本机 cc-switch 的树**同名撞车 6 处** →
+    能力表判 ``sparse`` 是**应用现状**，不是能力缺陷 → **不许因为 ``sparse``
+    判失败**（原条款硬要求 ``usable``，已去掉）。
+
+    条款**仍然要判**（可判、可过可不过）：
+
+    * **能力表如实记录** —— 上下文里得**有**这条读数（记的是哪个值就是哪个值）；
+      **没有读数 = 没测过** → 判不了，不许当成「测了，结果不成立」；
+    * **落点落在选中框内** —— 复用**同一套三档口径**
+      （:func:`minicode.e2e.checks.landing_in_target_rect`）：
+      A 命中 / B 近失**只记档不判死** / C 错选判失败 / 缺真值判不了
+      （施工清单第 ⑧ 条）。
+    """
+    capability = str(evidence.context.get("capability", "") or "")
+    if not capability:
+        return False, "能力表里没有这一条（读数是空的）—— **没测过**，判不了"
+    ok, detail = landing_in_target_rect(evidence)
+    if not ok:
+        return (
+            False,
+            f"能力表记的是 {capability!r}（如实记录），但落点没落在选中框内：{detail}",
+        )
+    return True, f"能力表记的是 {capability!r}（如实记录）｜落点：{detail}"
+
+
 CC1 = Task(
     id="CC-1",
     title="在 cc-switch 里把当前配置切到另一个供应商条目",
@@ -323,7 +356,12 @@ CC1 = Task(
         ),
     ),
     clauses=(
-        Clause("CC-1.A", "UIA 通道判定为可用", context_value("capability", "usable")),
+        Clause(
+            "CC-1.A",
+            "能力表如实记录（记成 sparse 也算如实 —— 那是应用现状，不是能力缺陷）"
+            "且落点落在选中框内",
+            capability_recorded_and_landing_in_picked,
+        ),
         Clause(
             "CC-1.B",
             f"落点落在该条目的控件框内（出框 ≤{LANDING_NEAR_MISS_PX:.0f} px 记近失，"

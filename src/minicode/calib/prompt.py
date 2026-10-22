@@ -28,8 +28,11 @@
 
 * **负出口**同款：生产链路的精定位提示词有「没找到 → ``{"x": null, "y": null}``」，
   本探针的提示词也写明「看不到就把值写成 null」；
-* **解析纪律**同款：**答案行优先** / **截断 = 0 分** /
-  **松散写法仅在答案行接受**（见 :func:`parse_points`）。
+* **解析纪律**同款：**答案行优先** / **截断 = 0 分** —— 这两条的实现**只有一份**
+  （:mod:`minicode.model.answer_text`，生产链路与标定链路都从它 import）；
+  **散写法**这边**保留兜底**（生产链路那条「散写法仅在答案行接受」是**纪律**，
+  标定这边**丢掉一条标定比丢一条评测样本更贵** —— 标定定的是**分母**）。
+  见 :func:`parse_points`。
 
 ⚠️ **口径说明（本轮已知的一处缺口）**：本探针问的是**方块中心**（一个点），
 对应生产链路的**精定位**契约；生产链路的**粗定位**那一级现在问的是
@@ -40,10 +43,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 from itertools import permutations
 from typing import Any
+
+from minicode.model.answer_text import answer_line_body, is_truncated, json_payload
 
 from .probe import ProbeSpec
 from .tolerance import CALIBRATION_ROUNDS
@@ -164,18 +168,6 @@ def text_prompt(
     return "\n".join(lines)
 
 
-def _json_payload(text: str) -> Any:
-    """从回答里取出 JSON（允许前后有话）。"""
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise CalibrationParseError(f"模型回答里没有 JSON 对象：{text[:160]!r}")
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise CalibrationParseError(f"模型回答里的 JSON 解析失败：{exc}") from exc
-
-
 def _as_pair(value: Any) -> tuple[float, float] | None:
     """把 ``[x, y]`` / ``{"x":.., "y":..}`` 读成一对数值。"""
     if isinstance(value, dict):
@@ -226,43 +218,6 @@ def _line_points(text: str, names: tuple[str, ...]) -> dict[str, tuple[float, fl
     return points
 
 
-def _json_array(text: str) -> Any:
-    """从回答里取出**顶层方括号**数组。"""
-    start = text.find("[")
-    end = text.rfind("]")
-    if start < 0 or end <= start:
-        return None
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-
-
-#: **答案行**的行首标记（与生产链路的读法一致）。
-_ANSWER_LINE = re.compile(
-    r"^\s*(?:answer|answer\.|final answer|答案)\s*[:：]?\s*(?P<body>.+)$",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def _answer_line_body(text: str) -> str | None:
-    """回答里**最后一条答案行**的正文（没有答案行 → ``None``）。"""
-    matches = list(_ANSWER_LINE.finditer(text or ""))
-    if not matches:
-        return None
-    return matches[-1].group("body")
-
-
-def _is_truncated(text: str) -> bool:
-    """回答**被截断**了吗（括号不配对）？
-
-    官方通用 API 评测协议的纪律：**截断 = 0 分**（截断的回答不许被"抢救"）。
-    """
-    if not text:
-        return True
-    return text.count("{") > text.count("}") or text.count("[") > text.count("]")
-
-
 def parse_points(
     text: str, spec: ProbeSpec
 ) -> tuple[tuple[str, float, float], ...]:
@@ -280,19 +235,16 @@ def parse_points(
     解析不出来 → :class:`CalibrationParseError`（**显式失败**，不猜）。
     """
     names = tuple(target.name for target in spec.targets)
-    body = _answer_line_body(text)
+    body = answer_line_body(text)
     segment = body if body is not None else text
-    if _is_truncated(segment):
+    if is_truncated(segment):
         raise CalibrationParseError(
             f"模型回答被截断（括号不配对），按 0 分处理：{text[:160]!r}"
         )
     points: dict[str, tuple[float, float]] = {}
     payload: Any = None
     for candidate in (segment, text):
-        try:
-            payload = _json_payload(candidate)
-        except CalibrationParseError:
-            payload = None
+        payload = json_payload(candidate)
         if payload is not None:
             break
     try:

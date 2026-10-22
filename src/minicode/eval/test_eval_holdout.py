@@ -28,12 +28,12 @@ from minicode.eval.holdout import (
     PATH_REFINE,
     PATH_WHOLE_SCREEN,
     UNDECIDABLE,
-    FoldResult,
+    FoldOutcome,
     HoldoutSample,
     KFoldResult,
     RefinePath,
     build_report,
-    evaluate_half,
+    evaluate_fold,
     gate_opens_at,
     grouped_folds,
     load_recorded_run,
@@ -310,11 +310,33 @@ class TuningTests(unittest.TestCase):
             self.assertEqual(item.result.samples, len(item.test_ids))
 
 
-class HalfEvaluationTests(unittest.TestCase):
+class PublicNameTests(unittest.TestCase):
+    """**去「半」残留**（2026-10-22 改名）：公开名字不许再叫 half。"""
+
+    def test_the_old_names_are_gone_and_the_new_ones_are_exported(self):
+        from minicode.eval import holdout
+
+        self.assertTrue(hasattr(holdout, "evaluate_fold"))
+        self.assertFalse(hasattr(holdout, "evaluate_half"))
+        self.assertIn("evaluate_fold", holdout.__all__)
+        self.assertNotIn("evaluate_half", holdout.__all__)
+        self.assertIn("FoldResult", holdout.__all__)
+        self.assertIn("FoldOutcome", holdout.__all__)
+
+    def test_the_fold_result_is_the_evaluation_and_the_outcome_is_the_fold(self):
+        """``FoldResult`` = 留出折上的**评估结果**；``FoldOutcome`` = 一折（调参 + 评估）。"""
+        from minicode.eval import holdout
+
+        self.assertIn("conclusion", holdout.FoldResult.__annotations__)
+        self.assertIn("tuning", holdout.FoldOutcome.__annotations__)
+        self.assertIn("result", holdout.FoldOutcome.__annotations__)
+
+
+class FoldEvaluationTests(unittest.TestCase):
     """评估与判定：差值必须超过噪声量级。"""
 
     def _evaluate(self, samples):
-        return evaluate_half(
+        return evaluate_fold(
             "折 0",
             samples,
             RECORDED_TOLERANCE,
@@ -553,7 +575,7 @@ class ReportTests(unittest.TestCase):
             _sample("b1", fold=1, group_key="app/macos", flip=True, coarse_differs=True),
         ]
         tuning = tune_gate_params(samples[:1], RECORDED_TOLERANCE, RECORDED_DEVIATION)
-        result = evaluate_half(
+        result = evaluate_fold(
             "折 1",
             samples[1:],
             RECORDED_TOLERANCE,
@@ -563,7 +585,7 @@ class ReportTests(unittest.TestCase):
         )
         kfold = KFoldResult(
             folds=(
-                FoldResult(
+                FoldOutcome(
                     fold=0,
                     train_ids=("b1",),
                     test_ids=("a1",),

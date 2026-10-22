@@ -548,6 +548,31 @@ class CoarseBoxTests(unittest.TestCase):
         with self.assertRaises(GroundingParseError):
             parse_coarse_target("我看不清那个按钮")
 
+    def test_the_negative_exit_needs_the_bbox_key(self):
+        """**负出口只认**「``bbox`` 键存在且值就是 ``null``」这一种形状。
+
+        ⚠️ 2026-10-22 拍板：``{"text": "x"}`` / ``{}`` 这种**格式不符**的回答
+        **不是**「模型说没有这个元素」→ **显式失败**（读不出 → 不猜）。
+        """
+        from minicode.ground.prompt import GroundingParseError, parse_coarse_target
+
+        negative = parse_coarse_target('{"bbox": null, "text": ""}')
+        self.assertTrue(negative.negative)
+        self.assertIsNone(negative.bbox)
+        self.assertIsNone(negative.point)
+        with self.assertRaises(GroundingParseError):
+            parse_coarse_target('{"text": "x"}')
+        with self.assertRaises(GroundingParseError):
+            parse_coarse_target("{}")
+
+    def test_the_answer_line_rules_come_from_one_shared_implementation(self):
+        """答案行 / 截断的读法**只有一份**（施工清单第 ⑦ 条：两边不许各写一份）。"""
+        from minicode.ground import prompt as ground_prompt
+        from minicode.model import answer_text
+
+        self.assertIs(ground_prompt.answer_line_payload, answer_text.answer_line_payload)
+        self.assertIs(ground_prompt.is_truncated, answer_text.is_truncated)
+
     def test_the_landing_is_the_box_center(self):
         """**落点取框中心**（框 → 点的换算在通道里，只做一处）。"""
         model = _StubModel(

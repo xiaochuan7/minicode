@@ -1087,5 +1087,27 @@ class TestStandardLibraryOnly(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class TestSharedAnswerText(unittest.TestCase):
+    """答案行 / 截断的读法**只有一份**（施工清单第 ⑦ 条：两边不许各写一份）。"""
+
+    def test_the_calibration_prompt_reads_it_from_the_shared_module(self):
+        from minicode.calib import prompt as calib_prompt
+        from minicode.model import answer_text
+
+        self.assertIs(calib_prompt.answer_line_body, answer_text.answer_line_body)
+        self.assertIs(calib_prompt.is_truncated, answer_text.is_truncated)
+
+    def test_the_loose_form_fallback_is_still_kept_here(self):
+        """**有意**与生产链路不同：标定这边保留散写法的兜底（丢一条标定更贵）。"""
+        from minicode.calib.prompt import parse_points
+
+        spec = _spec()
+        text = "\n".join(
+            f"{target.name}: ({target.x:.1f}, {target.y:.1f})" for target in spec.targets
+        )
+        points = parse_points(text, spec)
+        self.assertEqual(len(points), len(spec.targets))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -80,6 +80,7 @@ from .sspro import ArmOutcome, load_samples
 
 __all__ = [
     "ArmScore",
+    "FoldOutcome",
     "FoldResult",
     "FoldSplit",
     "HoldoutEvaluation",
@@ -90,7 +91,7 @@ __all__ = [
     "RecordedRun",
     "Tuning",
     "build_report",
-    "evaluate_half",
+    "evaluate_fold",
     "fold_samples",
     "gate_opens_at",
     "grouped_folds",
@@ -765,7 +766,7 @@ def _replayed_always(sample: HoldoutSample, recorded_deviation_px: float) -> boo
 
 @dataclass(frozen=True)
 class ParameterCandidate:
-    """一组候选门控参数在 **A 半**上的表现。"""
+    """一组候选门控参数在**训练折**上的表现。"""
 
     tolerance_px: float
     deviation_px: float
@@ -907,8 +908,13 @@ def tune_gate_params(
 
 
 @dataclass(frozen=True)
-class HalfResult:
-    """**一组样本**（K 折里 = 某个留出折）的评估结果。"""
+class FoldResult:
+    """**一组样本**（K 折里 = 某个留出折）的评估结果。
+
+    ⚠️ **2026-10-22 改名**：原名 ``HalfResult`` —— 概念里**已经没有「半」了**
+    （切分早改成按 app/platform **分组 K 折**），名字留着会让人以为还是
+    「两半各跑一遍再比」那种切分。
+    """
 
     #: 这组样本的标签（K 折里 = ``"折 0"`` 这种）。
     label: str
@@ -987,7 +993,7 @@ class HalfResult:
         }
 
 
-def evaluate_half(
+def evaluate_fold(
     label: str,
     samples: Sequence[HoldoutSample],
     tolerance_px: float,
@@ -996,7 +1002,7 @@ def evaluate_half(
     recorded_deviation_px: float,
     *,
     tolerance_pp: float = SUBSET_TOLERANCE_PP,
-) -> HalfResult:
+) -> FoldResult:
     """**在给定参数下评估一组样本**（K 折里 = 某个留出折）。
 
     * 硬判据：门控开 ≥ 门控关；
@@ -1067,7 +1073,7 @@ def evaluate_half(
         for sample in samples
         if sample.always_coarse_hit is True and sample.always_path.hit is False
     )
-    return HalfResult(
+    return FoldResult(
         label=label,
         samples=total,
         on_demand=score,
@@ -1167,9 +1173,9 @@ def evaluate_held_out(
     tuning: Tuning,
     recorded_tolerance_px: float,
     recorded_deviation_px: float,
-) -> HalfResult:
+) -> FoldResult:
     """**在留出折上评**（参数已在训练折上定好，这里不再调任何参数）。"""
-    return evaluate_half(
+    return evaluate_fold(
         f"折 {fold}",
         fold_samples(samples, fold),
         tuning.tolerance_px,
@@ -1180,8 +1186,14 @@ def evaluate_held_out(
 
 
 @dataclass(frozen=True)
-class FoldResult:
-    """**一折**的结果：阈值在**训练折**上选、在**留出折**上评。"""
+class FoldOutcome:
+    """**一折**的结果：阈值在**训练折**上选、在**留出折**上评。
+
+    ⚠️ **2026-10-22 改名**：原名 ``FoldResult`` —— 那个名字现在归
+    :class:`FoldResult`（**留出折上的评估结果**）了；这一类装的是
+    「一折的调参 + 评估」，叫 ``FoldOutcome``（与仓里的 ``ArmOutcome`` /
+    ``TaskOutcome`` 一个路子）。
+    """
 
     #: 折号（0 … K-1）。
     fold: int
@@ -1192,7 +1204,7 @@ class FoldResult:
     #: 在训练折上选中的门控参数。
     tuning: Tuning
     #: 留出折上的评估结果。
-    result: HalfResult
+    result: FoldResult
 
     def to_dict(self) -> dict[str, Any]:
         """落盘形状。"""
@@ -1213,7 +1225,7 @@ class FoldResult:
 class KFoldResult:
     """**K 折**的整体结果（各折阈值分布 + 各折留出集命中率）。"""
 
-    folds: tuple[FoldResult, ...]
+    folds: tuple[FoldOutcome, ...]
 
     @property
     def tolerances(self) -> tuple[float, ...]:
@@ -1483,7 +1495,7 @@ def run_holdout(
     split = grouped_folds(groups, folds)
     samples = reconstruct(run, dataset_root, split=split)
 
-    fold_results: list[FoldResult] = []
+    fold_results: list[FoldOutcome] = []
     for fold in range(split.folds):
         tuning = tune_on_training_folds(
             samples, fold, run.recorded_tolerance_px, run.recorded_deviation_px
@@ -1496,7 +1508,7 @@ def run_holdout(
             run.recorded_deviation_px,
         )
         fold_results.append(
-            FoldResult(
+            FoldOutcome(
                 fold=fold,
                 train_ids=tuple(
                     sorted(sample.sample_id for sample in training_samples(samples, fold))

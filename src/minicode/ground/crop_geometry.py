@@ -24,6 +24,11 @@
 ⚠️ **与生产同一条裁剪语义**：窗口摆放直接调用**冻结原型**的
 :func:`minicode.coord.crop_refine.plan_crop`（**不重写一份**）——
 贴边时**向内平移补足、不缩小窗口**。
+
+⚠️ **自适应几何的比例与下限只有生产那一份**
+（:mod:`minicode.ground.channel` 的 ``CROP_LINEAR_FRACTION`` /
+``MIN_CROP_WIDTH_PX`` / ``MIN_CROP_HEIGHT_PX``）—— 本模块**从那里 import**，
+**不许**在这里再写一遍（生产几何一改，离线锚点表就失真）。
 """
 
 from __future__ import annotations
@@ -39,6 +44,12 @@ from typing import Any
 
 from minicode.coord.coordinates import Rect
 from minicode.coord.crop_refine import plan_crop
+
+from .channel import (
+    CROP_LINEAR_FRACTION,
+    MIN_CROP_HEIGHT_PX,
+    MIN_CROP_WIDTH_PX,
+)
 
 __all__ = [
     "CropGeometrySample",
@@ -137,18 +148,20 @@ class GeometryStats:
 
 
 #: **自适应几何**的参数：比例 + 绝对下限 + 绝对上限（``None`` = 不设上限）。
+#:
+#: ⚠️ **比例与下限取自生产**（:mod:`minicode.ground.channel`）——
+#: 这里**不许**再写一份（生产几何一改，离线锚点表就失真）。
 @dataclass(frozen=True)
 class AdaptiveSpec:
     name: str
     fraction: float
-    floor: int
+    floor_width: int
+    floor_height: int
     ceiling: int | None = None
 
     def size_for(self, image_size: tuple[int, int]) -> tuple[int, int]:
-        width = int(image_size[0] * self.fraction)
-        height = int(image_size[1] * self.fraction)
-        width = max(self.floor, width)
-        height = max(self.floor, height)
+        width = max(self.floor_width, int(image_size[0] * self.fraction))
+        height = max(self.floor_height, int(image_size[1] * self.fraction))
         if self.ceiling is not None:
             width = min(self.ceiling, width)
             height = min(self.ceiling, height)
@@ -164,14 +177,24 @@ class AdaptiveSpec:
 #: * ``0.5×当前图（上限 1024）`` —— 同一条，加一个**绝对上限**，
 #:   用来回答「窗口要多大才够、又不能无限大」这个问题（**候选**，不是定案）。
 ADAPTIVE_SPECS: tuple[AdaptiveSpec, ...] = (
-    AdaptiveSpec("0.5x当前图", 0.5, 512, None),
-    AdaptiveSpec("0.5x当前图(上限1024)", 0.5, 512, 1024),
+    AdaptiveSpec(
+        "0.5x当前图",
+        CROP_LINEAR_FRACTION,
+        MIN_CROP_WIDTH_PX,
+        MIN_CROP_HEIGHT_PX,
+        None,
+    ),
+    AdaptiveSpec(
+        "0.5x当前图(上限1024)",
+        CROP_LINEAR_FRACTION,
+        MIN_CROP_WIDTH_PX,
+        MIN_CROP_HEIGHT_PX,
+        1024,
+    ),
 )
 
 
-def candidate_geometries(
-    image_sizes: Sequence[tuple[int, int]],
-) -> list[tuple[str, int, int]]:
+def candidate_geometries() -> list[tuple[str, int, int]]:
     """**固定边长**候选（施工清单第 ③ 条点名的那些）。"""
     fixed: list[tuple[str, int, int]] = [
         ("192", 192, 192),
@@ -408,9 +431,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"｜容忍粗点误差 ±{stats.median_tolerance_x:.0f}/±{stats.median_tolerance_y:.0f} px"
         )
 
-    for name, width, height in candidate_geometries(
-        [sample.image_size for sample in samples]
-    ):
+    for name, width, height in candidate_geometries():
         stats, outcomes = evaluate_geometry(
             samples, name=name, width=width, height=height
         )

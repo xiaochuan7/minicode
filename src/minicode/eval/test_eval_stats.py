@@ -186,17 +186,16 @@ class MdeTests(unittest.TestCase):
             required = 7.849 * discordance / ((value / 100) ** 2)
             self.assertAlmostEqual(required, n, places=6)
 
-    def test_delta_argument_does_not_change_the_result(self):
-        """``delta`` 只是调用点的自解释（目标效应），不改变 MDE。"""
-        self.assertEqual(mde(183, 0.10), mde(183, 0.10, 3.3))
-
     def test_invalid_input_is_rejected(self):
         with self.assertRaises(ValueError):
             mde(0, 0.10)
         with self.assertRaises(ValueError):
             mde(183, 1.5)
-        with self.assertRaises(ValueError):
-            mde(183, 0.10, -1.0)
+
+    def test_the_signature_has_no_target_effect_argument(self):
+        """**没有**「目标效应」参数（2026-10-22 删掉：它不改变返回值）。"""
+        with self.assertRaises(TypeError):
+            mde(183, 0.10, 3.3)  # type: ignore[call-arg]
 
 
 if __name__ == "__main__":
