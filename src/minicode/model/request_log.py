@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
+from fractions import Fraction
+from math import ceil
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -30,6 +32,7 @@ __all__ = [
     "build_request_log",
     "count_unset_effort",
     "estimate_image_tokens",
+    "estimate_openai_image_tokens",
     "png_image_size",
     "total_input_tokens",
 ]
@@ -42,6 +45,19 @@ __all__ = [
 #: 它是**反查服务端实际尺寸**时用的**模型**，不是真值来源 ——
 #: 反查不出就如实记 ``unknown``，**不许拿它当已知的分母**。
 IMAGE_PATCH_PX = 28
+
+#: OpenAI 兼容视觉的 tile 边长（**像素**）。
+OPENAI_IMAGE_TILE_PX = 512
+#: 每个 tile 的 token 数。
+OPENAI_IMAGE_TILE_TOKENS = 170
+#: 基础 token 数（每张图都要加一次）。
+OPENAI_IMAGE_BASE_TOKENS = 85
+#: 缩图方框的边长（像素）：图先缩进 2048×2048。
+OPENAI_IMAGE_MAX_EDGE_PX = 2048
+#: 第二段缩图的目标短边（像素）。
+OPENAI_IMAGE_SHORT_EDGE_PX = 768
+#: 两边都 ≤ 这个像素数的图按最小档计（只有基础 token）。
+OPENAI_IMAGE_SMALL_EDGE_PX = 512
 
 
 @dataclass(frozen=True)
@@ -169,6 +185,43 @@ def estimate_image_tokens(width: int, height: int, *, patch_px: int = IMAGE_PATC
     if width <= 0 or height <= 0:
         return 0
     return -(-int(width) // patch_px) * -(-int(height) // patch_px)
+
+
+def estimate_openai_image_tokens(width: int, height: int) -> int:
+    """按 OpenAI 兼容视觉的 **tile 规则**估一张图的 token 数。
+
+    规则（OpenAI 官方文档的计费口径，**估计**不是真值）：
+
+    1. 先把图缩进 2048×2048 的方框（保持长宽比，只缩不放）；
+    2. 再把**短边**缩到 768 px（只缩不放：短边本来就 ≤768 就不动）；
+    3. 按 512×512 的 tile 数计费：``85 + 170 × tiles``；
+    4. 两边都 ≤512 的小图直接按最小档 85 计。
+
+    缩放用 :class:`fractions.Fraction` 做精确分数运算 —— 浮点会把
+    ``2048 / 512 = 4`` 算成 4.0000000001，向上取整就多算一个 tile。
+    """
+    if width <= 0 or height <= 0:
+        return 0
+    if width <= OPENAI_IMAGE_SMALL_EDGE_PX and height <= OPENAI_IMAGE_SMALL_EDGE_PX:
+        return OPENAI_IMAGE_BASE_TOKENS
+    scaled_w = Fraction(int(width))
+    scaled_h = Fraction(int(height))
+    scale = min(
+        Fraction(1),
+        Fraction(OPENAI_IMAGE_MAX_EDGE_PX) / max(scaled_w, scaled_h),
+    )
+    scaled_w *= scale
+    scaled_h *= scale
+    scale = min(
+        Fraction(1),
+        Fraction(OPENAI_IMAGE_SHORT_EDGE_PX) / min(scaled_w, scaled_h),
+    )
+    scaled_w *= scale
+    scaled_h *= scale
+    tiles = ceil(scaled_w / OPENAI_IMAGE_TILE_PX) * ceil(
+        scaled_h / OPENAI_IMAGE_TILE_PX
+    )
+    return OPENAI_IMAGE_BASE_TOKENS + OPENAI_IMAGE_TILE_TOKENS * tiles
 
 
 def png_image_size(png_bytes: bytes) -> tuple[int, int] | None:

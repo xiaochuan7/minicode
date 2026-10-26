@@ -1,6 +1,8 @@
 """模型客户端（M1）的单测。
 
 只测外部行为：配置装载、档位强制、请求构造、响应解析、请求日志、假实现的失败形态。
+**两套协议**（``anthropic`` / ``openai``）的 URL、头、正文、图像字段形状与响应解析
+各有覆盖 —— 这是发布版「换任意主流大模型 API 都能跑」的合同。
 
 **零网络、零费用**：所有用例都不发真实请求——真调 API 的四条回归在
 ``python -m minicode.model.regressions``（单独入口，不被单测命令带跑）。
@@ -8,6 +10,9 @@
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import io
 import json
 import tempfile
 import threading
@@ -19,10 +24,15 @@ from minicode.model.client import (
     ModelClient,
     build_headers,
     build_request_body,
+    image_tokens_of,
     parse_response,
     require_effort,
 )
 from minicode.model.config import (
+    DEFAULT_USER_AGENT,
+    PROTOCOL_ANTHROPIC,
+    PROTOCOL_OPENAI,
+    PROTOCOLS,
     ModelConfig,
     find_env_file,
     load_config,
@@ -36,6 +46,7 @@ from minicode.model.errors import (
     ModelConfigError,
     ModelError,
     ModelSideError,
+    ModelTransportError,
     NoTextOutputError,
 )
 from minicode.model.fakes import FakeModelClient, no_text_output_outcome
@@ -60,6 +71,7 @@ _CLIENT_MODULES = (
     "request_log.py",
 )
 
+#: 旧键（Anthropic 时代）—— 继续可用，缺省协议就是 anthropic。
 _VALID_ENV = """\
 MINICODE_ANTHROPIC_BASE_URL=https://opencode.ai/zen/go
 MINICODE_ANTHROPIC_API_KEY=key-from-repo-env
@@ -69,9 +81,16 @@ MINICODE_HTTP_USER_AGENT=opencode/1.0.0
 MINICODE_HTTP_CLIENT=cli
 """
 
+#: 新键（通用 provider）—— 只填必需的三个，可选键全部缺省。
+_GENERIC_ENV = """\
+MINICODE_BASE_URL=https://api.deepseek.com/v1
+MINICODE_API_KEY=sk-1234567890wxyz
+MINICODE_MODEL=deepseek-chat
+"""
 
-def _config(**overrides: str) -> ModelConfig:
-    values = {
+
+def _config(**overrides: object) -> ModelConfig:
+    values: dict[str, object] = {
         "base_url": "https://opencode.ai/zen/go",
         "api_key": "key-from-repo-env",
         "model": "minimax-m3.1-flash-free",
@@ -81,6 +100,64 @@ def _config(**overrides: str) -> ModelConfig:
     }
     values.update(overrides)
     return ModelConfig(**values)
+
+
+def _write_env(tmp: str, text: str) -> Path:
+    path = Path(tmp) / ".env"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _load_text(text: str) -> ModelConfig:
+    with tempfile.TemporaryDirectory() as tmp:
+        return load_config(_write_env(tmp, text))
+
+
+def _png_of(width: int, height: int) -> bytes:
+    """构造一个只到 IHDR 宽高的最小 PNG（``png_image_size`` 只读这段）。
+
+    故意不生成真实像素数据：图像 token 估计只依赖尺寸，不依赖画面内容。
+    """
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\x0d"
+        + b"IHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x02\x00\x00\x00"
+        + b"\x00\x00\x00\x00"
+    )
+
+
+def _png_base64(width: int, height: int) -> str:
+    return base64.b64encode(_png_of(width, height)).decode()
+
+
+def _anthropic_body(text: str = '{"x": 1234, "y": 5678}') -> bytes:
+    return json.dumps({"content": [{"type": "text", "text": text}]}).encode()
+
+
+def _openai_body(**overrides: object) -> bytes:
+    """OpenAI 兼容的 200 响应体（默认：有文本 + 有思考链 + 完整 usage）。"""
+    payload: dict[str, object] = {
+        "model": "gpt-x",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"x": 1, "y": 2}',
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 900,
+            "completion_tokens": 40,
+            "completion_tokens_details": {"reasoning_tokens": 32},
+        },
+    }
+    payload.update(overrides)
+    return json.dumps(payload).encode()
 
 
 class _HandleSpy:
@@ -110,15 +187,28 @@ class _HandleSpy:
 class _StubTransportClient(ModelClient):
     """把网络换成一个固定的响应体（**零网络、零费用**）。"""
 
-    def __init__(self, config: ModelConfig, sink, body: bytes):
+    def __init__(self, config: ModelConfig, sink, body: bytes, status: int = 200):
         super().__init__(config, sink)
         self._body = body
+        self._status = status
         #: 每次发出去的请求体（用来断言「请求体里到底带了什么」）。
         self.sent_bodies: list[dict] = []
+        #: 每次发出去的请求头与端点。
+        self.sent_headers: list[dict] = []
+        self.sent_endpoints: list[str] = []
 
     def _post(self, endpoint, headers, body):
+        self.sent_endpoints.append(endpoint)
+        self.sent_headers.append(dict(headers))
         self.sent_bodies.append(dict(body))
-        return 200, self._body
+        return self._status, self._body
+
+
+class _TimeoutTransportClient(_StubTransportClient):
+    """``_post`` 抛传输错误（模拟超时 / 网络不可达）。"""
+
+    def _post(self, endpoint, headers, body):
+        raise ModelTransportError(f"请求 {endpoint} 超时（假）")
 
 
 class ConfigTest(unittest.TestCase):
@@ -126,39 +216,47 @@ class ConfigTest(unittest.TestCase):
 
     def test_loads_every_required_item_from_the_env_file(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            path.write_text(_VALID_ENV, encoding="utf-8")
-            config = load_config(path)
+            config = load_config(_write_env(tmp, _VALID_ENV))
         self.assertEqual(config.base_url, "https://opencode.ai/zen/go")
         self.assertEqual(config.api_key, "key-from-repo-env")
         self.assertEqual(config.model, "minimax-m3.1-flash-free")
         self.assertEqual(config.session_id, "dsh-union-alpha")
         self.assertEqual(config.user_agent, "opencode/1.0.0")
         self.assertEqual(config.client_header, "cli")
+        # 旧键-only 的配置按缺省协议 anthropic 起，端点仍是 Messages。
+        self.assertEqual(config.protocol, PROTOCOL_ANTHROPIC)
+        self.assertEqual(
+            config.endpoint, "https://opencode.ai/zen/go/v1/messages"
+        )
+        self.assertEqual(config.origins["base_url"], "MINICODE_ANTHROPIC_BASE_URL")
+        self.assertEqual(config.origins["api_key"], "MINICODE_ANTHROPIC_API_KEY")
 
-    def test_missing_items_are_named_in_the_error(self):
+    def test_missing_api_key_names_both_the_new_and_legacy_keys(self):
+        """缺端点/密钥 → 报错要**同时点名新旧两个键**（可读）。"""
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            path.write_text(
+            path = _write_env(
+                tmp,
                 "MINICODE_ANTHROPIC_BASE_URL=https://opencode.ai/zen/go\n"
                 "MINICODE_MODEL=minimax-m3.1-flash-free\n",
-                encoding="utf-8",
             )
             with self.assertRaises(ModelConfigError) as ctx:
                 load_config(path)
         message = str(ctx.exception)
-        for key in (
-            "MINICODE_ANTHROPIC_API_KEY",
+        self.assertIn("MINICODE_API_KEY", message)
+        self.assertIn("MINICODE_ANTHROPIC_API_KEY", message)
+        # 会话标识 / 两个兼容头 / UA 现在是**可选**的，不该再被点名。
+        for optional in (
             "MINICODE_SESSION_ID",
             "MINICODE_HTTP_USER_AGENT",
             "MINICODE_HTTP_CLIENT",
         ):
-            self.assertIn(key, message)
+            self.assertNotIn(optional, message)
 
     def test_empty_value_counts_as_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            path.write_text(_VALID_ENV.replace("MINICODE_MODEL=minimax-m3.1-flash-free", "MINICODE_MODEL="), encoding="utf-8")
+            path = _write_env(
+                tmp, _VALID_ENV.replace("MINICODE_MODEL=minimax-m3.1-flash-free", "MINICODE_MODEL=")
+            )
             with self.assertRaises(ModelConfigError) as ctx:
                 load_config(path)
         self.assertIn("MINICODE_MODEL", str(ctx.exception))
@@ -194,27 +292,18 @@ class ConfigTest(unittest.TestCase):
     def test_temperature_defaults_to_zero_when_the_env_does_not_mention_it(self):
         """``MINICODE_TEMPERATURE`` 是**可选**的：缺省 0（关采样）。"""
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            path.write_text(_VALID_ENV, encoding="utf-8")
-            config = load_config(path)
+            config = load_config(_write_env(tmp, _VALID_ENV))
         self.assertEqual(config.temperature, 0.0)
 
     def test_temperature_can_be_overridden_from_the_env(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            path.write_text(
-                _VALID_ENV + "MINICODE_TEMPERATURE=0.3\n", encoding="utf-8"
-            )
-            config = load_config(path)
+            config = load_config(_write_env(tmp, _VALID_ENV + "MINICODE_TEMPERATURE=0.3\n"))
         self.assertEqual(config.temperature, 0.3)
 
     def test_non_numeric_temperature_is_refused_by_name(self):
         """给了但不是数字 → **显式报错**，不静默按 0 跑。"""
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            path.write_text(
-                _VALID_ENV + "MINICODE_TEMPERATURE=hot\n", encoding="utf-8"
-            )
+            path = _write_env(tmp, _VALID_ENV + "MINICODE_TEMPERATURE=hot\n")
             with self.assertRaises(ModelConfigError) as ctx:
                 load_config(path)
         self.assertIn("MINICODE_TEMPERATURE", str(ctx.exception))
@@ -223,29 +312,127 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(_config().temperature, 0.0)
 
 
-class EndpointRuleTest(unittest.TestCase):
-    """「选哪条通道」是可测行为：免费档只能走带 ``/go`` 后缀的那条。"""
+class ProtocolConfigTest(unittest.TestCase):
+    """两套配置键并存：新键优先、旧键兜底；协议与可选键都可测。"""
 
-    def test_free_tier_channel_is_accepted(self):
+    def test_old_keys_only_still_start_as_anthropic(self):
+        config = _load_text(_VALID_ENV)
+        self.assertEqual(config.protocol, PROTOCOL_ANTHROPIC)
+        self.assertEqual(config.origins["base_url"], "MINICODE_ANTHROPIC_BASE_URL")
+        self.assertEqual(config.origins["api_key"], "MINICODE_ANTHROPIC_API_KEY")
+
+    def test_new_keys_override_the_old_keys(self):
+        env = _VALID_ENV + (
+            "MINICODE_BASE_URL=https://api.anthropic.com\n"
+            "MINICODE_API_KEY=sk-new-key-1234\n"
+            "MINICODE_MODEL=claude-sonnet-4-5\n"
+        )
+        config = _load_text(env)
+        self.assertEqual(config.base_url, "https://api.anthropic.com")
+        self.assertEqual(config.api_key, "sk-new-key-1234")
+        self.assertEqual(config.model, "claude-sonnet-4-5")
+        self.assertEqual(config.origins["base_url"], "MINICODE_BASE_URL")
+        self.assertEqual(config.origins["api_key"], "MINICODE_API_KEY")
+        self.assertEqual(config.endpoint, "https://api.anthropic.com/v1/messages")
+
+    def test_missing_both_key_pairs_names_every_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_env(tmp, "MINICODE_MODEL=m\n")
+            with self.assertRaises(ModelConfigError) as ctx:
+                load_config(path)
+        message = str(ctx.exception)
+        for key in (
+            "MINICODE_BASE_URL",
+            "MINICODE_ANTHROPIC_BASE_URL",
+            "MINICODE_API_KEY",
+            "MINICODE_ANTHROPIC_API_KEY",
+        ):
+            self.assertIn(key, message)
+
+    def test_invalid_provider_lists_the_allowed_values(self):
+        env = _GENERIC_ENV + "MINICODE_PROVIDER=deepseek\n"
+        with self.assertRaises(ModelConfigError) as ctx:
+            _load_text(env)
+        message = str(ctx.exception)
+        self.assertIn("MINICODE_PROVIDER", message)
+        for allowed in PROTOCOLS:
+            self.assertIn(allowed, message)
+
+    def test_session_and_compat_headers_are_optional(self):
+        config = _load_text(_GENERIC_ENV)
+        self.assertEqual(config.session_id, "")
+        self.assertEqual(config.client_header, "")
+        self.assertEqual(config.user_agent, DEFAULT_USER_AGENT)
+        for field_name in ("session_id", "client_header", "user_agent"):
+            self.assertEqual(config.origins[field_name], "")
+
+    def test_provider_openai_selects_the_openai_endpoint(self):
+        config = _load_text(_GENERIC_ENV + "MINICODE_PROVIDER=openai\n")
+        self.assertEqual(config.protocol, PROTOCOL_OPENAI)
+        self.assertEqual(config.origins["protocol"], "MINICODE_PROVIDER")
         self.assertEqual(
-            resolve_endpoint("https://opencode.ai/zen/go"),
-            "https://opencode.ai/zen/go/v1/messages",
+            config.endpoint, "https://api.deepseek.com/v1/chat/completions"
         )
 
-    def test_non_free_tier_channel_is_refused_by_name(self):
-        with self.assertRaises(ModelConfigError) as ctx:
-            resolve_endpoint("https://opencode.ai/zen")
-        self.assertIn("/go", str(ctx.exception))
+    def test_describe_masks_the_key_and_names_its_source(self):
+        config = _load_text(_GENERIC_ENV + "MINICODE_PROVIDER=openai\n")
+        text = config.describe()
+        self.assertIn("protocol=openai", text)
+        self.assertIn("endpoint=https://api.deepseek.com/v1/chat/completions", text)
+        self.assertIn("api_key=sk-1****wxyz", text)
+        self.assertIn("来源 MINICODE_API_KEY", text)
+        self.assertNotIn("sk-1234567890wxyz", text)
 
-    def test_empty_base_url_is_refused(self):
-        with self.assertRaises(ModelConfigError):
-            resolve_endpoint("   ")
+    def test_invalid_protocol_on_a_direct_config_is_refused(self):
+        with self.assertRaises(ModelConfigError) as ctx:
+            _config(protocol="gemini")
+        for allowed in PROTOCOLS:
+            self.assertIn(allowed, str(ctx.exception))
+
+
+class EndpointRuleTest(unittest.TestCase):
+    """端点按协议拼：anthropic → /v1/messages；openai → /chat/completions。"""
+
+    def test_anthropic_endpoint_is_messages(self):
+        self.assertEqual(
+            resolve_endpoint("https://api.anthropic.com"),
+            "https://api.anthropic.com/v1/messages",
+        )
+
+    def test_openai_endpoint_is_chat_completions(self):
+        self.assertEqual(
+            resolve_endpoint("https://api.deepseek.com/v1", PROTOCOL_OPENAI),
+            "https://api.deepseek.com/v1/chat/completions",
+        )
+
+    def test_internal_gateway_url_without_the_go_suffix_is_accepted(self):
+        """取消「必须以 /go 结尾」的内部网关规则（会挡住通用端点）。"""
+        self.assertEqual(
+            resolve_endpoint("https://opencode.ai/zen"),
+            "https://opencode.ai/zen/v1/messages",
+        )
 
     def test_trailing_slash_is_tolerated(self):
         self.assertEqual(
             resolve_endpoint("https://opencode.ai/zen/go/"),
             "https://opencode.ai/zen/go/v1/messages",
         )
+        self.assertEqual(
+            resolve_endpoint("https://api.openai.com/v1/", PROTOCOL_OPENAI),
+            "https://api.openai.com/v1/chat/completions",
+        )
+
+    def test_empty_base_url_is_refused_by_naming_the_keys(self):
+        with self.assertRaises(ModelConfigError) as ctx:
+            resolve_endpoint("   ")
+        message = str(ctx.exception)
+        self.assertIn("MINICODE_BASE_URL", message)
+        self.assertIn("MINICODE_ANTHROPIC_BASE_URL", message)
+
+    def test_unknown_protocol_is_refused(self):
+        with self.assertRaises(ModelConfigError) as ctx:
+            resolve_endpoint("https://example.invalid", "gemini")
+        self.assertIn("gemini", str(ctx.exception))
 
 
 class EffortTest(unittest.TestCase):
@@ -271,8 +458,8 @@ class EffortTest(unittest.TestCase):
         self.assertEqual(require_effort("low"), Effort.LOW)
 
 
-class RequestConstructionTest(unittest.TestCase):
-    """请求构造：头集合、请求体、档位字段。"""
+class AnthropicRequestConstructionTest(unittest.TestCase):
+    """anthropic 的请求构造：头集合、请求体、档位字段（**逐字保持原实现**）。"""
 
     def test_all_required_headers_are_present(self):
         headers = build_headers(_config())
@@ -282,6 +469,14 @@ class RequestConstructionTest(unittest.TestCase):
         self.assertEqual(headers["x-opencode-session"], "dsh-union-alpha")
         self.assertEqual(headers["anthropic-version"], "2023-06-01")
         self.assertEqual(headers["content-type"], "application/json")
+
+    def test_compat_headers_are_omitted_when_the_config_is_empty(self):
+        headers = build_headers(
+            _config(session_id="", client_header="", user_agent=DEFAULT_USER_AGENT)
+        )
+        self.assertNotIn("x-opencode-session", headers)
+        self.assertNotIn("x-opencode-client", headers)
+        self.assertEqual(headers["user-agent"], DEFAULT_USER_AGENT)
 
     def test_body_carries_the_effort_field_the_server_actually_supports(self):
         body = build_request_body(
@@ -294,9 +489,7 @@ class RequestConstructionTest(unittest.TestCase):
 
     def test_body_carries_temperature_zero_by_default(self):
         """请求体**显式**带 temperature=0 —— 不带就走服务端缺省（有采样）。"""
-        body = build_request_body(
-            model="m", prompt="hi", effort=Effort.LOW, max_tokens=512
-        )
+        body = build_request_body(model="m", prompt="hi", effort=Effort.LOW, max_tokens=512)
         self.assertEqual(body["temperature"], 0)
 
     def test_body_temperature_can_be_set_explicitly(self):
@@ -311,37 +504,22 @@ class RequestConstructionTest(unittest.TestCase):
 
     def test_client_sends_the_configured_temperature(self):
         """客户端把配置里的 temperature 传进请求体。"""
-        body = json.dumps(
-            {"content": [{"type": "text", "text": "{\"x\": 1, \"y\": 2}"}]}
-        ).encode()
-        client = _StubTransportClient(_config(), InMemoryRequestLog(), body)
+        client = _StubTransportClient(_config(), InMemoryRequestLog(), _anthropic_body())
         client.complete("hi", effort=Effort.LOW, max_tokens=64)
         self.assertEqual(client.sent_bodies[0]["temperature"], 0)
 
-        hot = ModelConfig(
-            base_url="https://opencode.ai/zen/go",
-            api_key="k",
-            model="m",
-            session_id="s",
-            user_agent="ua",
-            client_header="c",
-            temperature=0.5,
-        )
-        client = _StubTransportClient(hot, InMemoryRequestLog(), body)
+        hot = _config(temperature=0.5)
+        client = _StubTransportClient(hot, InMemoryRequestLog(), _anthropic_body())
         client.complete("hi", effort=Effort.LOW, max_tokens=64)
         self.assertEqual(client.sent_bodies[0]["temperature"], 0.5)
 
     def test_body_never_uses_the_ignored_alias(self):
-        body = build_request_body(
-            model="m", prompt="hi", effort=Effort.LOW, max_tokens=512
-        )
+        body = build_request_body(model="m", prompt="hi", effort=Effort.LOW, max_tokens=512)
         self.assertNotIn("reasoning_effort", body)
         self.assertNotIn("thinking", body)
 
     def test_body_omits_the_effort_field_when_effort_is_none(self):
-        body = build_request_body(
-            model="m", prompt="hi", effort=None, max_tokens=512
-        )
+        body = build_request_body(model="m", prompt="hi", effort=None, max_tokens=512)
         self.assertNotIn("output_config", body)
 
     def test_thinking_disabled_does_not_touch_the_effort_field(self):
@@ -367,6 +545,7 @@ class RequestConstructionTest(unittest.TestCase):
         content = body["messages"][0]["content"]
         self.assertEqual(content[0]["type"], "image")
         self.assertEqual(content[0]["source"]["data"], "QUJD")
+        self.assertEqual(content[0]["source"]["media_type"], "image/png")
         self.assertEqual(content[1]["type"], "text")
 
     def test_client_source_has_no_scale_constants(self):
@@ -387,8 +566,102 @@ class RequestConstructionTest(unittest.TestCase):
                         )
 
 
+class OpenAIRequestConstructionTest(unittest.TestCase):
+    """openai 的请求构造：Bearer 头、文本在前图片在后、不猜思考字段。"""
+
+    def test_headers_use_bearer_and_no_anthropic_headers(self):
+        headers = build_headers(_config(protocol=PROTOCOL_OPENAI))
+        self.assertEqual(
+            headers["authorization"], "Bearer key-from-repo-env"
+        )
+        self.assertNotIn("x-api-key", headers)
+        self.assertNotIn("anthropic-version", headers)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(headers["accept"], "application/json")
+        self.assertEqual(headers["user-agent"], "opencode/1.0.0")
+
+    def test_compat_headers_are_optional_for_gateway_endpoints(self):
+        with_compat = build_headers(_config(protocol=PROTOCOL_OPENAI))
+        self.assertEqual(with_compat["x-opencode-session"], "dsh-union-alpha")
+        self.assertEqual(with_compat["x-opencode-client"], "cli")
+
+        without = build_headers(
+            _config(protocol=PROTOCOL_OPENAI, session_id="", client_header="")
+        )
+        self.assertNotIn("x-opencode-session", without)
+        self.assertNotIn("x-opencode-client", without)
+
+    def test_body_puts_text_first_then_image_url(self):
+        body = build_request_body(
+            model="deepseek-chat",
+            prompt="hi",
+            effort=Effort.LOW,
+            max_tokens=512,
+            image_base64="QUJD",
+            protocol=PROTOCOL_OPENAI,
+        )
+        content = body["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "hi"})
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertEqual(
+            content[1]["image_url"]["url"], "data:image/png;base64,QUJD"
+        )
+        self.assertEqual(body["model"], "deepseek-chat")
+        self.assertEqual(body["max_tokens"], 512)
+        self.assertEqual(body["temperature"], 0)
+
+    def test_body_never_guesses_thinking_fields(self):
+        body = build_request_body(
+            model="m",
+            prompt="hi",
+            effort=Effort.MAX,
+            max_tokens=512,
+            thinking_disabled=True,
+            protocol=PROTOCOL_OPENAI,
+        )
+        self.assertNotIn("output_config", body)
+        self.assertNotIn("thinking", body)
+        self.assertNotIn("reasoning_effort", body)
+
+    def test_multiple_images_keep_the_send_order(self):
+        body = build_request_body(
+            model="m",
+            prompt="hi",
+            effort=Effort.LOW,
+            max_tokens=512,
+            image_base64="MAIN",
+            images_base64=("EXTRA-1", "EXTRA-2"),
+            protocol=PROTOCOL_OPENAI,
+        )
+        content = body["messages"][0]["content"]
+        self.assertEqual(
+            [block["type"] for block in content],
+            ["text", "image_url", "image_url", "image_url"],
+        )
+        self.assertIn("MAIN", content[1]["image_url"]["url"])
+        self.assertIn("EXTRA-1", content[2]["image_url"]["url"])
+        self.assertIn("EXTRA-2", content[3]["image_url"]["url"])
+
+    def test_client_autoselects_the_protocol_from_the_config(self):
+        """``ModelClient.complete`` 自动用 ``config.protocol``（端点/头/正文全换）。"""
+        config = _config(protocol=PROTOCOL_OPENAI)
+        client = _StubTransportClient(config, InMemoryRequestLog(), _openai_body())
+        reply = client.complete(
+            "hi", effort=Effort.LOW, max_tokens=64, image_base64=_png_base64(400, 300)
+        )
+        self.assertTrue(client.sent_endpoints[0].endswith("/chat/completions"))
+        self.assertEqual(
+            client.sent_headers[0]["authorization"], "Bearer key-from-repo-env"
+        )
+        body = client.sent_bodies[0]
+        self.assertEqual(body["messages"][0]["content"][0]["type"], "text")
+        self.assertEqual(body["messages"][0]["content"][1]["type"], "image_url")
+        self.assertNotIn("output_config", body)
+        self.assertEqual(reply.image_tokens, 85)
+
+
 class ResponseParsingTest(unittest.TestCase):
-    """响应解析：模型侧错误如实回传；HTTP 200 但没有文本输出 = 显式失败。"""
+    """anthropic 响应解析：模型侧错误如实回传；HTTP 200 但没有文本输出 = 显式失败。"""
 
     def test_model_side_error_is_passed_through(self):
         body = json.dumps(
@@ -516,6 +789,254 @@ class ResponseParsingTest(unittest.TestCase):
                 latency_ms=1.0,
             )
         self.assertEqual(ctx.exception.status, 200)
+
+
+class OpenAIResponseParsingTest(unittest.TestCase):
+    """openai 响应解析：只认 content，reasoning_content 只做形态字段。"""
+
+    _ENDPOINT = "https://api.deepseek.com/v1/chat/completions"
+
+    def _parse(self, body: bytes, status: int = 200):
+        return parse_response(
+            status=status,
+            body_bytes=body,
+            model="m",
+            endpoint=self._ENDPOINT,
+            effort=Effort.LOW,
+            latency_ms=1.0,
+            protocol=PROTOCOL_OPENAI,
+        )
+
+    def test_successful_reply_carries_text_usage_and_shape(self):
+        reply = self._parse(_openai_body())
+        self.assertEqual(reply.text, '{"x": 1, "y": 2}')
+        self.assertEqual(reply.model, "gpt-x")
+        self.assertEqual(reply.input_tokens, 900)  # prompt_tokens
+        self.assertEqual(reply.output_tokens, 40)  # completion_tokens
+        self.assertEqual(reply.thinking_tokens, 32)  # reasoning_tokens
+        self.assertIsNone(reply.cache_read_input_tokens)
+        self.assertIsNone(reply.cache_creation_input_tokens)
+        self.assertEqual(reply.stop_reason, "stop")  # finish_reason
+        self.assertEqual(reply.content_block_types, ("text",))
+
+    def test_reasoning_content_is_not_the_answer(self):
+        body = _openai_body(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"x": 1, "y": 2}',
+                        "reasoning_content": "先想想要不要给坐标……",
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        )
+        reply = self._parse(body)
+        self.assertEqual(reply.text, '{"x": 1, "y": 2}')
+        self.assertNotIn("先想想", reply.text)
+        self.assertEqual(reply.thinking_tokens, 32)
+
+    def test_content_parts_are_joined(self):
+        body = _openai_body(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": '{"x": 1,'},
+                            {"type": "text", "text": ' "y": 2}'},
+                        ],
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        )
+        reply = self._parse(body)
+        self.assertEqual(reply.json_payload(), {"x": 1, "y": 2})
+
+    def test_reasoning_only_is_an_explicit_failure_with_usage(self):
+        body = _openai_body(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "思考链吃光了预算",
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        )
+        with self.assertRaises(NoTextOutputError) as ctx:
+            self._parse(body)
+        usage = ctx.exception.usage or {}
+        self.assertEqual(usage.get("thinking_tokens"), 32)
+        self.assertIn("content", ctx.exception.message)
+
+    def test_reasoning_only_failure_still_logs_the_shape(self):
+        """「只有思考链」那一次**照样**要能从日志看出形态（不是猜的）。"""
+        body = _openai_body(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "思考链吃光了预算",
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        )
+        sink = InMemoryRequestLog()
+        client = _StubTransportClient(
+            _config(protocol=PROTOCOL_OPENAI), sink, body
+        )
+        with self.assertRaises(NoTextOutputError):
+            client.complete("hi", effort=Effort.LOW, max_tokens=64)
+        record = sink.records[0]
+        self.assertEqual(record.stop_reason, "length")
+        self.assertEqual(record.content_block_types, ("reasoning",))
+        self.assertEqual(record.text_len, 0)
+
+    def test_empty_content_is_an_explicit_failure(self):
+        body = _openai_body(
+            choices=[{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}]
+        )
+        with self.assertRaises(NoTextOutputError):
+            self._parse(body)
+
+    def test_missing_choices_is_an_explicit_failure(self):
+        with self.assertRaises(NoTextOutputError):
+            self._parse(json.dumps({"model": "m"}).encode())
+
+    def test_4xx_error_is_passed_through(self):
+        body = json.dumps(
+            {"error": {"type": "invalid_request_error", "message": "bad api key"}}
+        ).encode()
+        with self.assertRaises(ModelSideError) as ctx:
+            self._parse(body, status=401)
+        self.assertEqual(ctx.exception.status, 401)
+        self.assertEqual(ctx.exception.error_type, "invalid_request_error")
+        self.assertIn("bad api key", ctx.exception.message)
+
+    def test_5xx_error_is_passed_through(self):
+        with self.assertRaises(ModelSideError) as ctx:
+            self._parse(b"<html>upstream exploded</html>", status=502)
+        self.assertEqual(ctx.exception.status, 502)
+        self.assertIn("upstream exploded", ctx.exception.message)
+
+    def test_non_json_200_is_a_model_side_error(self):
+        with self.assertRaises(ModelSideError) as ctx:
+            self._parse(b"<html>not json</html>")
+        self.assertEqual(ctx.exception.status, 200)
+
+
+class TransportFailureTest(unittest.TestCase):
+    """传输失败（超时 / 不可达）如实抛出并落日志，不伪装成模型侧错误。"""
+
+    def test_timeout_is_reported_as_transport_error_and_logged(self):
+        for protocol in PROTOCOLS:
+            with self.subTest(protocol=protocol):
+                sink = InMemoryRequestLog()
+                client = _TimeoutTransportClient(
+                    _config(protocol=protocol), sink, b"{}"
+                )
+                with self.assertRaises(ModelTransportError):
+                    client.complete("hi", effort=Effort.LOW, max_tokens=64)
+                record = sink.records[0]
+                self.assertIsNone(record.http_status)
+                self.assertIn("超时", record.error or "")
+
+
+class StartupLogTest(unittest.TestCase):
+    """启动日志：``ModelClient.__init__`` 往 stderr 打一行（脱敏、只打一次）。"""
+
+    def test_logs_one_masked_line_at_construction(self):
+        config = _config(api_key="sk-1234567890wxyz")
+        sink = InMemoryRequestLog()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            client = _StubTransportClient(
+                config, sink, _anthropic_body()
+            )
+            client.complete("hi", effort=Effort.LOW, max_tokens=64)
+        lines = [line for line in stderr.getvalue().splitlines() if line]
+        self.assertEqual(len(lines), 1, "启动日志只该打一次（不是每次请求都打）")
+        line = lines[0]
+        self.assertIn("模型配置：", line)
+        self.assertIn("protocol=anthropic", line)
+        self.assertIn("api_key=sk-1****wxyz", line)
+        self.assertIn("来源", line)
+        self.assertNotIn("sk-1234567890wxyz", line, "完整密钥不许出现在日志里")
+
+    def test_openai_startup_log_shows_the_openai_endpoint(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            ModelClient(_config(protocol=PROTOCOL_OPENAI), InMemoryRequestLog())
+        line = stderr.getvalue()
+        self.assertIn("protocol=openai", line)
+        self.assertIn("/chat/completions", line)
+
+
+class ImageTokensTest(unittest.TestCase):
+    """图像 token 估计按协议分支：anthropic = 28 px patch；openai = 512 tile。"""
+
+    def test_no_image_is_none_for_both_protocols(self):
+        for protocol in PROTOCOLS:
+            with self.subTest(protocol=protocol):
+                self.assertIsNone(image_tokens_of(protocol=protocol))
+                self.assertIsNone(image_tokens_of(None, "", protocol=protocol))
+
+    def test_anthropic_uses_the_28px_patch_rule(self):
+        self.assertEqual(
+            image_tokens_of(_png_base64(400, 300)), 15 * 11
+        )
+        self.assertEqual(image_tokens_of(_png_base64(28, 28)), 1)
+
+    def test_openai_uses_the_tile_rule(self):
+        self.assertEqual(
+            image_tokens_of(_png_base64(400, 300), protocol=PROTOCOL_OPENAI),
+            85,
+        )
+        # 1024×1024 短边缩到 768 → 2×2 tile → 85 + 170×4。
+        self.assertEqual(
+            image_tokens_of(_png_base64(1024, 1024), protocol=PROTOCOL_OPENAI),
+            85 + 170 * 4,
+        )
+        # 3000×1000 先缩进 2048 → 2048×682.67 → 4×2 tile。
+        self.assertEqual(
+            image_tokens_of(_png_base64(3000, 1000), protocol=PROTOCOL_OPENAI),
+            85 + 170 * 8,
+        )
+
+    def test_openai_small_image_floor_is_85(self):
+        self.assertEqual(
+            image_tokens_of(_png_base64(512, 512), protocol=PROTOCOL_OPENAI), 85
+        )
+
+    def test_the_two_protocols_disagree_for_the_same_image(self):
+        """同一张图两套规则给出不同估计 —— 分支确实生效了。"""
+        image = _png_base64(400, 300)
+        self.assertEqual(image_tokens_of(image), 15 * 11)
+        self.assertEqual(
+            image_tokens_of(image, protocol=PROTOCOL_OPENAI), 85
+        )
+
+    def test_multiple_images_are_summed(self):
+        image = _png_base64(400, 300)
+        self.assertEqual(image_tokens_of(image, image), 2 * 15 * 11)
+        self.assertEqual(
+            image_tokens_of(image, image, protocol=PROTOCOL_OPENAI), 2 * 85
+        )
+
+    def test_undecodable_image_is_none_not_guessed(self):
+        not_png = base64.b64encode(b"not a png").decode()
+        for protocol in PROTOCOLS:
+            with self.subTest(protocol=protocol):
+                self.assertIsNone(image_tokens_of(not_png, protocol=protocol))
+        # 一张好图 + 一张坏图：整次记 None（不拿好图那个数冒充整次）。
+        self.assertIsNone(image_tokens_of(_png_base64(400, 300), not_png))
 
 
 class RequestLogTest(unittest.TestCase):
@@ -686,7 +1207,7 @@ class RequestLogTest(unittest.TestCase):
 
 
 class RequestLogShapeTest(unittest.TestCase):
-    """客户端把响应体的形态字段一路落到日志里。"""
+    """客户端把响应体的形态字段一路落到日志里（两种协议）。"""
 
     def test_log_carries_stop_reason_block_types_and_text_length(self):
         body = json.dumps(

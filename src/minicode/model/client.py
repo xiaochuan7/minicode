@@ -14,14 +14,20 @@
 **模型坐标原样透传**：客户端不解释模型给的数值 —— 不乘分母、不按数值大小猜量纲、
 不裁剪到某个区间。量纲由标定探针解释，不在本模块。
 
-> 词汇：CONTEXT.md 收的是「**思考预算（effort）**」；工单里说的「思考档位」= effort 的**取值**。
-> 本文凡是讲「档位」的地方，都是在讲那个**取值**（low/medium/high/xhigh/max）。
+**两套协议**：``anthropic``（Anthropic Messages，原实现）与 ``openai``
+（OpenAI 兼容 ``/chat/completions``，覆盖 OpenAI / DeepSeek / Moonshot / 智谱 /
+硅基流动 / DashScope compatible-mode / Ollama / vLLM / LM Studio / OpenRouter / OneAPI）。
+走哪套由 :attr:`minicode.model.config.ModelConfig.protocol` 决定，调用入口不变。
+
+> 词汇：本仓把服务端「思考预算」叫 **effort**；工单里说的「思考档位」= effort 的**取值**
+> （low/medium/high/xhigh/max）。
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -29,7 +35,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .config import DEFAULT_TEMPERATURE, ModelConfig
+from .config import (
+    DEFAULT_TEMPERATURE,
+    PROTOCOL_ANTHROPIC,
+    PROTOCOL_OPENAI,
+    ModelConfig,
+)
 from .effort import EFFORT_VALUES, Effort
 from .errors import (
     EffortRequiredError,
@@ -42,6 +53,7 @@ from .request_log import (
     RequestLogSink,
     build_request_log,
     estimate_image_tokens,
+    estimate_openai_image_tokens,
     png_image_size,
 )
 
@@ -146,22 +158,32 @@ def require_effort(effort: Effort | str | None) -> Effort:
 
 
 def build_headers(config: ModelConfig) -> dict[str, str]:
-    """构造请求头。
+    """构造请求头（按协议分支）。
 
-    两个头都发（``user-agent`` 与 ``x-opencode-client``）——
-    2026-10-20 实测：**只有 ``user-agent`` 被边缘层强制**（去掉它 → Cloudflare
-    ``Error 1010`` 拦截，HTTP 状态码是 403）；``x-opencode-client`` 去掉后服务端照收
-    （HTTP 200）。另一个头仍然照发，是为了换网关时不丢（详见 ``docs/01-现状.md`` §2 坑 1）。
+    * ``anthropic``：``x-api-key`` + ``anthropic-version``（维持原实现）；
+    * ``openai``：``authorization: Bearer {api_key}``（OpenAI 兼容生态的标准头）。
+
+    两个兼容头 ``x-opencode-session`` / ``x-opencode-client`` **仅当配置非空才发**：
+    通用 provider 不需要它们（内部网关才要），空值也不该出现在请求里。
+    2026-10-20 实测（内部网关）：**只有 ``user-agent`` 被边缘层强制**（去掉它 →
+    Cloudflare ``Error 1010``，HTTP 403）；``x-opencode-client`` 去掉后服务端照收
+    （HTTP 200）。另一个头仍然照发，是为了换网关时不丢。
     """
-    return {
+    headers: dict[str, str] = {
         "content-type": "application/json",
         "accept": "application/json",
-        "x-api-key": config.api_key,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "x-opencode-session": config.session_id,
         "user-agent": config.user_agent,
-        "x-opencode-client": config.client_header,
     }
+    if config.protocol == PROTOCOL_OPENAI:
+        headers["authorization"] = f"Bearer {config.api_key}"
+    else:
+        headers["x-api-key"] = config.api_key
+        headers["anthropic-version"] = ANTHROPIC_VERSION
+    if config.session_id:
+        headers["x-opencode-session"] = config.session_id
+    if config.client_header:
+        headers["x-opencode-client"] = config.client_header
+    return headers
 
 
 def build_request_body(
@@ -174,8 +196,11 @@ def build_request_body(
     images_base64: Sequence[str] = (),
     thinking_disabled: bool = False,
     temperature: float = DEFAULT_TEMPERATURE,
+    protocol: str = PROTOCOL_ANTHROPIC,
 ) -> dict[str, Any]:
     """构造请求体（纯函数）。
+
+    **anthropic**（逐字保持原实现）：
 
     * 思考预算用服务端**真正支持**的写法：``output_config.effort``；
       另一种别名写法实测被服务端忽略且更慢，不作为正式开关；
@@ -187,15 +212,34 @@ def build_request_body(
       （常见缺省 1.0 → 有采样）：同一张图 + 逐字相同的提示词，两次回答可能不同。
       官方通用 API grounding 协议也是这么做的（``models/gpt4x.py``：temperature 0）。
 
+    **openai**：``messages[0].content`` 是「**文本块在前、图片块在后**」的数组
+    （图片用 ``image_url`` + base64 data URL）；**不写** ``output_config`` /
+    ``thinking`` —— OpenAI 兼容生态没有统一字段，不猜。
+
     **图片可以有多张**（工单 M10 的上下文窗口要把最近几张完整图一起带上）：
     ``image_base64`` 是那张主图，``images_base64`` 是追加的那几张，
     顺序即发送顺序。
     """
+    images = [data for data in (image_base64, *images_base64) if data]
+    if protocol == PROTOCOL_OPENAI:
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content.extend(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{data}"},
+            }
+            for data in images
+        )
+        return {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": content}],
+        }
+
     body: dict[str, Any] = {}
-    content: list[dict[str, Any]] = []
-    for data in (image_base64, *images_base64):
-        if not data:
-            continue
+    content = []
+    for data in images:
         content.append(
             {
                 "type": "image",
@@ -244,13 +288,74 @@ def content_block_types_of(data: Mapping[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _response_shape(body_bytes: bytes) -> tuple[str | None, tuple[str, ...]]:
+def _openai_choice_of(data: Mapping[str, Any]) -> Mapping[str, Any]:
+    """OpenAI 兼容响应的 ``choices[0]``；没有就是空映射（**不猜**）。"""
+    choices = data.get("choices")
+    if isinstance(choices, Sequence) and not isinstance(choices, (str, bytes)) and choices:
+        first = choices[0]
+        if isinstance(first, Mapping):
+            return first
+    return {}
+
+
+def _openai_message_of(data: Mapping[str, Any]) -> Mapping[str, Any]:
+    """OpenAI 兼容响应的 ``choices[0].message``；没有就是空映射。"""
+    message = _openai_choice_of(data).get("message")
+    return message if isinstance(message, Mapping) else {}
+
+
+def _openai_text_of(message: Mapping[str, Any]) -> str:
+    """OpenAI 兼容响应的文本：``content`` 是 str 直接用；是 list 就拼各 ``text`` 片段。
+
+    ⚠️ **``reasoning_content`` 不是回答**（思考链），这里**不读它**。
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        parts = [
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, Mapping) and part.get("type") == "text"
+        ]
+        return "\n".join(parts).strip()
+    return ""
+
+
+def _openai_reasoning_of(message: Mapping[str, Any]) -> str | None:
+    """OpenAI 兼容响应的思考链（``reasoning_content``）；没有就是 ``None``。"""
+    value = message.get("reasoning_content")
+    return None if not value else str(value)
+
+
+def _openai_stop_reason_of(data: Mapping[str, Any]) -> str | None:
+    """OpenAI 兼容响应的 ``choices[0].finish_reason`` → ``stop_reason``。"""
+    value = _openai_choice_of(data).get("finish_reason")
+    return None if value is None else str(value)
+
+
+def _openai_content_block_types_of(message: Mapping[str, Any]) -> tuple[str, ...]:
+    """OpenAI 兼容响应的形态字段（与 Anthropic 的 ``content_block_types`` 同口径）。
+
+    有文本 → ``("text",)``；只有思考链 → ``("reasoning",)``；否则 ``()``。
+    """
+    if _openai_text_of(message):
+        return ("text",)
+    if _openai_reasoning_of(message):
+        return ("reasoning",)
+    return ()
+
+
+def _response_shape(
+    body_bytes: bytes, protocol: str = PROTOCOL_ANTHROPIC
+) -> tuple[str | None, tuple[str, ...]]:
     """从**原始响应体**里取 ``(stop_reason, content_block_types)``。
 
     只用在**失败路径**上（成功路径由 :func:`parse_response` 直接填进
     :class:`ModelReply`）—— 失败路径上响应体照样带着这两个字段：
     「思考链吃光预算 → 没有文本」那类形态正是靠 ``stop_reason=max_tokens``
-    看出来的。读不出来 → ``(None, ())``（**不猜**）。
+    （OpenAI 兼容是 ``finish_reason=length``）看出来的。
+    读不出来 → ``(None, ())``（**不猜**）。
     """
     try:
         data = json.loads(body_bytes.decode("utf-8", errors="replace"))
@@ -258,18 +363,46 @@ def _response_shape(body_bytes: bytes) -> tuple[str | None, tuple[str, ...]]:
         return None, ()
     if not isinstance(data, Mapping):
         return None, ()
+    if protocol == PROTOCOL_OPENAI:
+        return _openai_stop_reason_of(data), _openai_content_block_types_of(
+            _openai_message_of(data)
+        )
     return stop_reason_of(data), content_block_types_of(data)
 
 
-def usage_of(data: Mapping[str, Any]) -> dict[str, Any]:
+def usage_of(
+    data: Mapping[str, Any], *, protocol: str = PROTOCOL_ANTHROPIC
+) -> dict[str, Any]:
     """用量明细：输入 / 输出 / 思考 token。**用量解析的唯一一处定义。**
+
+    * ``anthropic``：``input_tokens`` / ``output_tokens`` /
+      ``output_tokens_details.thinking_tokens``，缓存命中与写入分开报；
+    * ``openai``：``prompt_tokens`` → 输入、``completion_tokens`` → 输出、
+      ``completion_tokens_details.reasoning_tokens`` → 思考；
+      **``cache_*`` 保持 ``None``** —— OpenAI 的 ``cached_tokens`` 与 Anthropic
+      的「可加性」口径不同，不硬映射（不猜）。
 
     提示词缓存的命中与写入**分开报**（``cache_read_input_tokens`` /
     ``cache_creation_input_tokens``）——上下文总大小要三个数加起来看，
     只看 ``input_tokens`` 会把「上下文变大了」看漏（工单 M10 AC 5）。
     """
     usage = data.get("usage") or {}
+    if not isinstance(usage, Mapping):
+        usage = {}
+    if protocol == PROTOCOL_OPENAI:
+        details = usage.get("completion_tokens_details") or {}
+        if not isinstance(details, Mapping):
+            details = {}
+        return {
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
+            "thinking_tokens": details.get("reasoning_tokens"),
+            "cache_read_input_tokens": None,
+            "cache_creation_input_tokens": None,
+        }
     details = usage.get("output_tokens_details") or {}
+    if not isinstance(details, Mapping):
+        details = {}
     return {
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
@@ -279,12 +412,22 @@ def usage_of(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def image_tokens_of(*images_base64: str | None) -> int | None:
-    """这次请求里图像占的输入 token 数（**按 28 px patch 规则估**）。
+def image_tokens_of(
+    *images_base64: str | None, protocol: str = PROTOCOL_ANTHROPIC
+) -> int | None:
+    """这次请求里图像占的输入 token 数（**估计值**，按协议选规则）。
+
+    * ``anthropic``：28 px patch 规则（:func:`estimate_image_tokens`）；
+    * ``openai``：512 tile 规则（:func:`estimate_openai_image_tokens`）。
 
     没有图 → ``None``（不是 0：没有图与「图占了 0 个 token」是两件事）。
-    图解不出尺寸 → ``None``（**不猜**）。
+    图解不出 PNG 尺寸 → ``None``（**不猜**）。
     """
+    estimate = (
+        estimate_openai_image_tokens
+        if protocol == PROTOCOL_OPENAI
+        else estimate_image_tokens
+    )
     total = 0
     seen = False
     for data in images_base64:
@@ -297,7 +440,7 @@ def image_tokens_of(*images_base64: str | None) -> int | None:
         size = png_image_size(raw)
         if size is None:
             return None
-        total += estimate_image_tokens(*size)
+        total += estimate(*size)
         seen = True
     return total if seen else None
 
@@ -310,10 +453,12 @@ def parse_response(
     endpoint: str,
     effort: Effort,
     latency_ms: float,
+    protocol: str = PROTOCOL_ANTHROPIC,
 ) -> ModelReply:
-    """解析响应（纯函数）。
+    """解析响应（纯函数；按协议分支）。
 
-    * 状态码不是 200 → :class:`ModelSideError`（状态、错误类型、错误文本如实回传）；
+    * 状态码不是 200 → :class:`ModelSideError`（状态、错误类型、错误文本如实回传；
+      两个协议的 ``{"error": {"type", "message"}}`` 形状共用这条路径）；
     * 200 但响应体不是 JSON → :class:`ModelSideError`（协议被违反，不给裸异常）；
     * 200 但没有文本输出 → :class:`NoTextOutputError`（显式失败）。
     """
@@ -335,7 +480,9 @@ def parse_response(
             message,
             error_type=error_type,
             body=raw[:500],
-            usage=usage_of(data) if isinstance(data, Mapping) else None,
+            usage=(
+                usage_of(data, protocol=protocol) if isinstance(data, Mapping) else None
+            ),
         )
 
     try:
@@ -348,6 +495,16 @@ def parse_response(
         ) from exc
     if not isinstance(data, Mapping):
         raise ModelSideError(status, f"响应体不是 JSON 对象：{raw[:200]!r}", body=raw[:500])
+
+    if protocol == PROTOCOL_OPENAI:
+        return _parse_openai_reply(
+            status=status,
+            data=data,
+            model=model,
+            endpoint=endpoint,
+            effort=effort,
+            latency_ms=latency_ms,
+        )
 
     blocks = data.get("content") or []
     text = text_of(data)
@@ -375,6 +532,46 @@ def parse_response(
     )
 
 
+def _parse_openai_reply(
+    *,
+    status: int,
+    data: Mapping[str, Any],
+    model: str,
+    endpoint: str,
+    effort: Effort,
+    latency_ms: float,
+) -> ModelReply:
+    """解析 OpenAI 兼容的 200 响应（:func:`parse_response` 的分支实现）。
+
+    文本只读 ``choices[0].message.content``（str 或 text 片段列表）；
+    ``reasoning_content`` **只用于形态字段，不当作回答**。
+    """
+    message = _openai_message_of(data)
+    text = _openai_text_of(message)
+    usage = usage_of(data, protocol=PROTOCOL_OPENAI)
+    if not text:
+        raise NoTextOutputError(
+            "HTTP 200 但本次没有文本输出（OpenAI 兼容响应的 "
+            "choices[0].message.content 为空；思考链可能把 token 预算吃光了）",
+            usage=usage,
+        )
+    return ModelReply(
+        text=text,
+        model=str(data.get("model") or model),
+        endpoint=endpoint,
+        effort=effort,
+        http_status=status,
+        latency_ms=latency_ms,
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
+        thinking_tokens=usage["thinking_tokens"],
+        cache_read_input_tokens=None,
+        cache_creation_input_tokens=None,
+        stop_reason=_openai_stop_reason_of(data),
+        content_block_types=_openai_content_block_types_of(message),
+    )
+
+
 class ModelClient:
     """模型客户端。
 
@@ -382,6 +579,9 @@ class ModelClient:
 
         client = ModelClient(load_config(), JsonlRequestLog("runs/model-requests.jsonl"))
         reply = client.complete("只回复两个字：就绪", effort=Effort.LOW)
+
+    协议（``anthropic`` / ``openai``）由 :class:`~minicode.model.config.ModelConfig`
+    的 ``protocol`` 决定，调用入口与返回类型不随协议变化。
     """
 
     def __init__(
@@ -396,6 +596,9 @@ class ModelClient:
         self.request_log = request_log
         self.timeout_s = timeout_s
         self._clock = clock
+        # 启动日志：**构造时打一次**（不是每次请求），说清协议 / 端点 / 模型，
+        # 以及密钥到底从哪个 env 键来；api_key 已脱敏（只留前 4 后 4）。
+        print(config.describe(), file=sys.stderr)
 
     def complete(
         self,
@@ -427,10 +630,13 @@ class ModelClient:
             images_base64=images_base64,
             thinking_disabled=thinking_disabled,
             temperature=self.config.temperature,
+            protocol=self.config.protocol,
         )
 
         started = self._clock()
-        image_tokens = image_tokens_of(image_base64, *images_base64)
+        image_tokens = image_tokens_of(
+            image_base64, *images_base64, protocol=self.config.protocol
+        )
         try:
             status, raw = self._post(endpoint, headers, body)
         except ModelTransportError as exc:
@@ -454,12 +660,13 @@ class ModelClient:
                 endpoint=endpoint,
                 effort=selected,
                 latency_ms=latency_ms,
+                protocol=self.config.protocol,
             )
         except (ModelSideError, NoTextOutputError) as exc:
             usage = exc.usage or {}
             # 失败路径上响应体**照样带着**这两个字段 —— 「思考链吃光预算 →
             # 没有文本」那类形态正是靠它们看出来的（成功路径由 parse_response 填）。
-            stop_reason, block_types = _response_shape(raw)
+            stop_reason, block_types = _response_shape(raw, self.config.protocol)
             self._log(
                 effort=selected,
                 endpoint=endpoint,
