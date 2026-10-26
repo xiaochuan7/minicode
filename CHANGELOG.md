@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
+## v0.1.4 — 2026-10-26
+
+纯文档与视觉资产变更，不含任何代码能力变更（`src/` 零改动，实测数字不变）。
+
+### 变更
+
+- README 改用「产品落地页」版式：首屏 `<picture>` 明暗双版头图、三张能力卡片、
+  一眼看完的数字墙、三步上手；正文按「实测 → 短板 → 架构 → 定位差异 → 安装 / 配置 / 用法
+  → 目录结构 / 测试 / 隐私」组织，去掉冗长目录与附录说明。
+- **全部配图改为手写矢量 SVG**，图片总体积从 2.7 MB 降到约 19 KB：
+  `hero-light.svg` / `hero-dark.svg`（首屏，暗色模式自动切换）、`arch.svg`（六层架构图，
+  取代原先会横向溢出、文字折行的 mermaid 块）、`chart-overall.svg` / `chart-category.svg` /
+  `chart-platform.svg`（数据图）。
+- 数据图改由 `scripts/make_figures_svg.py` 生成：纯 Python 拼 SVG，无绘图库依赖；
+  数字写死在脚本并逐条对照 `runs/v2-eval-2016-control/sspro-report.json`。
+  原 matplotlib 版 `scripts/make_figures.py` 与对应 PNG 删除。
+- 配置节从四个并列的 `.env` 代码块压成「一个例子 + 一张端点对照表 + 折叠补充」；
+  目录结构由纯文本代码块改为「路径 / 职责」两列表格；删除面向维护者的「附注」节。
+- `docs/assets/social-preview.png` 重制为 1280×640、190 KB（GitHub Social preview 有 1 MB
+  上限，原图 1.38 MB 传不上去）。
+
 ## v0.1.3 — 2026-10-26
 
 纯文档与视觉资产变更，不含任何代码能力变更（src/ 零改动，实测数字不变）。

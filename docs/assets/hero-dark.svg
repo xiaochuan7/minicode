@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-label="minicode">
+  <defs>
+    <linearGradient id="dbg" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#101C2E"/>
+    </linearGradient>
+    <filter id="dshadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <style>
+      .sans { font-family: "Inter", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+      .mono { font-family: "SF Mono", "Cascadia Mono", Consolas, Menlo, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="520" fill="url(#dbg)"/>
+
+  <text class="mono" x="88" y="112" fill="#38BDF8" font-size="14" letter-spacing="3.4">MINICODE · WINDOWS · v0.1.3</text>
+  <text class="sans" x="86" y="196" fill="#F8FAFC" font-size="58" font-weight="800" letter-spacing="-1.6">Give it a target.</text>
+  <text class="sans" x="86" y="262" fill="#F8FAFC" font-size="58" font-weight="800" letter-spacing="-1.6">It finds the pixel.</text>
+  <text class="sans" x="90" y="316" fill="#94A3B8" font-size="22">给一句目标描述，它自己找元素、点击、校验回读。纯 Python，core 零依赖。</text>
+
+  <g>
+    <rect x="90" y="356" width="196" height="48" rx="24" fill="#0C2A3E"/>
+    <text class="mono" x="112" y="386" fill="#38BDF8" font-size="17" font-weight="700">59.02%</text>
+    <text class="mono" x="188" y="386" fill="#7DD3FC" font-size="15">grounding</text>
+
+    <rect x="302" y="356" width="168" height="48" rx="24" fill="#0C2E1F"/>
+    <text class="mono" x="324" y="386" fill="#4ADE80" font-size="17" font-weight="700">0.0 px</text>
+    <text class="mono" x="396" y="386" fill="#86EFAC" font-size="15">UIA</text>
+
+    <rect x="486" y="356" width="158" height="48" rx="24" fill="#1E293B"/>
+    <text class="mono" x="508" y="386" fill="#F8FAFC" font-size="17" font-weight="700">1326</text>
+    <text class="mono" x="562" y="386" fill="#94A3B8" font-size="15">tests</text>
+  </g>
+
+  <g filter="url(#dshadow)">
+    <rect x="952" y="96" width="560" height="330" rx="20" fill="#0F1A2A" stroke="#24344A"/>
+  </g>
+  <rect x="952" y="96" width="560" height="46" rx="20" fill="#132033"/>
+  <rect x="952" y="122" width="560" height="20" fill="#132033"/>
+  <line x1="952" y1="142" x2="1512" y2="142" stroke="#24344A"/>
+  <circle cx="982" cy="119" r="6" fill="#7F1D1D"/>
+  <circle cx="1002" cy="119" r="6" fill="#78350F"/>
+  <circle cx="1022" cy="119" r="6" fill="#14532D"/>
+
+  <rect x="984" y="176" width="496" height="34" rx="8" fill="#16233A"/>
+  <rect x="984" y="230" width="496" height="34" rx="8" fill="#0C2A3E"/>
+  <rect x="984" y="284" width="496" height="34" rx="8" fill="#16233A"/>
+  <rect x="984" y="338" width="496" height="34" rx="8" fill="#16233A"/>
+
+  <g stroke="#38BDF8" stroke-width="2.2" fill="none">
+    <path d="M1060 218h-14v-12"/>
+    <path d="M1404 218h14v-12"/>
+    <path d="M1060 256h-14v12"/>
+    <path d="M1404 256h14v12"/>
+  </g>
+  <text class="mono" x="1082" y="253" fill="#7DD3FC" font-size="15">candidate #3 · 命中</text>
+
+  <path d="M1372 300l0 36 10-10 7 16 8-5-7-15 13-1z" fill="#FB923C"/>
+</svg>

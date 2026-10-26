@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="338" viewBox="0 0 1400 338" role="img" aria-label="按平台">
+  <defs>
+    <style>.mono{font-family:"SF Mono", "Cascadia Mono", Consolas, Menlo, monospace;}.sans{font-family:"Inter", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;}</style>
+  </defs>
+  <rect width="1400" height="338" rx="16" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <text class="mono" x="40" y="46" fill="#0EA5E9" font-size="13" letter-spacing="3" fill-opacity="0.9">PLATFORM · SAME PROTOCOL</text>
+  <text class="sans" x="40" y="88" fill="#0F172A" font-size="24" font-weight="600">按平台</text>
+  <text class="mono" x="194" y="148" fill="#0F172A" font-size="20" text-anchor="end">linux</text>
+  <rect x="220" y="128" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="128" width="574" height="24" rx="12" fill="#0EA5E9"/>
+  <text class="mono" x="812" y="148" fill="#0EA5E9" font-size="20" font-weight="700">70.0%</text>
+  <text class="mono" x="916" y="148" fill="#64748B" font-size="13">n=50</text>
+  <text class="mono" x="194" y="206" fill="#0F172A" font-size="20" text-anchor="end">macos</text>
+  <rect x="220" y="186" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="186" width="551" height="24" rx="12" fill="#0EA5E9"/>
+  <text class="mono" x="789" y="206" fill="#0EA5E9" font-size="20" font-weight="700">67.2%</text>
+  <text class="mono" x="893" y="206" fill="#64748B" font-size="13">n=64</text>
+  <text class="mono" x="194" y="264" fill="#0F172A" font-size="20" text-anchor="end">windows</text>
+  <rect x="220" y="244" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="244" width="357" height="24" rx="12" fill="#F97316"/>
+  <text class="mono" x="595" y="264" fill="#F97316" font-size="20" font-weight="700">43.5%</text>
+  <text class="mono" x="699" y="264" fill="#64748B" font-size="13">n=69</text>
+  <text class="mono" x="220" y="316" fill="#64748B" font-size="13">橙色 = 当前最短的板（windows n=69）</text>
+</svg>

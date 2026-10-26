@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="512" viewBox="0 0 1400 512" role="img" aria-label="按应用类别">
+  <defs>
+    <style>.mono{font-family:"SF Mono", "Cascadia Mono", Consolas, Menlo, monospace;}.sans{font-family:"Inter", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;}</style>
+  </defs>
+  <rect width="1400" height="512" rx="16" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <text class="mono" x="40" y="46" fill="#0EA5E9" font-size="13" letter-spacing="3" fill-opacity="0.9">CATEGORY · SAME PROTOCOL</text>
+  <text class="sans" x="40" y="88" fill="#0F172A" font-size="24" font-weight="600">按应用类别</text>
+  <text class="mono" x="194" y="148" fill="#0F172A" font-size="20" text-anchor="end">Office</text>
+  <rect x="220" y="128" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="128" width="718" height="24" rx="12" fill="#0EA5E9"/>
+  <text class="mono" x="956" y="148" fill="#0EA5E9" font-size="20" font-weight="700">87.5%</text>
+  <text class="mono" x="1060" y="148" fill="#64748B" font-size="13">n=16</text>
+  <text class="mono" x="194" y="206" fill="#0F172A" font-size="20" text-anchor="end">Dev</text>
+  <rect x="220" y="186" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="186" width="512" height="24" rx="12" fill="#0EA5E9"/>
+  <text class="mono" x="750" y="206" fill="#0EA5E9" font-size="20" font-weight="700">62.5%</text>
+  <text class="mono" x="854" y="206" fill="#64748B" font-size="13">n=16</text>
+  <text class="mono" x="194" y="264" fill="#0F172A" font-size="20" text-anchor="end">OS</text>
+  <rect x="220" y="244" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="244" width="507" height="24" rx="12" fill="#0EA5E9"/>
+  <text class="mono" x="745" y="264" fill="#0EA5E9" font-size="20" font-weight="700">61.8%</text>
+  <text class="mono" x="849" y="264" fill="#64748B" font-size="13">n=76</text>
+  <text class="mono" x="194" y="322" fill="#0F172A" font-size="20" text-anchor="end">Scientific</text>
+  <rect x="220" y="302" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="302" width="465" height="24" rx="12" fill="#0EA5E9"/>
+  <text class="mono" x="703" y="322" fill="#0EA5E9" font-size="20" font-weight="700">56.7%</text>
+  <text class="mono" x="807" y="322" fill="#64748B" font-size="13">n=30</text>
+  <text class="mono" x="194" y="380" fill="#0F172A" font-size="20" text-anchor="end">CAD</text>
+  <rect x="220" y="360" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="360" width="364" height="24" rx="12" fill="#F97316"/>
+  <text class="mono" x="602" y="380" fill="#F97316" font-size="20" font-weight="700">44.4%</text>
+  <text class="mono" x="706" y="380" fill="#64748B" font-size="13">n=9</text>
+  <text class="mono" x="194" y="438" fill="#0F172A" font-size="20" text-anchor="end">Creative</text>
+  <rect x="220" y="418" width="820" height="24" rx="12" fill="#F1F4F8"/>
+  <rect x="220" y="418" width="364" height="24" rx="12" fill="#F97316"/>
+  <text class="mono" x="602" y="438" fill="#F97316" font-size="20" font-weight="700">44.4%</text>
+  <text class="mono" x="706" y="438" fill="#64748B" font-size="13">n=36</text>
+  <text class="mono" x="220" y="490" fill="#64748B" font-size="13">橙色 = 弱项组（CAD n=9、Creative n=36，单组样本小，结论要打折）</text>
+</svg>

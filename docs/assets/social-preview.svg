@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="minicode">
+  <defs>
+    <linearGradient id="sbg" x1="0" y1="0" x2="0.7" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EAF2FA"/>
+    </linearGradient>
+    <linearGradient id="sacc" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0EA5E9"/>
+      <stop offset="1" stop-color="#0284C7"/>
+    </linearGradient>
+    <filter id="sshadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .sans { font-family: "Inter", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+      .mono { font-family: "SF Mono", "Cascadia Mono", Consolas, Menlo, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#sbg)"/>
+  <rect x="0" y="0" width="1280" height="8" fill="url(#sacc)"/>
+
+  <text class="mono" x="72" y="96" fill="#0284C7" font-size="15" letter-spacing="4">MINICODE · v0.1.4</text>
+  <text class="sans" x="70" y="178" fill="#0B1220" font-size="62" font-weight="800" letter-spacing="-1.8">Give it a target.</text>
+  <text class="sans" x="70" y="248" fill="#0B1220" font-size="62" font-weight="800" letter-spacing="-1.8">It finds the pixel.</text>
+  <text class="sans" x="72" y="300" fill="#475569" font-size="24">Windows desktop computer-use agent · pure Python</text>
+
+  <g>
+    <rect x="72" y="352" width="228" height="56" rx="28" fill="#E0F2FE"/>
+    <text class="mono" x="94" y="388" fill="#0369A1" font-size="19" font-weight="700">59.02%</text>
+    <text class="mono" x="182" y="388" fill="#0C4A6E" font-size="16">grounding</text>
+
+    <rect x="316" y="352" width="196" height="56" rx="28" fill="#DCFCE7"/>
+    <text class="mono" x="338" y="388" fill="#15803D" font-size="19" font-weight="700">0.0 px</text>
+    <text class="mono" x="418" y="388" fill="#14532D" font-size="16">UIA</text>
+
+    <rect x="528" y="352" width="186" height="56" rx="28" fill="#F1F5F9"/>
+    <text class="mono" x="550" y="388" fill="#0F172A" font-size="19" font-weight="700">1326</text>
+    <text class="mono" x="608" y="388" fill="#475569" font-size="16">tests</text>
+  </g>
+
+  <g filter="url(#sshadow)">
+    <rect x="820" y="120" width="392" height="400" rx="18" fill="#FFFFFF" stroke="#E4E8EE"/>
+  </g>
+  <rect x="820" y="120" width="392" height="42" rx="18" fill="#F8FAFC"/>
+  <rect x="820" y="142" width="392" height="20" fill="#F8FAFC"/>
+  <line x1="820" y1="162" x2="1212" y2="162" stroke="#E4E8EE"/>
+  <circle cx="846" cy="141" r="5" fill="#FCA5A5"/>
+  <circle cx="864" cy="141" r="5" fill="#FCD34D"/>
+  <circle cx="882" cy="141" r="5" fill="#86EFAC"/>
+
+  <rect x="848" y="196" width="336" height="34" rx="8" fill="#F1F5F9"/>
+  <rect x="848" y="250" width="336" height="34" rx="8" fill="#E8F5FE"/>
+  <rect x="848" y="304" width="336" height="34" rx="8" fill="#F1F5F9"/>
+  <rect x="848" y="358" width="336" height="34" rx="8" fill="#F1F5F9"/>
+
+  <g stroke="#0EA5E9" stroke-width="2.2" fill="none">
+    <path d="M906 238h-12v-10"/>
+    <path d="M1112 238h12v-10"/>
+    <path d="M906 272h-12v10"/>
+    <path d="M1112 272h12v10"/>
+  </g>
+  <text class="mono" x="926" y="268" fill="#0369A1" font-size="15">candidate #3</text>
+
+  <path d="M1122 316l0 34 9-9 7 15 8-5-7-14 12-1z" fill="#F97316"/>
+</svg>

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="440" viewBox="0 0 1400 440" role="img" aria-label="ScreenSpot-Pro 定位命中率">
+  <defs>
+    <style>.mono{font-family:"SF Mono", "Cascadia Mono", Consolas, Menlo, monospace;}.sans{font-family:"Inter", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;}</style>
+  </defs>
+  <rect width="1400" height="440" rx="16" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <text class="mono" x="40" y="46" fill="#0EA5E9" font-size="13" letter-spacing="3" fill-opacity="0.9">GROUNDING · N=183 · OFFICIAL BBOX HIT</text>
+  <text class="sans" x="40" y="88" fill="#0F172A" font-size="24" font-weight="600">ScreenSpot-Pro 定位命中率</text>
+  <text class="sans" x="270" y="164" fill="#0F172A" font-size="22" text-anchor="end">整体</text>
+  <rect x="300" y="142" width="740" height="26" rx="13" fill="#F1F4F8"/>
+  <rect x="300" y="142" width="437" height="26" rx="13" fill="#0EA5E9"/>
+  <line x1="683" y1="180" x2="788" y2="180" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="683" y1="176" x2="683" y2="184" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="788" y1="176" x2="788" y2="184" stroke="#64748B" stroke-width="1.2"/>
+  <text class="mono" x="1074" y="166" fill="#0F172A" font-size="25" font-weight="700">59.02%</text>
+  <text class="mono" x="1074" y="188" fill="#64748B" font-size="13">108/183 · CI 51.78–65.89</text>
+  <text class="sans" x="270" y="236" fill="#0F172A" font-size="22" text-anchor="end">文本类</text>
+  <rect x="300" y="214" width="740" height="26" rx="13" fill="#F1F4F8"/>
+  <rect x="300" y="214" width="516" height="26" rx="13" fill="#0EA5E9"/>
+  <line x1="744" y1="252" x2="878" y2="252" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="744" y1="248" x2="744" y2="256" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="878" y1="248" x2="878" y2="256" stroke="#64748B" stroke-width="1.2"/>
+  <text class="mono" x="1074" y="238" fill="#0F172A" font-size="25" font-weight="700">69.79%</text>
+  <text class="mono" x="1074" y="260" fill="#64748B" font-size="13">67/96 · CI 59.99–78.07</text>
+  <text class="sans" x="270" y="308" fill="#0F172A" font-size="22" text-anchor="end">图标类</text>
+  <rect x="300" y="286" width="740" height="26" rx="13" fill="#F1F4F8"/>
+  <rect x="300" y="286" width="349" height="26" rx="13" fill="#F97316"/>
+  <line x1="574" y1="324" x2="726" y2="324" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="574" y1="320" x2="574" y2="328" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="726" y1="320" x2="726" y2="328" stroke="#64748B" stroke-width="1.2"/>
+  <text class="mono" x="1074" y="310" fill="#0F172A" font-size="25" font-weight="700">47.13%</text>
+  <text class="mono" x="1074" y="332" fill="#64748B" font-size="13">41/87 · CI 36.98–57.51</text>
+  <text class="sans" x="270" y="380" fill="#0F172A" font-size="22" text-anchor="end">粗定位基线</text>
+  <rect x="300" y="358" width="740" height="26" rx="13" fill="#F1F4F8"/>
+  <rect x="300" y="358" width="319" height="26" rx="13" fill="#F97316"/>
+  <line x1="568" y1="396" x2="673" y2="396" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="568" y1="392" x2="568" y2="400" stroke="#64748B" stroke-width="1.2"/>
+  <line x1="673" y1="392" x2="673" y2="400" stroke="#64748B" stroke-width="1.2"/>
+  <text class="mono" x="1074" y="382" fill="#0F172A" font-size="25" font-weight="700">43.17%</text>
+  <text class="mono" x="1074" y="404" fill="#64748B" font-size="13">79/183 · CI 36.21–50.41</text>
+</svg>

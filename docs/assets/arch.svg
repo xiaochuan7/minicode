@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="800" viewBox="0 0 1600 800" role="img" aria-label="minicode architecture">
+  <defs>
+    <style>
+      .sans { font-family: "Inter", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+      .mono { font-family: "SF Mono", "Cascadia Mono", Consolas, Menlo, monospace; }
+    </style>
+  </defs>
+  <rect width="1600" height="800" fill="#FFFFFF"/>
+
+  <text class="mono" x="60" y="58" fill="#0284C7" font-size="14" letter-spacing="3.2">ARCHITECTURE</text>
+  <text class="sans" x="60" y="100" fill="#0B1220" font-size="30" font-weight="700">六层，自下而上；上层只依赖下一层的接口</text>
+
+  <!-- L5 -->
+  <rect x="60" y="134" width="1480" height="72" rx="14" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <rect x="60" y="134" width="6" height="72" rx="3" fill="#0EA5E9"/>
+  <text class="mono" x="92" y="179" fill="#0284C7" font-size="21" font-weight="700">L5</text>
+  <text class="sans" x="156" y="179" fill="#0B1220" font-size="25" font-weight="700">安全与审计</text>
+  <text class="mono" x="566" y="178" fill="#64748B" font-size="18">audit · privacy · redact · approval</text>
+  <text class="sans" x="1016" y="178" fill="#475569" font-size="18">动作记录只落 SHA-256 · 敏感窗口不拍</text>
+
+  <!-- L4 -->
+  <rect x="60" y="218" width="1480" height="72" rx="14" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <rect x="60" y="218" width="6" height="72" rx="3" fill="#0EA5E9"/>
+  <text class="mono" x="92" y="263" fill="#0284C7" font-size="21" font-weight="700">L4</text>
+  <text class="sans" x="156" y="263" fill="#0B1220" font-size="25" font-weight="700">校验与纠错</text>
+  <text class="mono" x="566" y="262" fill="#64748B" font-size="18">verification · reflection</text>
+  <text class="sans" x="1016" y="262" fill="#475569" font-size="18">执行前重读 · 执行后回读 · 失败停手</text>
+
+  <!-- L3 -->
+  <rect x="60" y="302" width="1480" height="72" rx="14" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <rect x="60" y="302" width="6" height="72" rx="3" fill="#0EA5E9"/>
+  <text class="mono" x="92" y="347" fill="#0284C7" font-size="21" font-weight="700">L3</text>
+  <text class="sans" x="156" y="347" fill="#0B1220" font-size="25" font-weight="700">决策</text>
+  <text class="mono" x="566" y="346" fill="#64748B" font-size="18">decision</text>
+  <text class="sans" x="1016" y="346" fill="#475569" font-size="18">产一段动作程序，在受控环境里执行</text>
+
+  <!-- SEAM -->
+  <rect x="60" y="386" width="1480" height="56" rx="14" fill="#FFF7ED" stroke="#FDBA74"/>
+  <text class="mono" x="92" y="421" fill="#C2410C" font-size="19" font-weight="700" letter-spacing="1">SEAM</text>
+  <text class="sans" x="212" y="421" fill="#9A3412" font-size="20">唯一测试缝 · 输入「目标描述 + 一帧截图 + 可选控件树」→ 输出「动作 + 最终落点 + 意图」</text>
+  <text class="mono" x="1436" y="421" fill="#C2410C" font-size="14">ADR 0007</text>
+
+  <!-- L2 -->
+  <rect x="60" y="454" width="1480" height="72" rx="14" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <rect x="60" y="454" width="6" height="72" rx="3" fill="#0EA5E9"/>
+  <text class="mono" x="92" y="499" fill="#0284C7" font-size="21" font-weight="700">L2</text>
+  <text class="sans" x="156" y="499" fill="#0B1220" font-size="25" font-weight="700">视觉定位</text>
+  <text class="mono" x="566" y="498" fill="#64748B" font-size="18">ground · model · calib</text>
+  <text class="sans" x="1016" y="498" fill="#475569" font-size="18">候选表 → 模型选编号 → 物理像素落点</text>
+
+  <!-- L1 -->
+  <rect x="60" y="538" width="1480" height="72" rx="14" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <rect x="60" y="538" width="6" height="72" rx="3" fill="#0EA5E9"/>
+  <text class="mono" x="92" y="583" fill="#0284C7" font-size="21" font-weight="700">L1</text>
+  <text class="sans" x="156" y="583" fill="#0B1220" font-size="25" font-weight="700">结构感知</text>
+  <text class="mono" x="566" y="582" fill="#64748B" font-size="18">uia · browser</text>
+  <text class="sans" x="1016" y="582" fill="#475569" font-size="18">控件树与 DOM 快照，能结构化就不猜像素</text>
+
+  <!-- L0 -->
+  <rect x="60" y="622" width="1480" height="72" rx="14" fill="#FFFFFF" stroke="#E4E8EE"/>
+  <rect x="60" y="622" width="6" height="72" rx="3" fill="#0EA5E9"/>
+  <text class="mono" x="92" y="667" fill="#0284C7" font-size="21" font-weight="700">L0</text>
+  <text class="sans" x="156" y="667" fill="#0B1220" font-size="25" font-weight="700">设备与坐标</text>
+  <text class="mono" x="566" y="666" fill="#64748B" font-size="18">coord · exec</text>
+  <text class="sans" x="1016" y="666" fill="#475569" font-size="18">虚拟桌面坐标 · DPI · 截图 · SendInput</text>
+
+  <text class="mono" x="60" y="742" fill="#94A3B8" font-size="14">coord / exec / verify 是已验证的冻结原型，不做逻辑改动</text>
+</svg>
