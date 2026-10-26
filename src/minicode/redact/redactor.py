@@ -49,7 +49,7 @@ __all__ = [
 MODEL_SIDE_HEADER = "控件树（已脱敏）"
 
 #: 正文类控件（值一律不外发）：编辑框 / 文档 / 文本控件。
-#: 架构决策备忘 §2 L5 ①：正文类文本（Edit 控件内容、Document/Text 控件长文本、聊天草稿）默认不外发。
+#: 正文类文本（Edit 控件内容、Document/Text 控件长文本、聊天草稿）默认不外发。
 BODY_CONTROL_TYPES = ("edit", "document", "text")
 
 
@@ -87,7 +87,7 @@ class TreeRedactor:
         if not self.config.redaction_enabled:
             raise ChannelUnavailableError(
                 "脱敏未上线，禁止把控件树送进模型上下文"
-                "（架构决策备忘 §2.6 C-15：脱敏必须排在所有通道之前）"
+                "（脱敏必须排在所有通道之前）"
             )
         if not self.config.send_tree_to_model:
             raise ChannelUnavailableError("「送树进模型上下文」未启用，该通道不可用")

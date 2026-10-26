@@ -123,7 +123,7 @@ class Wave2RunnerTests(unittest.TestCase):
     """**判定口径**：人工代确认短路、跳过不算通过。"""
 
     def test_the_human_confirm_ticket_is_executed_by_the_agent(self):
-        """**「人工代确认」→ agent 代确认**（施工清单 T10）：不再阻塞、不计失败。"""
+        """**「人工代确认」→ agent 代确认**：不再阻塞、不计失败。"""
         task = task_by_id("WX-2")
         executor = _FakeExecutor()
         outcome = TaskRunner(executor).run(task)

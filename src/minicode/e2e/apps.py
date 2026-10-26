@@ -12,7 +12,7 @@
 三类共同的东西（窗口锚定、能力表、缝的接线、真值、停止条件、交接产物）
 都在 :class:`NativeAppExecutor` 里 —— **只有一份**。
 
-⚠️ **动真机前必须持有** ``.scratch/desktop.lock``（AGENTS.md「真机占用锁」）。
+⚠️ **动真机前必须持有** ``.scratch/desktop.lock``。
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ __all__ = [
 
 #: **运行时挑选的目标**占位符。
 #:
-#: 工单不钉具体联系人 / 具体条目（``docs/target-tasks.md`` §7.4、§7.2），
+#: 工单不钉具体联系人 / 具体条目，
 #: 所以目标在**跑的时候**从界面上挑，挑中的那个名字会**替换**这个占位符
 #: （目标描述、期望、动作参数、断言里都替换）。
 PICKED = "{picked}"
@@ -202,7 +202,7 @@ class ModalDialog:
     """**造一个真的模态弹窗**（工单 M15 的 WX-3）。
 
     ⚠️ **为什么评测台自己造**：微信自己的「更新提示 / 登录失效」弹窗属于
-    **人工代确认**步骤（``docs/target-tasks.md`` §6），本轮不自动制造；
+    **人工代确认**步骤，本轮不自动制造；
     这里造的是**系统自带的消息框**，挂在目标窗口上 ——
     **宿主窗口因此被禁用**（Windows 的模态约定），所以它和微信自己的弹窗
     在**机器看来是一回事**：检测器看得见，agent 必须零动作下发、交人。
@@ -1146,7 +1146,7 @@ class WeChatExecutor(NativeAppExecutor):
             )
         outcome = super()._execute(step)
         self._context["window_title"] = self._read_window_title()
-        #: **agent 代确认**（施工清单 T10）：原来需要人工代确认的步骤 →
+        #: **agent 代确认**：原来需要人工代确认的步骤 →
         #: agent **自己读回**自己刚做的那一步。
         if step.action_kind is ActionKind.TYPE:
             self._read_back_typed_text(step)
@@ -1254,7 +1254,7 @@ class WeChatExecutor(NativeAppExecutor):
 class CcSwitchExecutor:
     """**cc-switch** 上的真机执行器（**走 CDP**：零模型调用、零标定）。
 
-    **为什么改走 CDP**（工单 D-6；根因见 :file:`docs/reviews/M15.md` §4.4）：
+    **为什么改走 CDP**（工单 D-6）：
     cc-switch 是 **Tauri + WebView2**；M15 里它的**供应商条目不在当前页**
     → 树里没有 → 覆盖失败 → 切视觉 → 标定过不了 → **零动作**。
     那**不是感知问题，是「页面不在当前页」** —— 走 CDP 就能直接操作那个页面：

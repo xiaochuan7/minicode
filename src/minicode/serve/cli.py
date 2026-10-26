@@ -121,7 +121,7 @@ def _fake_service(log_directory: str | Path) -> ActionService:
 def _real_service(log_directory: str | Path) -> ActionService:
     """真机接线（**不碰锁** —— 锁由 :func:`_run_act` 持有到动作执行完）。
 
-    ⚠️ **动真机前必须拿锁**（AGENTS.md「真机占用锁」）：人类在用电脑时
+    ⚠️ **动真机前必须拿锁**（真机占用锁：人机互斥）：人类在用电脑时
     本命令**拒绝动真机**，不与人类抢鼠标。
     """
     from .real import build_real_service
@@ -150,7 +150,7 @@ def _print_action(response, as_json: bool) -> None:
 def _run_act(args) -> int:
     """发起一次动作。
 
-    ⚠️ **真机路径的锁持有到动作执行完**（AGENTS.md「真机占用锁」）：
+    ⚠️ **真机路径的锁持有到动作执行完**（真机占用锁：人机互斥）：
     锁只在**接线**的时候拿着是不够的 —— 真正的点击发生在
     :meth:`ActionService.execute` 里，那时锁必须还在。
     """

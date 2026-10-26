@@ -1,4 +1,4 @@
-"""**两个跑批的配对比较**（零模型调用）—— 施工清单 §六 的 P2 层。
+"""**两个跑批的配对比较**（零模型调用）。
 
 把两份 ``sspro-report.json`` 按 ``sample_id`` **对齐**，算一张 2×2 表：
 
@@ -146,7 +146,7 @@ def main(argv=None) -> int:
     configure_utf8_output()
     parser = argparse.ArgumentParser(
         prog="minicode.eval.paired_runs",
-        description="两个跑批的配对比较（零模型调用；施工清单 §六 P2 层）",
+        description="两个跑批的配对比较（零模型调用）",
     )
     parser.add_argument("--left", required=True, help="左臂的 sspro-report.json")
     parser.add_argument("--right", required=True, help="右臂的 sspro-report.json")

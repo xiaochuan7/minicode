@@ -77,13 +77,13 @@ class StepOutcome:
     ok: bool = False
     #: 这一步走了哪条通道（``uia`` / ``visual`` / ``browser``）。
     #: **空串** = 这一步没有走定位通道（比如放大：它是动作协议里的一个动作，
-    #: 不是定位的一个环节 —— 见 ``CONTEXT.md`` 的「放大」）。
+    #: 不是定位的一个环节）。
     channel: str = ""
     #: **定位阶段**的失败类型（``coverage`` / ``selection`` / …）。
     #: ⚠️ 它与**三类失败**是**两套正交**的轴（README 的口径）：
     #: 这一列说「哪一类定位失败」，三类失败说「哪一段没成」。
     failure_type: str = ""
-    #: **三类失败**（定位 / 决策 / 执行）—— 架构决策备忘 §2.5 ③ 要求每步都记。
+    #: **三类失败**（定位 / 决策 / 执行）—— 每步都要记。
     #: 值是错误码（没失败就是空串）。
     failures: Mapping[str, str | None] = field(default_factory=dict)
     error_code: str = ""
@@ -273,7 +273,7 @@ class TaskRunner:
                 human_confirm=task.human_confirm,
                 skip_reason=task.skip_reason,
             )
-        # **「人工代确认」→ agent 代确认**（施工清单 T10）：
+        # **「人工代确认」→ agent 代确认**：
         # 步骤**照跑**，agent 自己读回验收 —— **不写成阻塞项，也不计入失败**。
         # ⚠️ **人真的代跑过了**（``--manual`` 带进来的结果）→ 仍按那条结果记
         # （工单口径：人工代跑单独统计，不混进自动通过率）。

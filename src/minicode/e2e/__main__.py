@@ -6,7 +6,7 @@ python -m minicode.e2e --wave 1 --tasks W-1,W-3 --out runs/m14 --ticket M14
 python -m minicode.e2e --wave 2 --out runs/m15 --ticket M15
 ```
 
-⚠️ **动真机**（点真桌面、开真浏览器）—— 必须先按 AGENTS.md 拿
+⚠️ **动真机**（点真桌面、开真浏览器）—— 必须先拿
 ``.scratch/desktop.lock`` 占用锁；人类占用真机时本命令**直接拒绝**（退出码非 0）。
 """
 
@@ -281,7 +281,7 @@ def main(argv=None) -> int:
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
         report = build_report(outcomes, title=title)
-        #: **落点三档的 wave 级汇总**（施工清单第 ⑧ 条）：
+        #: **落点三档的 wave 级汇总**：
         #: 三档分布 + 视觉步骤可判率 + ``landing_error_px`` 的口径版本。
         #: ⚠️ **换了算法，历史 ``landing_error_px`` 不可比** —— 报告里带着版本号。
         report["landing"] = landing_rule_summary(outcomes)

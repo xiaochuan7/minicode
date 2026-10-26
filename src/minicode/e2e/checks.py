@@ -9,7 +9,7 @@
   进不了通过率，也不许被记成通过（口径见 :mod:`minicode.e2e.runner`）。
 * **缺测量 ≠ 不成立**：上下文里**没有那个键** = **没测过** → 判「判不了」，
   不许当成「测了，结果是不成立」（那是把缺测量伪装成产品缺陷）。
-* **落点偏差上限**用「上限」这个词（``CONTEXT.md`` 把「容差」列为 avoid：
+* **落点偏差上限**用「上限」这个词（「容差」是 avoid 词：
   它指「越界容差」还是「标定容差」说不清）。
 
 **落点那一条是三档**（A 命中 / B 近失 / C 错选，外加「判不了」）——
@@ -749,7 +749,7 @@ def input_channel_recorded(evidence: TaskEvidence) -> tuple[bool, str]:
 def context_matches_picked(key: str, picked_key: str = "picked_provider") -> Any:
     """**任务级读数 == 运行时挑中的那个条目**（真值不写死）。
 
-    工单不钉具体条目（``docs/target-tasks.md`` §7.2）→ 条款的期望值
+    工单不钉具体条目 → 条款的期望值
     在跑的时候才知道 → 从上下文里取。
     """
 

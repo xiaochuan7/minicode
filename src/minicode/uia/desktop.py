@@ -45,7 +45,7 @@ __all__ = ["Desktop", "build_desktop", "find_window_by_class"]
 def find_window_by_class(class_name: str) -> int:
     """按**类名**找窗口（用 ``FindWindowW``，不枚举）。
 
-    枚举会漏掉任务栏（``docs/00-现状.md`` §6.1 记着这条环境效应），
+    枚举会漏掉任务栏，
     所以这里走 ``FindWindowW``。
     """
     import ctypes

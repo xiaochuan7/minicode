@@ -46,8 +46,7 @@ def is_valid_rect(rect: tuple[int, int, int, int]) -> bool:
     """矩形是不是**有面积**的合法矩形。
 
     ⚠️ **矩形全 0 / 零面积一律判成无效** —— 那种形态必须被丢弃，
-    不能当作「它在原点」（架构决策备忘 §2.6 C-08：bbox 全 0 的候选
-    必须被丢弃而不是当作「在原点」）。
+    不能当作「它在原点」（bbox 全 0 的候选必须被丢弃而不是当作「在原点」）。
     """
     if len(rect) != 4:
         return False
@@ -120,7 +119,7 @@ class VirtualDesktop:
     ) -> bool:
         """矩形是否**整个**落在虚拟桌面内（含容差外扩）。
 
-        越界**不夹取**（架构备忘 §3）：宁可报错，也不给一块不是用户要的画面。
+        越界**不夹取**：宁可报错，也不给一块不是用户要的画面。
         """
         left, top, right, bottom = rect
         return (
@@ -136,7 +135,7 @@ class VirtualDesktop:
         分母必须是 ``(维度 − 1)``，否则最后一个像素永远点不到。
         必须带 ``MOUSEEVENTF_VIRTUALDESK``，否则只映射到主显示器。
 
-        这是本项目代码里**唯一**一份这个公式（架构备忘 §2.5 ②：换算链路单一来源）。
+        这是本项目代码里**唯一**一份这个公式（换算链路单一来源）。
         """
         nx = round((float(px) - self.origin_x) * 65535 / max(self.width - 1, 1))
         ny = round((float(py) - self.origin_y) * 65535 / max(self.height - 1, 1))

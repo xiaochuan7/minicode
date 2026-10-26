@@ -5,7 +5,7 @@ $env:PYTHONPATH="src"; python -m minicode.browser --url "file:///C:/tmp/page.htm
     --target "提交订单" --click --out runs/m13
 ```
 
-⚠️ **动真机**（开浏览器窗口、点页面）—— 必须先按 AGENTS.md 拿
+⚠️ **动真机**（开浏览器窗口、点页面）—— 必须先拿
 ``.scratch/desktop.lock`` 占用锁。
 """
 
@@ -75,10 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--headless", action="store_true", help="无头模式（默认有头）")
     parser.add_argument("--out", default="runs/m13", help="动作记录落盘目录")
     parser.add_argument(
-        "--ticket", default="M13", help="真机占用锁的票号（AGENTS.md：动真机前先拿锁）"
+        "--ticket", default="M13", help="真机占用锁的票号（动真机前先拿锁）"
     )
     args = parser.parse_args(argv)
-    # **动真机前先拿锁**（AGENTS.md「真机占用锁」）：本命令会开真实浏览器窗口、
+    # **动真机前先拿锁**：本命令会开真实浏览器窗口、
     # 点真实页面 —— 人类在用电脑时脚本直接拒绝（退出码 3）。
     holds_lock = acquire(args.ticket)
     try:

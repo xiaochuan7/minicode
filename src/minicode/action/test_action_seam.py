@@ -600,7 +600,7 @@ class StandaloneActionTest(unittest.TestCase):
             SeamRequest(target_description="开始", action_kind=ActionKind.TYPE)
 
     def test_a_region_outside_the_virtual_desktop_is_rejected_and_not_clamped(self):
-        """越界不夹取（架构备忘 §3）：宁可报错，也不给一块不是用户要的画面。"""
+        """越界不夹取：宁可报错，也不给一块不是用户要的画面。"""
         sink = ListTraceSink()
         seam, _, _, _ = _build_seam(trace_sink=sink)
         result = seam.run(

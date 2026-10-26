@@ -303,7 +303,7 @@ class ModelFrameSizeTest(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         size = png_image_size(base64.b64decode(sent[0]))
         #: 声明尺寸 = 量出来的表面尺寸经 ``model_input_size_for`` 算出来的那一档
-        #: （2560×1600 → **2016×1260**：施工清单 T2 的探针定档，比例 0.7875）。
+        #: （2560×1600 → **2016×1260**：探针定档，比例 0.7875）。
         self.assertEqual(size, (2016, 1260))
 
     def test_the_context_keeps_the_original_resolution(self):

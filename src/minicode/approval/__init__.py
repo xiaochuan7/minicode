@@ -16,7 +16,7 @@
   命令行里问人 / 真机读前台窗口。
 
 > **词汇**：本包说的「危险动作」「审批」「dry-run」「意图」「交接给人」
-> 按根目录 ``CONTEXT.md`` 的定义。
+> 这几个词。
 """
 
 from __future__ import annotations

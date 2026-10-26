@@ -27,12 +27,12 @@
 本单的动作参数坐标用**物理表面空间**，并在参数里显式标注 ``space="physical-surface"``：
 
 * 工单 M0 明确要求「落到**物理表面空间**的一个点」，动作记录里的坐标也必须是物理表面空间；
-* 架构备忘 §3「统一在截图像素空间」讲的是**模型参与的动作**（模型只会说截图像素），
+* 「统一在截图像素空间」讲的是**模型参与的动作**（模型只会说截图像素），
   本单没有模型参与，坐标直接来自控件树的物理像素控件框；
 * 「最终落点只在 crop 尺度上产生」是**视觉通道**（L2）的规则（M6），
   UIA 通道的控件框本来就是物理像素，不经 crop。
 
-坐标空间必须**显式声明**（架构备忘 §2.6 C-04：禁止用阈值猜坐标系），
+坐标空间必须**显式声明**（禁止用阈值猜坐标系），
 所以动作参数带 ``space`` 字段，记录里也带 ``space`` 字段。
 """
 
@@ -169,7 +169,7 @@ class SeamRequest:
     goal_expectation: Expectation | None = None
     #: **决策段耗时**（毫秒）。缝自己不知道决策层有多慢 ——
     #: 决策层把这一段的耗时告诉缝，缝把它记进追踪记录与动作记录
-    #: （三段耗时必须齐全，架构决策备忘 §2.5 ③）。
+    #: （三段耗时必须齐全）。
     decision_ms: float = 0.0
 
     def __post_init__(self) -> None:
@@ -390,7 +390,7 @@ class ActionExecutionSeam:
             if located.error_code is not None:
                 channel = located.channel or CHANNEL_UIA
                 locate_ms = (self._clock() - locate_started) * 1000.0
-                # **覆盖失败**是唯一允许切视觉的情形（架构决策备忘 §2.5 ①）：
+                # **覆盖失败**是唯一允许切视觉的情形：
                 # 这时才问视觉通道的准入判定（工单 M5 的硬闸门）。
                 admission = (
                     self._admit_visual() if located.allows_visual_fallback else None
@@ -742,7 +742,7 @@ class ActionExecutionSeam:
         if not self.virtual_desktop.contains_rect(
             rect, tolerance_px=DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX
         ):
-            # 越界不夹取（架构备忘 §3）：宁可报错，也不给一块不是用户要的画面。
+            # 越界不夹取：宁可报错，也不给一块不是用户要的画面。
             return self._fail(
                 request,
                 ErrorCode.CLIPPED_BY_DESKTOP,
@@ -851,7 +851,7 @@ class ActionExecutionSeam:
                 return blocked
         region = request.params.get("region")
         if region is not None and self._region_out_of_desktop(region):
-            # 越界不夹取（架构备忘 §3）：区域越出物理表面就报错，
+            # 越界不夹取：区域越出物理表面就报错，
             # 不给一块不是用户要的画面。
             return self._fail(
                 request,
@@ -1120,7 +1120,7 @@ class ActionExecutionSeam:
         """
         failures = {name: None for name in FAILURE_FIELDS}
         if failure_field:
-            # 调用方指名归哪一类（三类失败分开记，架构备忘 §2.5 ③）。
+            # 调用方指名归哪一类（三类失败分开记）。
             failures[failure_field] = code.value
         elif code in (
             ErrorCode.TARGET_NOT_FOUND,
@@ -1140,7 +1140,7 @@ class ActionExecutionSeam:
             # 「通道被拒绝启用」也算定位层：它发生在**定位阶段**，动作压根没下发。
             failures["locate"] = code.value
         else:
-            # 其余都是执行层（抓帧失败也归这里：截图属于「执行+校验」段，架构备忘 §2.5 ③）。
+            # 其余都是执行层（抓帧失败也归这里：截图属于「执行+校验」段）。
             failures["execute"] = code.value
         result = ActionResult(
             ok=False,

@@ -1,6 +1,6 @@
 """最小闭环运行器：一条命令跑完 M0 的闭环。
 
-顺序（架构备忘 §6 M0）::
+顺序::
 
     DPI 感知自检（不通过直接中止，不进动作层）
       → 注入自检
@@ -181,7 +181,7 @@ def run_minimal_loop(
                 landing_delta_px=verification.delta_px,
                 landing_verified=verification.found,
                 # 落点复验没过 = **执行失败**（动作做完了但没落在目标上）。
-                # ⚠️ 这里必须一并归类：三类失败分开记（架构备忘 §2.5 ③），
+                # ⚠️ 这里必须一并归类：三类失败分开记，
                 # 不归类的话这份失败在日志里查不出来（工单 M17 的导出统计会漏掉它）。
                 failure_execute=None if ok else ErrorCode.LANDING_MISMATCH.value,
             )

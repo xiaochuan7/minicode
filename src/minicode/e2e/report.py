@@ -7,7 +7,7 @@
 否则 ``pass_rate`` 与公开数字**不可比**：
 
 * **通过率的分母 = 自动通过 + 自动失败 + 环境不可达(infeasible) + 合规停手(handoff)**
-  （⚠️ 这里说的是**通过率的分母**，不是 `CONTEXT.md` 里那个「分母」——后者是坐标换算除的那个数）；
+  （⚠️ 这里说的是**通过率的分母**，不是坐标换算里除的那个「分母」）；
 * **infeasible 进通过率的分母、单列**（OSWorld / WAA 口径：环境不可达**进分母**）——
   ⚠️ OSWorld 下 infeasible 题**只有 agent 声明 FAIL 才算成功**，
   而我们的动作协议里**没有「声明 FAIL」这个动作** → 一律**记 0 分**；
@@ -90,14 +90,14 @@ def build_report(outcomes: Sequence[TaskOutcome], *, title: str = "") -> dict[st
     #: （OSWorld / WAA 口径：环境不可达进分母；交人 = 0 分，不是通过）。
     #: **人工代跑不进分母**（口径规定不自动执行 → agent 从未尝试）。
     denominator = len(passed) + len(failed) + len(infeasible) + len(handoff)
-    #: **agent 代确认**（施工清单 T10）：原来需要人工代确认的票，这轮由
+    #: **agent 代确认**：原来需要人工代确认的票，这轮由
     #: **agent 自己执行 + 自己读回**（不再是阻塞项，也不计入失败）。
     agent_confirm = [
         outcome
         for outcome in outcomes
         if outcome.human_confirm and outcome.verdict != VERDICT_PENDING_HUMAN
     ]
-    #: **主口径**：**剔除** agent 代确认的票（施工清单 T10 的口径：
+    #: **主口径**：**剔除** agent 代确认的票（口径：
     #: 「主口径 = 沿用上一轮，剔除人工代确认票」）。
     main_ids = {outcome.task_id for outcome in agent_confirm}
     main_passed = [o for o in passed if o.task_id not in main_ids]

@@ -4,7 +4,7 @@
 三个前端都只做「解析 → 调这里 → 渲染」，动作语义与坐标口径**只有这一份**。
 
 动作怎么执行：**走动作执行缝**（:mod:`minicode.action.seam`）——
-项目唯一的测试缝，坐标口径由它保证（架构备忘 §2.5 ②）。
+项目唯一的测试缝，坐标口径由它保证。
 本模块**不自己**实现定位、注入与校验。
 
 一次调用产出三样东西：
@@ -86,7 +86,7 @@ class ActionService:
     :param log_directory: 动作日志目录（动作记录追加到这里）。
     :param observer: **定点**观察端口（读控件树）。缺省 = 这一层没有观察通道。
     :param redactor: 脱敏器（模型侧文本的**唯一出口**）。
-        缺省 = 控件树**不许**进模型上下文（架构决策备忘 §2.6 C-15）。
+        缺省 = 控件树**不许**进模型上下文。
     """
 
     def __init__(
@@ -204,7 +204,7 @@ class ActionService:
         * **控件树** —— **定点**观察（必须带名字条件），
           经脱敏器渲染成模型侧文本（脱敏器是模型侧文本的**唯一出口**）。
 
-        ⚠️ **脱敏没上线 → 控件树不许外发**（架构决策备忘 §2.6 C-15）：
+        ⚠️ **脱敏没上线 → 控件树不许外发**：
         那一路报 ``channel_disabled``，**一个字符的模型侧文本都不产生**。
         """
         try:
@@ -296,7 +296,7 @@ class ActionService:
             raise _ObservationError(
                 ErrorCode.CHANNEL_DISABLED,
                 "脱敏器没上线：控件树不许进模型上下文"
-                "（架构决策备忘 §2.6 C-15：脱敏必须排在所有通道之前）",
+                "（脱敏必须排在所有通道之前）",
             )
         try:
             candidates = self._observer.observe(name)
@@ -308,7 +308,7 @@ class ActionService:
                 str(exc),
             ) from exc
         if not candidates:
-            # **候选集为空 = 覆盖失败**（`docs/tickets/README.md` 的口径）：
+            # **候选集为空 = 覆盖失败**：
             # 树读到了，但**一个匹配的控件都没有** → 报 `target_not_found`，
             # 与走动作那一条路**同一个错误码**（不另立一套）。
             raise _ObservationError(

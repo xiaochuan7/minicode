@@ -8,7 +8,6 @@
 假模型响应由模型客户端提供（``minicode.model.fakes.FakeModelClient``，M1 交付），不在本单。
 
 > 词汇：本模块的「端口」= 工单口径的**假实现注入点**（「缝的假实现注入点齐备」）。
-> ``CONTEXT.md`` 尚未收录该词条——补词条属于领域文档的活儿，留给 domain-modeling。
 """
 
 from __future__ import annotations
@@ -69,7 +68,7 @@ __all__ = [
 CHANNEL_UIA = "uia"
 CHANNEL_BROWSER = "browser"
 #: **视觉通道**（两级 grounding 的那一路）。它没有 :class:`ControlLocator` 实现
-#: ——它是 UIA 侧**覆盖失败**之后才走的另一条路（架构决策备忘 §2.5 ①）。
+#: ——它是 UIA 侧**覆盖失败**之后才走的另一条路。
 CHANNEL_VISUAL = "visual"
 
 
@@ -367,7 +366,7 @@ class WindowAnchor:
 class SelectionEcho:
     """**每步回显**：模型发出的**选择结果** + 实际发送的图片尺寸。
 
-    架构决策备忘 §3 的回显格式是「模型自己发出的东西 + 实际发送尺寸」，
+    回显的格式是「模型自己发出的东西 + 实际发送尺寸」，
     便于模型对账。**UIA 通道的消歧不产坐标**（模型只做指认，工单 M4），
     因此这里**没有坐标** —— 不许伪造成坐标回显（工单 M4 AC 9）。
 
@@ -492,7 +491,7 @@ class LocateResult:
     def allows_visual_fallback(self) -> bool:
         """**能不能切视觉** —— 由失败类型推导（红线只有一处）。
 
-        只有**覆盖失败**允许切视觉（架构决策备忘 §2.5 ①）。
+        只有**覆盖失败**允许切视觉。
         """
         if not self.failure_type:
             return False
@@ -563,7 +562,7 @@ class ElementInvoker(Protocol):
 
 @dataclass(frozen=True)
 class ElevationState:
-    """**提权 / 安全桌面**的状态（架构决策备忘 §2.6 C-07）。
+    """**提权 / 安全桌面**的状态。
 
     * ``elevated`` —— 此刻是不是 UAC 安全桌面（提权弹窗把输入桌面切走了）；
     * ``reason`` —— 人读的原因（没检测到时也写清楚「怎么知道的」）；
@@ -742,7 +741,7 @@ class VisualLocateResult:
     #: 这次换算用的**标度**（来自标定结果）。
     scale: str = ""
     #: **最终落点来自哪一级**（``refined`` / ``coarse`` / ``whole_screen`` /
-    #: ``numbered`` / ``none``）—— 施工清单第 ① 条埋点。
+    #: ``numbered`` / ``none``）。
     landing_source: str = ""
 
     @property

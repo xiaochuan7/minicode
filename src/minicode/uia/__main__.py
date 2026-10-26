@@ -218,7 +218,7 @@ def _disambiguation_ends(args):
 
     没给 ``--disambiguate`` → 两端都是 ``None``（**零模型调用**的 M3 形态）。
     给了 → 凭据与两个脱敏开关都只从**仓库 ``.env``** 读；
-    脱敏开关没开时**明确拒绝**（fail-closed，架构决策备忘 §2.6 C-15）。
+    脱敏开关没开时**明确拒绝**（fail-closed）。
     """
     if not args.disambiguate:
         return None, None
@@ -237,7 +237,6 @@ def _disambiguation_ends(args):
         raise SystemExit(
             "脱敏未上线：仓库 .env 里 MINICODE_SEND_TREE_TO_MODEL 与 "
             "MINICODE_REDACTION_ENABLED 都得打开，才允许把控件树送模型"
-            "（架构决策备忘 §2.6 C-15）"
         )
     return ModelCandidatePointer(client), TreeRedactor(context)
 

@@ -241,7 +241,7 @@ class ToolCallTest(unittest.TestCase):
             self.assertIsNotNone(payload["redaction"])
 
     def test_the_observe_tool_refuses_to_read_the_tree_without_redaction(self):
-        """脱敏没上线 → 控件树**不许**进模型上下文（架构决策备忘 §2.6 C-15）。"""
+        """脱敏没上线 → 控件树**不许**进模型上下文。"""
         from minicode.redact.config import ModelContextConfig
         from minicode.redact.redactor import TreeRedactor
         from minicode.serve.fakes import fake_wiring
@@ -265,7 +265,7 @@ class ToolCallTest(unittest.TestCase):
             self.assertIsNone(payload["controls"])
 
     def test_the_observe_tool_needs_a_name(self):
-        """定点观察**必须带属性条件**（架构决策备忘 §2.6 C-09：禁止全树 dump）。"""
+        """定点观察**必须带属性条件**（禁止全树 dump）。"""
         with tempfile.TemporaryDirectory() as tmp:
             server = _server(Path(tmp))
             payload = _call_tool(server, TOOL_OBSERVE, {"protocol": PROTOCOL_VERSION})
@@ -275,8 +275,7 @@ class ToolCallTest(unittest.TestCase):
     def test_the_observe_tool_reports_target_not_found_like_the_action_path(self):
         """候选集为空 = **覆盖失败** → 与走动作那一条路**同一个错误码**。
 
-        ⚠️ 不另立一套：「观察没找到」与「动作没找到」是同一件事
-        （`docs/tickets/README.md` 的口径）。
+        ⚠️ 不另立一套：「观察没找到」与「动作没找到」是同一件事。
         """
         with tempfile.TemporaryDirectory() as tmp:
             server = _server(Path(tmp))

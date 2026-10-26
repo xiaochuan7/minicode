@@ -74,7 +74,7 @@ def _parse_args(argv):
         required=True,
         help=(
             "假桌面的画面尺寸，例 2560x1600（**必须显式给**："
-            "不写死图像像素常量 —— 架构备忘 C-05）"
+            "不写死图像像素常量）"
         ),
     )
     parser.add_argument(
@@ -162,7 +162,7 @@ def main(argv=None) -> int:
         raise SystemExit(
             "脱敏未上线：仓库 .env 里 MINICODE_SEND_TREE_TO_MODEL 与 "
             "MINICODE_REDACTION_ENABLED 都得打开，才允许把控件树送模型"
-            "（架构决策备忘 §2.6 C-15）"
+            "（脱敏必须排在所有通道之前）"
         )
 
     injector = FakeInputInjector()

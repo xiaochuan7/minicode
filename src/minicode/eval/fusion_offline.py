@@ -1,4 +1,4 @@
-"""**护栏候选的离线重算**（施工清单 T5）—— **零模型调用**。
+"""**护栏候选的离线重算** —— **零模型调用**。
 
 这份脚本**不发任何模型请求**：它读**已有产物**（``sspro-report.json``），
 把「粗定位点 / 粗定位框 / 精定位点」重新组合成**别的落点**，
@@ -9,7 +9,7 @@
 | | 形状 | 依据 |
 |---|---|---|
 | **候选 A**（LFPR 式 guard + 中点融合） | 粗框 = incumbent；精点扩 α 方块 = 候选；**过 guard → 落中点** ½p₀+½p₁，**不过 → 落粗点** | LFPR（Acc@0.5 中点融合 > guarded replacement；guard 接受率 92.5%）【一手·公开 https://arxiv.org/abs/2608.19553】 |
-| **候选 A′**（只融合、不回落） | **过 guard → 落中点**；**不过 → 落精点**（= 现状） | 施工清单 §2「异域一律走『**选**』不融合」+ **硬约束**：不得引入「离粗定位多远 → 回落」的标量阈值 |
+| **候选 A′**（只融合、不回落） | **过 guard → 落中点**；**不过 → 落精点**（= 现状） | 「异域一律走『**选**』不融合」+ **硬约束**：不得引入「离粗定位多远 → 回落」的标量阈值 |
 | **候选 B**（两视图空间票表 + argmax） | 整屏视角与 crop 视角的采样点投到**同一张全屏物理坐标票表**，取最大票连通区 | GUI-RC §3.2【一手·公开 https://arxiv.org/abs/2508.05615】；ReClick 的 argmax **无绝对阈值**【一手·公开 https://arxiv.org/abs/2610.13268】 |
 
 ## 三步判定门（预注册，短路选择）
@@ -24,7 +24,7 @@
 ## 硬约束（写进代码评审清单）
 
 **不得引入「离粗定位多远 → 回落」的标量阈值** —— 本机实测净亏 3.8~20.8 pp
-【一手·本机；`docs/research/r-s1-guardrail.md` §1】。
+【一手·本机】。
 本模块的候选 A′ **没有回落分支**；候选 A（LFPR 原样）**有**，
 因此 A **必须**先过判定门才允许被采纳 —— 报告里写清是哪一条过了门。
 """
@@ -373,7 +373,7 @@ def main(argv=None) -> int:
     configure_utf8_output()
     parser = argparse.ArgumentParser(
         prog="minicode.eval.fusion_offline",
-        description="护栏候选的离线重算（零模型调用；施工清单 T5）",
+        description="护栏候选的离线重算（零模型调用）",
     )
     parser.add_argument("--run", required=True, help="跑批产物（sspro-report.json）")
     parser.add_argument(

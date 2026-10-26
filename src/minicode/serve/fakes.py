@@ -54,8 +54,7 @@ _FAKE_RECT = (1016, 1528, 1083, 1600)
 #: 副屏在左时虚拟桌面原点为负）。
 #:
 #: ⚠️ **假桌面与真机的取整口径差 1 px**：真机走 UIA 通道，落点取**就近**取整
-#: （`center_point`）—— 同一块控件，假桌面给 1049、真机给 1050。见
-#: `docs/reviews/M18.md` §4。
+#: （`center_point`）—— 同一块控件，假桌面给 1049、真机给 1050。
 _FAKE_LANDING = rect_center(_FAKE_RECT)
 FAKE_LANDING = (math.floor(_FAKE_LANDING[0]), math.floor(_FAKE_LANDING[1]))
 

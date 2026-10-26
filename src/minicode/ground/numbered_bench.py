@@ -810,7 +810,7 @@ def _kfold_size_selection(
     curve: Sequence[dict[str, Any]],
     folds: int = 5,
 ) -> dict[str, Any]:
-    """**分组 K 折**选尺寸：训练折选、留出折评（施工清单 ⑨ 的切分纪律）。
+    """**分组 K 折**选尺寸：训练折选、留出折评。
 
     分组键 = app（或 group）× platform；**同组不拆开**；
     **绝不按 index / 样本序分半**（那批切分带 −5.63 ± 0.57 pp 的构成差）。
@@ -896,7 +896,7 @@ def _run_crop_scan(args) -> int:
 
     * **同一批样本**（分层抽样，种子固定）× :data:`CROP_SCAN_SIZES` 七个尺寸；
     * **分组 K 折**：按 app/platform 分组，**训练折选尺寸、留出折评**
-      （施工清单 ⑨：绝不按 index / 样本序分半）；
+      （绝不按 index / 样本序分半）；
     * **同一条样本上比较两个 crop 尺寸**（配对比较）：两臂**复用同一次粗定位
       回答**、**crop 窗口以同一个粗定位点为中心** → 差值里不混构成差；
     * 走**点式路径**（不接候选源）：粗定位 → crop 精定位 → 落点；
@@ -1047,7 +1047,7 @@ def _write_scan(
         "crop_sizes": list(sizes),
         "split": (
             "按 app/platform **分组 K 折**（训练折选尺寸、留出折评）—— "
-            "施工清单 ⑨：绝不按 index / 样本序分半"
+            "绝不按 index / 样本序分半"
         ),
         "curve": curve,
         "paired_comparison": paired,

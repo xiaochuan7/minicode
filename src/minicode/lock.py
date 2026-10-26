@@ -1,4 +1,4 @@
-"""**真机占用锁**的调用封装（AGENTS.md「真机占用锁（人机互斥）」一节）。
+"""**真机占用锁**的调用封装（人机互斥：人类在用电脑时 agent 不得动真机）。
 
 判定规则只有一份，在 ``scripts/desktop_lock.py`` 里（它是实现）；本模块是它的
 **调用封装**：拿锁、放锁、以及「**我是不是持锁者**」。
@@ -54,7 +54,7 @@ def acquire(ticket: str) -> bool:
     """拿锁。返回 ``True`` 表示**本进程是持锁者**（用完必须 :func:`release`）。
 
     人类占用真机时脚本以退出码 3 拒绝 —— 本函数据此**直接退出**
-    （拒绝动真机，AGENTS.md 的判定规则）。
+    （拒绝动真机；判定规则见 ``scripts/desktop_lock.py``）。
     """
     before = _read()
     encoding = locale.getpreferredencoding() or "utf-8"

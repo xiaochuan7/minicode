@@ -4,7 +4,7 @@
 :func:`minicode.uia.desktop.build_desktop`（UIA 通道 + 真机注入 + 审批闸门 +
 提权检测）—— 与 :mod:`minicode.uia` 的命令行**同一套口径**。
 
-⚠️ **动真机前必须持有真机占用锁**（AGENTS.md「真机占用锁」）——
+⚠️ **动真机前必须持有真机占用锁**（真机占用锁：人机互斥）——
 调用方（:mod:`minicode.serve.cli` / :mod:`minicode.serve.http` /
 :mod:`minicode.mcp`）负责拿锁与放锁，本模块只管接线。
 """
@@ -48,6 +48,6 @@ def build_real_service(
         # （`verification.layer.StateObserver`），真机实现是 UIA 那一路。
         observer=UiaStateObserver(desktop.port, desktop.anchor),
         # **脱敏器**：两个开关取自**仓库 `.env`**（缺省都关 = fail-closed：
-        # 脱敏没上线，控件树不许进模型上下文，架构决策备忘 §2.6 C-15）。
+        # 脱敏没上线，控件树不许进模型上下文）。
         redactor=TreeRedactor(load_model_context_config()),
     )

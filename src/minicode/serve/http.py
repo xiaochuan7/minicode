@@ -151,7 +151,7 @@ def serve_forever(
 ) -> int:
     """跑起 HTTP 服务（直到被中断）。
 
-    ⚠️ **动真机前必须持有真机占用锁**（AGENTS.md）：服务运行期间**一直占着**
+    ⚠️ **动真机前必须持有真机占用锁**（真机占用锁：人机互斥）：服务运行期间**一直占着**
     真机 —— 人要用电脑就得先停服务。
     """
     from minicode.lock import acquire, release

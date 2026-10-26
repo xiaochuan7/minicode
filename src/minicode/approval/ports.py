@@ -1,6 +1,6 @@
 """**审批的端口**（工单 M16）。
 
-三样外部依赖，都是**缝上的可替换依赖**（``CONTEXT.md`` 的「端口 / 注入点」：
+三样外部依赖，都是**缝上的可替换依赖**（即端口 / 注入点）：
 
 * :class:`Approver` —— **谁来批**（人 / 脚本 / 策略）；
 * :class:`WindowInspector` —— **当前前台窗口是谁**（判「敏感窗口」要用）；
@@ -75,8 +75,7 @@ class SensitiveWindowPolicy(Protocol):
 
     ⚠️ **策略内容归 M20**（敏感窗口黑名单 + 策略成文）——
     本单只给**判据的位置**（这个端口）与**审批请求的生成**，
-    **不自带词表**：自带一份词表就是替 M20 做决定，两层会重叠
-    （`docs/tickets/README.md`：「M20 管『哪些窗口根本不许拍 / 不许发』」）。
+    **不自带词表**：自带一份词表就是替 M20 做决定，两层会重叠。
 
     ✅ **工单 M24：这个端口现在由 M20 的黑名单实现提供**
     （``minicode.privacy.policy:SensitiveWindowBlacklist.is_sensitive``）——

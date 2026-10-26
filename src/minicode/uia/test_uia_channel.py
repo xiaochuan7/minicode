@@ -104,7 +104,7 @@ class InvalidRectTest(unittest.TestCase):
 
     ⚠️ **工单 M9 改过这里**：丢掉之后**不能**当成「目标不在树里」。
     候选**在**树里（名字对得上），只是控件框读不成 —— 那是**选择失败**
-    （禁止切视觉，架构决策备忘 §2.5 ①），不是覆盖失败。
+    （禁止切视觉），不是覆盖失败。
     """
 
     def test_an_all_zero_candidate_is_dropped(self):
@@ -185,7 +185,7 @@ class DisambiguationTest(unittest.TestCase):
         self.assertEqual(len(request.candidates), 2)
 
     def test_without_a_redactor_the_model_is_never_asked(self):
-        # fail-closed：脱敏没上线，不许把候选集送给模型（架构决策备忘 §2.6 C-15）。
+        # fail-closed：脱敏没上线，不许把候选集送给模型。
         # 工单 M4 AC 7：这种情况**明确拒绝启用**这条通道，而不是含糊地报「选不出」。
         pointer = FakeCandidatePointer()
         channel = _channel([self._two_candidates()], pointer=pointer)

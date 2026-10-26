@@ -14,7 +14,7 @@
 （:class:`ApprovalDecision`）—— 拿上一次动作的结论来批这一次，不认。
 
 ⚠️ **用词**：这一套东西叫「审批」，**不叫「确认」**
-（`CONTEXT.md` 的「审批」词条把「确认 / 许可」列为 avoid 词）。
+（「确认 / 许可」是 avoid 词）。
 """
 
 from __future__ import annotations

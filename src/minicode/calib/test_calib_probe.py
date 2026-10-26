@@ -17,8 +17,8 @@
 换算/标定链路不许出现写死分母、不许有按数值大小猜量纲的分支、
 本包不许引第三方包。
 
-判据来源：架构决策备忘 §2.6 的 **C-03**（探针几何 / 判定容差 / 落盘）与
-**C-04**（不写死分母 / 不按数值大小猜量纲 / 两条路径各标定一次）。
+判据：**探针几何 / 判定容差 / 落盘**，以及
+**不写死分母 / 不按数值大小猜量纲 / 两条路径各标定一次**。
 """
 
 from __future__ import annotations
@@ -248,7 +248,7 @@ class TestProbeGeometry(unittest.TestCase):
         """0~999 与 0~1000 的落点分歧：x 轴 ≥ 2.0 px、最坏点欧氏 ≥ 2.5 px、余量 ≥ 2 倍。
 
         「最坏点」= 分歧最大的那个目标（右下角）：x 轴分歧随 x 线性增长，
-        欧氏分歧还要叠上 y 方向的那一份 —— 架构备忘 §1.4 给的 2.86 px 就是它。
+        欧氏分歧还要叠上 y 方向的那一份 —— 2.86 px 就是它。
         """
         outcome, _ = _run(ModelScale.RELATIVE_0_1000)
         by_scale = {c.scale: c for c in outcome.candidates}
@@ -499,7 +499,7 @@ class TestDenominatorPairDivergence(unittest.TestCase):
     """落盘里能**直接读出**「0~999 与 0~1000 的分歧」（落点等价容差的基线）。"""
 
     def test_the_baseline_is_the_documented_value(self):
-        """2560 宽探针上 ≈ 2.87 px（架构备忘记的基线）→ ≤ 4 px 容差。"""
+        """2560 宽探针上 ≈ 2.87 px（既有基线）→ ≤ 4 px 容差。"""
         outcome, _ = _run(ModelScale.RELATIVE_0_1000)
         self.assertAlmostEqual(outcome.denominator_pair_divergence_px, 2.87, delta=0.05)
         self.assertLessEqual(
@@ -1276,7 +1276,7 @@ class TestStandardLibraryOnly(unittest.TestCase):
 
 
 class TestSharedAnswerText(unittest.TestCase):
-    """答案行 / 截断的读法**只有一份**（施工清单第 ⑦ 条：两边不许各写一份）。"""
+    """答案行 / 截断的读法**只有一份**（两边不许各写一份）。"""
 
     def test_the_calibration_prompt_reads_it_from_the_shared_module(self):
         from minicode.calib import prompt as calib_prompt

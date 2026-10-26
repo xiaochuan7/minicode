@@ -350,7 +350,7 @@ class WindowsInputInjector:
       冻结原型 ``exec/input.py`` 里另有一份同名公式（它的私有 ``_normalize``），
       但**动作层不调用它**——不用它的 ``move_to`` / ``click``，
       只借它的 ``INPUT`` 结构体、``MOUSEEVENTF_*`` 常量与 ``user32`` 绑定。
-      因此运行期不存在两份被同时使用的换算逻辑（架构备忘 §2.5 ②）。
+      因此运行期不存在两份被同时使用的换算逻辑。
       这一点由单测 ``test_the_action_layer_does_not_call_the_frozen_normaliser`` 钉住。
     * 失败判定**只依据返回值**：``SendInput`` 返回 0 时不查 ``GetLastError``
       （UIPI 阻断时它不指示原因）。
@@ -498,7 +498,7 @@ class WindowsInputInjector:
 
 
 class WindowsSecureDesktopDetector:
-    """检测当前是不是 **UAC 安全桌面**（架构决策备忘 §2.6 C-07）。
+    """检测当前是不是 **UAC 安全桌面**。
 
     判据：**输入桌面的名字**。正常运行时输入桌面叫 ``Default``；
     UAC 提权弹窗出现时，输入桌面被切到 ``Winlogon``（安全桌面）——
@@ -516,7 +516,7 @@ class WindowsSecureDesktopDetector:
 
         ⚠️ **fail-closed**：**读不到**输入桌面时按「提权」处理（``elevated=True``）——
         安全桌面上 ``OpenInputDesktop`` 会返回 ``ACCESS_DENIED``，
-        那**正是**要判的那个场景（架构决策备忘 §2.6 C-07）。
+        那**正是**要判的那个场景。
         宁可停下交给人，也不盲目往一个看不见的桌面上打点。
         """
         handle = _user32.OpenInputDesktop(0, False, DESKTOP_READOBJECTS)

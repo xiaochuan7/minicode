@@ -4,10 +4,9 @@
 本模块只补**冻结原型没有的那几件**：
 
 * **控件框按 4 个 int 读** —— ``BoundingRectangle`` 是 ``RECT``（4 个 LONG），
-  按 ``double`` 读会得到 1e-311 量级、四舍五入全 0 的非规格化数（架构决策备忘 §2.6 C-08）；
+  按 ``double`` 读会得到 1e-311 量级、四舍五入全 0 的非规格化数；
 * **值类属性** —— 冻结原型的 ``Element`` **不暴露** ``Value`` / ``IsPassword`` /
-  ``HelpText``，脱敏器的密码框规则在真机上要靠这里自己读 COM 属性才触发
-  （``docs/01-现状.md`` §4 第 5 条）；
+  ``HelpText``，脱敏器的密码框规则在真机上要靠这里自己读 COM 属性才触发；
 * **查询超时**（约 5 秒）与 **Invoke 优先**；
 * **可用性探测**（递归子窗口 + 看 UIA ClassName，**不数候选数**）。
 
@@ -38,7 +37,7 @@ __all__ = [
     "describe_window",
 ]
 
-#: 查询超时阈值（秒）。架构决策备忘 §2.6 C-09：超时放宽到 ~5 s。
+#: 查询超时阈值（秒）。超时放宽到 ~5 s。
 DEFAULT_TIMEOUT_S = 5.0
 
 #: 探测时最多看多少个子窗口（Chromium 那种窗口树很宽）。
@@ -461,8 +460,7 @@ def _root_walk_by_pid(pids: set[int] | int) -> list:
     （工单 M14 的 W-1.1 / W-1.2 就栽在这里）。
 
     ⚠️ **只用单条件**（``TrueCondition``）：冻结原型的 ``build_condition``
-    两个条件并存会走 ``CreateAndCondition``，**在本机崩** access violation
-    （``docs/01-现状.md`` §6 第 6 条）。
+    两个条件并存会走 ``CreateAndCondition``，**在本机崩** access violation。
     ⚠️ **先按 PID 过滤，再进 Python 侧的名字匹配**（桌面树巨大，
     过滤必须在 Python 侧做完，不能带着整棵树去问名字）。
 
@@ -628,7 +626,7 @@ class WindowsUiaQueryPort:
 
         ⚠️ **不做 AND 条件**（名字 + 控件类型合成一个条件）：
         冻结原型的 ``build_condition`` 在两个条件并存时会走 ``CreateAndCondition``，
-        **在本机崩**（access violation，见 ``docs/01-现状.md`` §6 第 6 条）。
+        **在本机崩**（access violation）。
         因此这里一律用**单条件**查询 + 名字包含过滤：
 
         1. 自动化标识（给了才查）；

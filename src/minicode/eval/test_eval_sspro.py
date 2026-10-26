@@ -6,7 +6,7 @@
 * **两臂对比的判据算得对**（硬判据 + 防掩盖的逐子集容忍度）；
 * **那张 7 行表**的形状与标注（官方 5 行必须标「官方自报，不作硬对比」）。
 
-外加施工清单第 ⑨ 条与第 ⑥ 条落在本模块的三处接线：
+外加落在本模块的三处接线：
 **配对分层键**、**近失带离线校准**、**记忆缓存的阶段标签**，
 以及标定链的**相等断言**（实现住在 :mod:`minicode.calib.calibrate`；
 用例放在这里是因为**本轮的写权限只给了 eval 的测试文件**）。
@@ -350,7 +350,7 @@ class GateInputSourceTests(unittest.TestCase):
 
 
 class PairedStrataTests(unittest.TestCase):
-    """配对分层的**键** = **粗定位命中与否**（施工清单第 ⑨ 条）。
+    """配对分层的**键** = **粗定位命中与否**。
 
     ⚠️ 分层变量必须**先于**被测步确定（粗定位在精定位之前）→ 不构成 collider。
     """
@@ -395,7 +395,7 @@ class PairedStrataTests(unittest.TestCase):
 
 
 class PairedControlsAndMdeTests(unittest.TestCase):
-    """配对输出里的**两个对照检验**与 **MDE**（施工清单第 ⑨ 条）。
+    """配对输出里的**两个对照检验**与 **MDE**。
 
     * 主报 = **mid-p McNemar**；
     * 对照 = **普通精确二项**与 **χ²+连续性校正**（保守）；
@@ -556,7 +556,7 @@ class _FakeCaller:
 
 
 class MemoStageTests(unittest.TestCase):
-    """记忆缓存的**阶段标签**（施工清单第 ⑨ 条）。"""
+    """记忆缓存的**阶段标签**。"""
 
     COARSE_PROMPT = "这是一张 Windows 桌面截图。\n这张图是 2560×1440。\n请找出元素。"
 
@@ -605,7 +605,7 @@ class MemoStageTests(unittest.TestCase):
 
 
 class ImageTokenAssertionTests(unittest.TestCase):
-    """标定链的**相等断言**（施工清单第 ⑥ 条）—— 闸门，与「±28 px 盒子」分开。"""
+    """标定链的**相等断言** —— 闸门，与「±28 px 盒子」分开。"""
 
     def test_equal_tokens_mean_the_server_kept_the_size(self):
         assertion = assert_server_kept_image_tokens(3406, (2048, 1280))

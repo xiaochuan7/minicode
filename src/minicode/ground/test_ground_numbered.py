@@ -581,7 +581,7 @@ class NumberedBranchTests(unittest.TestCase):
     def test_the_numbered_call_gets_its_own_budget(self):
         """**编号分支单独给一份预算**（默认 8192）—— 思考链与输出共用预算。
 
-        ⚠️ **2026-10-22（施工清单第 ② 条）**：4000 → **8192**
+        ⚠️ **2026-10-22**：4000 → **8192**
         （编号分支 2000 档的无文本率 10.87%~21.43% 是所有分支里最高的）。
         """
 

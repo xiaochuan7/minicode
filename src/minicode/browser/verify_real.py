@@ -3,7 +3,7 @@
 **M28 追加**：落点取**可见文本的实际区域** —— 量「落点 vs 文字实际区域中心」
 的偏差（两遍：页面自己报的文本区域 / 从画面量的墨迹包围盒）。
 
-用法（**必须先拿真机占用锁**，AGENTS.md）::
+用法（**必须先拿真机占用锁**）::
 
     python scripts/desktop_lock.py acquire --ticket M13
     $env:PYTHONPATH="src"; python -m minicode.browser.verify_real
@@ -136,7 +136,7 @@ def _text_landing_deviation(page, source, element_id: str, landing) -> dict:
 
 
 def main() -> None:
-    # **动真机前先拿锁**（AGENTS.md「真机占用锁」）：人类在用电脑时脚本直接拒绝。
+    # **动真机前先拿锁**：人类在用电脑时脚本直接拒绝。
     holds_lock = acquire("M13")
     try:
         _run()

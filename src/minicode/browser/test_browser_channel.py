@@ -117,7 +117,7 @@ class StructureLocateTest(unittest.TestCase):
         )
         self.assertEqual(result.error_code, ErrorCode.TARGET_NOT_FOUND)
         self.assertEqual(result.failure_type, "coverage")
-        # 覆盖失败是**唯一**允许切视觉的情形（架构决策备忘 §2.5 ①）。
+        # 覆盖失败是**唯一**允许切视觉的情形。
         self.assertTrue(result.allows_visual_fallback)
 
     def test_a_unique_candidate_costs_no_model_call(self):

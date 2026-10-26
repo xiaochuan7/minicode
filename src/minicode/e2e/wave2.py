@@ -1,10 +1,10 @@
 """**第二波端到端工单**（工单 M15）：微信（WX-1~WX-3）+ DSH/Tabbit（E-1~E-3）
 + cc-switch（CC-1~CC-3）。
 
-期望结果的**真值来源**是 :file:`docs/target-tasks.md`（目标应用任务清单）——
+期望结果的**真值来源**是目标应用任务清单 ——
 这里只把它拆成「一步 + 一条结构断言 + 若干验收条款」，**不复制口径**。
 
-> ⚠️ **四条现实**（2026-10-21 在本机实测，详见 :file:`docs/reviews/M15.md`）：
+> ⚠️ **四条现实**（2026-10-21 在本机实测）：
 >
 > 1. **本机微信 4.1.15 的聊天内容不在可访问性树里** —— 树只给外壳
 >    （导航、会话列表、标题栏），聊天区与输入框都没有；**窗口标题也不随
@@ -14,14 +14,14 @@
 >    ``automation_id = session_item_<人名>`` 里；裸名字查询**必然 0 命中**
 >    （而且 ``unmatched`` 也是 0 → 会被误判成「覆盖失败」）。
 >    → 选联系人走 **automation_id**，定位走「名字 + 控件类型」。
-> 3. **本机 cc-switch 的应用窗口标题是「CC Switch」**（工单/target-tasks 里
+> 3. **本机 cc-switch 的应用窗口标题是「CC Switch」**（工单里
 >    写的 ``com.ccswitch.desktop-siw`` 是那个 22×22 的**托盘辅助窗**，
 >    树里 0 个节点）；**选中态在 UIA 里读不出来**（只有 class_name 里的
 >    ``bg-blue-500 text-white`` 是弱信号）→ 「当前配置」的读数取**应用
 >    自己的状态库**（``providers.is_current``）。
 > 4. **DSH Web GUI 需要本机鉴权令牌**（明文 URL 是 401）→ E-1/E-3 用
 >    **评测台自带的本地验证页**（同样是 Electron/Chromium 形态）跑，
->    DSH 那个应用本身本轮没驱动（如实记在审查文档里）。
+>    DSH 那个应用本身本轮没驱动（如实记录）。
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ WX3 = Task(
     note=(
         "**本轮的模态弹窗是评测台自己造的**（系统消息框，挂在微信窗口上 →"
         "宿主窗口被禁用 = 真模态）；微信自己的「更新提示 / 登录失效」弹窗属于"
-        "**人工代确认**步骤（``docs/target-tasks.md`` §6），本轮未执行。"
+        "**人工代确认**步骤，本轮未执行。"
     ),
     steps=(
         Step(
@@ -328,8 +328,7 @@ def capability_recorded_and_landing_in_picked(
       **没有读数 = 没测过** → 判不了，不许当成「测了，结果不成立」；
     * **落点落在选中框内** —— 复用**同一套三档口径**
       （:func:`minicode.e2e.checks.landing_in_target_rect`）：
-      A 命中 / B 近失**只记档不判死** / C 错选判失败 / 缺真值判不了
-      （施工清单第 ⑧ 条）。
+      A 命中 / B 近失**只记档不判死** / C 错选判失败 / 缺真值判不了。
     """
     capability = str(evidence.context.get("capability", "") or "")
     if not capability:
@@ -415,7 +414,7 @@ CC3 = Task(
     title="跨应用：改完 cc-switch 的配置后，到浏览器打开依赖该配置的页面验证生效",
     app="cc-switch → 浏览器",
     note=(
-        "**「跨应用确认」是人工代确认**（``docs/target-tasks.md`` §6）→ "
+        "**「跨应用确认」是人工代确认** → "
         "CC-3.3 **不自动执行**，这张票记 **待人工确认**。"
     ),
     steps=(
@@ -439,8 +438,7 @@ CC3 = Task(
             window="browser",
             action_kind=ActionKind.INSPECT,
             expect_context=("page_provider", PICKED),
-            #: **「跨应用确认」是人工代确认**（``docs/target-tasks.md`` §6）
-            #: → 这一步**不自动执行**。
+            #: **「跨应用确认」是人工代确认** → 这一步**不自动执行**。
             human_confirm=True,
         ),
     ),

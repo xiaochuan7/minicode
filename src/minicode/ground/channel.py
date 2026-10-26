@@ -29,7 +29,7 @@
 如实记进 ``undecidable``。
 
 **分母来自标定**：换算用的标度由调用方从标定结果给出（构造参数，**没有默认值**）；
-代码里不出现写死的 1000 / 999，也不按数值大小猜量纲（架构决策备忘 §2.6 C-04）。
+代码里不出现写死的 1000 / 999，也不按数值大小猜量纲。
 
 **「模型调用数」的口径**：``model_calls`` = **调用模型端口的次数**——
 **问不出坐标也是问过了**（回答解析不出来、越界、调用抛异常，都算这一次问过）。
@@ -122,7 +122,7 @@ __all__ = [
 #: 编号分支有自己那份（:data:`DEFAULT_NUMBERED_MAX_TOKENS`）—— **不对称**才是坑：
 #: 编号只要一个数，思考链照样要吃预算 → 单独给它一份。
 #:
-#: **2026-10-22（施工清单第 ② 条）**：4096 → **8192**。实测（本机全库 5258 条请求）：
+#: **2026-10-22**：4096 → **8192**。实测（本机全库 5258 条请求）：
 #: 2000 档无文本率 **8.60%**（103/1198）、4096 档 **0.56%**（19/3404），
 #: 按幂律外推 8192 档**再降一到两个数量级**【推断】。
 DEFAULT_MAX_TOKENS = 8192
@@ -133,7 +133,7 @@ DEFAULT_MAX_TOKENS = 8192
 #: 「HTTP 200 但没有文本输出」（模型客户端的坑③）。编号只要一个数，但思考链
 #: 照样要吃预算 → 给它一份单独的预算。
 #:
-#: **2026-10-22（施工清单第 ② 条）**：4000 → **8192**
+#: **2026-10-22**：4000 → **8192**
 #: （编号分支 2000 档的无文本率 10.87%~21.43% 是所有分支里最高的）。
 DEFAULT_NUMBERED_MAX_TOKENS = 8192
 
@@ -144,12 +144,12 @@ DEFAULT_NUMBERED_MAX_TOKENS = 8192
 #: ``image_tokens = 361 = 19×19``），于是 ``c = ε₁(物理 px) × 1000 / crop 宽``
 #: —— **系数随 crop 宽变**（512 crop 时 1.953；**默认 192 crop 时 5.208**）。
 #:
-#: ⚠️ 这个 1000 **不是坐标换算的分母**（分母只来自标定，架构备忘 §2.6 C-04）：
+#: ⚠️ 这个 1000 **不是坐标换算的分母**（分母只来自标定）：
 #: 它是**公开判据自己的刻度**，写成 ``1_000`` 是为了不与「写死分母」那条
 #: 源码级检查（``test_ground_two_stage.py``）混淆。
 ZOOM_CONSISTENCY_PER_MILLE = 1_000
 
-#: **裁剪窗口的几何**（物理像素）—— **ground 层**的那份（施工清单第 ⑤ 条）。
+#: **裁剪窗口的几何**（物理像素）—— **ground 层**的那份。
 #:
 #: ⚠️ 冻结原型 ``coord/crop_refine.py`` 里也有一份默认值（512）—— **那个目录不许改**，
 #: 生产用的几何由**本层**给。
@@ -237,8 +237,7 @@ def ask_model_point(
 
     粗定位与「第二次独立粗定位」都走这里 —— **「问模型要一个点」只有这一处实现**。
 
-    ⚠️ **返回 ``None`` = 模型说「这张图里没有那个元素」**（施工清单第 ⑦ 条的
-    负出口：``{"x": null, "y": null}``）—— **不是解析失败**，
+    ⚠️ **返回 ``None`` = 模型说「这张图里没有那个元素」**（负出口：``{"x": null, "y": null}``）—— **不是解析失败**，
     调用方据此**干净回落**，而不是接受一个假点。
     """
     image_base64 = encode_frame_base64(frame)
@@ -270,7 +269,7 @@ STAGE_NUMBERED = "numbered"
 #: 行为与原来完全一致（既有单测继续绿）。
 STAGE_NO_CANDIDATES = "no_candidates"
 
-#: **最终落点来自哪一级**（施工清单第 ① 条埋点：``landing_source``）。
+#: **最终落点来自哪一级**（``landing_source``）。
 #:
 #: * ``refined`` —— **crop 精定位**给的那一刀；
 #: * ``coarse`` —— 回落到**粗定位点**（精定位没产出可用结果）；
@@ -282,14 +281,14 @@ LANDING_SOURCE_COARSE = "coarse"
 LANDING_SOURCE_WHOLE_SCREEN = "whole_screen"
 LANDING_SOURCE_NUMBERED = "numbered"
 LANDING_SOURCE_NONE = "none"
-#: **整屏再搜**（施工清单 T4）—— 精定位的候选**不可信**时，整屏**再搜一遍**。
+#: **整屏再搜** —— 精定位的候选**不可信**时，整屏**再搜一遍**。
 #:
 #: ⚠️ **它不是回落**：回落是「拿粗定位点顶上」，再搜是**再问模型一次**。
 #: 口径上它**不算** ``refined`` → 假命中的计数（``crop_contains_target == False``
 #: 且 ``landing_source == "refined"``）**不把它算进去**。
 LANDING_SOURCE_RESCREEN = "rescreen"
 
-#: **标记图选择**那一级的名字（施工清单 T4）。
+#: **标记图选择**那一级的名字。
 STAGE_MARKED = "marked"
 
 
@@ -313,7 +312,7 @@ class _RefineOutcome:
 
     * ``ok`` —— 有没有落点；
     * ``landing`` —— 落点（**物理像素**）；
-    * ``rescreen`` —— 要不要**整屏再搜**（施工清单 T4）；
+    * ``rescreen`` —— 要不要**整屏再搜**；
     * ``fields`` —— 埋点（放大倍数 / 候选数 / 簇占比 / 选中的编号）。
     """
 
@@ -367,13 +366,13 @@ class TwoStageGrounder:
         模型输入尺寸不可复用时继续跑只会得到静默偏移。
     crop_width / crop_height
         裁剪窗口尺寸（物理像素）。**缺省 = 自适应**
-        （**当前物理帧的 50% 线性尺寸、绝对下限 512**，施工清单第 ⑤ 条）；
+        （**当前物理帧的 50% 线性尺寸、绝对下限 512**）；
         给了就是**固定尺寸**（评测台的 crop 扫描从那儿覆盖）。
     crop_model_input_size
         **模型实际看到的那张 crop 图**的尺寸。缺省 = crop 尺寸（1:1，服务端不缩放
         这张小图；本机实测）。
     effort
-        思考预算档位（**必须显式给**，架构决策备忘 §2.6 C-12）。
+        思考预算档位（**必须显式给**）。
     max_tokens
         **粗定位 / 整屏第二遍 / 精定位**共用的输出预算（默认 4096）。
         预算太小会出现「HTTP 200 但没有文本输出」。
@@ -391,7 +390,7 @@ class TwoStageGrounder:
     gate_mode
         ``GateMode.ON_DEMAND`` / ``GateMode.ALWAYS``。
         ⚠️ **它不再改变任何行为**（门控降级为记录器 → 两个 mode 的落点
-        **逐条相同**）。**留着**是因为：① ``GateMode`` 是 ``CONTEXT.md`` 的
+        **逐条相同**）。**留着**是因为：① ``GateMode`` 是既有
         词条，单测与评测台都在用；② 接线与历史报告要能读出「当时标的是
         哪一档」。**不是**用来决定开不开精定位的。
     candidate_source
@@ -412,26 +411,26 @@ class TwoStageGrounder:
         2~3 个更具体的表述让它选）。
         **不给（默认）→ 不做规范化**（不花那次模型调用）。
     variants
-        **精定位那一级采几次**（施工清单 T1 的 K；默认 **1** = 现状，一次一次）。
+        **精定位那一级采几次**（K；默认 **1** = 现状，一次一次）。
         K > 1 时：精定位换 **K 个固定偏移子区域**各问一次（每次换措辞），
         并跑**标记图选择**（T4）。
     coarse_variants
-        **粗定位那一级采几次**（施工清单 T1 的 K；默认 **1** = 现状）。
+        **粗定位那一级采几次**（K；默认 **1** = 现状）。
         K > 1 时：粗定位换 **K 种措辞**各问一次（**变体 0 仍然是主用那一次**）。
         ⚠️ 默认仍是 1 —— 粗定位多采样是**探针**用的（量 oracle-of-8），
-        不是生产默认（生产默认见 ``docs/00-现状.md``）。
+        不是生产默认。
     pool
         **采样池**（可空）—— 每次采样的**原文与落点**都记进去，
         **所有臂从同一份池子取**（否则臂间差异里混着模型随机性）。
     upscale_target_px
-        **目标表观像素的下限**（施工清单 T3；默认 **30 px**）。
+        **目标表观像素的下限**（默认 **30 px**）。
         crop 从物理帧 1:1 裁出后**重采样放大**到「目标表观像素 ≥ 这个值」
         （图宽 ≤ 服务端上限 2016）。
         **给 0 = 不放大**（对照臂）。
     upscale_max_factor
         **放大倍数的上限**（默认 **3.0**）—— 免得把一张大图放成巨图。
     marked_candidates
-        **标记图上最多画几个候选**（施工清单 T4；默认 6）。
+        **标记图上最多画几个候选**（默认 6）。
     """
 
     def __init__(
@@ -484,17 +483,17 @@ class TwoStageGrounder:
         self.additional_candidate_source = additional_candidate_source
         #: **界面上真实存在的名字清单**（工单 B-4）。``None`` = 不做规范化。
         self.target_names = target_names
-        #: **精定位那一级采几次**（施工清单 T1 的 K；1 = 现状）。
+        #: **精定位那一级采几次**（K；1 = 现状）。
         self.variants = max(1, int(variants))
-        #: **粗定位那一级采几次**（施工清单 T1 的 K；1 = 现状）。
+        #: **粗定位那一级采几次**（K；1 = 现状）。
         self.coarse_variants = max(1, int(coarse_variants))
-        #: **采样池**（施工清单 T1）—— ``None`` = 不记。
+        #: **采样池** —— ``None`` = 不记。
         self.pool = pool
-        #: **目标表观像素的下限**（施工清单 T3；0 = 不放大）。
+        #: **目标表观像素的下限**（0 = 不放大）。
         self.upscale_target_px = float(upscale_target_px)
-        #: **放大倍数上限**（施工清单 T3）。
+        #: **放大倍数上限**。
         self.upscale_max_factor = float(upscale_max_factor)
-        #: **标记图上最多画几个候选**（施工清单 T4）。
+        #: **标记图上最多画几个候选**。
         self.marked_candidates = int(marked_candidates)
         self.adapter = CoordinateAdapter(
             scale, out_of_bounds_tolerance_px=self.out_of_bounds_tolerance_px
@@ -640,7 +639,7 @@ class TwoStageGrounder:
         coarse_out_of_bounds = False
         #: 粗定位**框**推出的目标半径（物理像素）—— 0 = 模型只给了点。
         coarse_radius_px = 0.0
-        #: 粗定位的**原始框（物理像素四元组）**（施工清单 T5 要）。
+        #: 粗定位的**原始框（物理像素四元组）**。
         coarse_bbox_px: list[float] | None = None
         # ⚠️ **这次模型调用发生了**（回答解析不出来**也是问过了**）→ 记 1 次。
         # ⚠️ 不记它 →「平均模型调用数/目标」这条验收线**少算**
@@ -686,7 +685,7 @@ class TwoStageGrounder:
             if coarse_variant == 0:
                 raw = answer
         raw_center: tuple[float, float] | None = None
-        #: 粗定位**模型自报的元素文字**（施工清单 T4 的再搜提示词要用它
+        #: 粗定位**模型自报的元素文字**（再搜提示词要用它
         #: 「让模型避开那个候选」）。
         coarse_text = ""
         if raw is not None and not raw.negative:
@@ -703,7 +702,7 @@ class TwoStageGrounder:
                     sent_width=screen_frame.width,
                     sent_height=screen_frame.height,
                     image_source=_image_source(screen_frame),
-                    # **粗定位的原始回答**（施工清单第 ① 条埋点）：
+                    # **粗定位的原始回答**（埋点）：
                     # 原始框 + 模型自报的文字 —— 此前**不可恢复**，
                     # 于是「目标半径」「挑错元素」这两类分析只能靠推断。
                     raw_bbox=raw.bbox,
@@ -719,7 +718,7 @@ class TwoStageGrounder:
             except CoordinateError as exc:
                 coarse_issue = f"粗定位结果不可用：{exc}"
         elif raw is not None and raw.negative:
-            # **负出口**（施工清单第 ⑦ 条）：模型说「这张图里没有这个元素」。
+            # **负出口**：模型说「这张图里没有这个元素」。
             coarse_issue = "模型说这张图里没有对应的元素"
             echoes.append(
                 GroundingEcho(
@@ -784,7 +783,7 @@ class TwoStageGrounder:
             )
 
         # -- 裁剪计划：从原始物理分辨率图上取窗口 --------------------------
-        # ⚠️ **窗口尺寸是自适应的**（施工清单第 ⑤ 条）：当前物理帧的 50% 线性尺寸、
+        # ⚠️ **窗口尺寸是自适应的**：当前物理帧的 50% 线性尺寸、
         # 绝对下限 512、贴边**向内平移补足、不缩小窗口**；裁剪**1:1 原生像素**。
         crop_width, crop_height = self._crop_size_for(frame)
         try:
@@ -835,7 +834,7 @@ class TwoStageGrounder:
             )
         refined = refine.landing
 
-        # -- 偏离量（施工清单第 ④ 条）：**只记录，不改落点** ------------------
+        # -- 偏离量：**只记录，不改落点** ------------------
         # ⚠️ **判据降级为记录器**（2026-10-22）：量的口径从「离 crop 窗口中心多远」
         # 改成 **‖精定位 − 粗定位点‖₂**（crop 被 shift 时不再注入额外偏移），
         # 阈值表达改成 **crop 宽度千分位**（``deviation_c1000``）。
@@ -952,7 +951,7 @@ class TwoStageGrounder:
                     failure_reason = f"精定位失败：{exc}"
                 continue
             if point is None:
-                # **负出口**（施工清单第 ⑦ 条）：模型说「这张图里没有这个元素」。
+                # **负出口**：模型说「这张图里没有这个元素」。
                 if not failure_cause:
                     failure_cause = FallbackCause.NO_OUTPUT.value
                     failure_reason = "模型说这张裁剪图里没有对应的元素（负出口）"
@@ -1107,7 +1106,7 @@ class TwoStageGrounder:
         coarse_text: str,
         coarse: tuple[float, float],
     ) -> VisualLocateResult:
-        """**整屏再搜**（施工清单 T4）—— **不是回落**。
+        """**整屏再搜** —— **不是回落**。
 
         提示词里带着「**上一个候选是错的**」+ **候选自报的文字** →
         让模型**避开**那一个、找一个不同的元素。
@@ -1191,7 +1190,7 @@ class TwoStageGrounder:
         window: tuple[int, int, int, int] | None,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        """把一次采样**记进采样池**（施工清单 T1）—— 没给池子就不记。"""
+        """把一次采样**记进采样池** —— 没给池子就不记。"""
         if self.pool is None:
             return
         self.pool.record(
@@ -1238,7 +1237,7 @@ class TwoStageGrounder:
     def _coarse_bbox_physical(
         self, target: CoarseTarget, geometry
     ) -> list[float] | None:
-        """粗定位的**原始框** → **物理像素**的四元组（施工清单 T5 要）。
+        """粗定位的**原始框** → **物理像素**的四元组。
 
         此前只落了**归一化的** ``coarse_bbox_model``（模型输入空间）→
         护栏的离线重算**推不出**「框在物理上有多大」→ 这一条补上。
@@ -1272,8 +1271,7 @@ class TwoStageGrounder:
 
         * ``deviation_px`` —— 精定位落点离 **crop 窗口中心**多远（**历史口径**，
           参考点不是粗定位点：crop 走 shift 语义时两者不同）—— **留着，便于对比**；
-        * ``deviation_px_coarse`` —— **‖精定位 − 粗定位点‖₂**（**当前口径的量**，
-          施工清单第 ④ 条）；
+        * ``deviation_px_coarse`` —— **‖精定位 − 粗定位点‖₂**（**当前口径的量**）；
         * ``deviation_c1000`` —— 同一个量按 **crop 宽度千分位**表达的刻度
           （阈值用它 → **换 crop 尺寸不用重调**）；
         * ``deviation_exceeded`` —— 记录器的判断结果（**只落盘，不改落点**）；
@@ -1291,9 +1289,9 @@ class TwoStageGrounder:
             "refined_point_y": None,
             "zoom_consistency_px": None,
             "zoom_consistency_c1000": None,
-            #: **粗定位的原始框（物理像素四元组）**（施工清单 T5：护栏离线重算要它）。
+            #: **粗定位的原始框（物理像素四元组）**（护栏离线重算要它）。
             "coarse_bbox_px": coarse_bbox_px,
-            #: **crop 窗口的物理矩形**（施工清单 T5）。
+            #: **crop 窗口的物理矩形**。
             "crop_rect_px": (
                 [
                     plan.origin_x,
@@ -1658,7 +1656,7 @@ class TwoStageGrounder:
             )
         )
         if raw.negative:
-            # **负出口**（施工清单第 ⑦ 条）：模型说「这张图里没有对应的元素」。
+            # **负出口**：模型说「这张图里没有对应的元素」。
             # → **报定位失败**（粗定位本身不可用，**没有可回落的结果**）。
             return self._failure(
                 "整屏第二遍也说这张图里没有对应的元素（负出口）",

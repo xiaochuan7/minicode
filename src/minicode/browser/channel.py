@@ -15,8 +15,7 @@
 文本区域由**文本度量**这一层算出来（:mod:`minicode.browser.textmetrics`，
 **浏览器通道独有**）；文本度量拿不到 → **判不了**，
 **不静默回落到元素矩形中心**（工单 M28）。
-动作由**浏览器自己的输入通道**下发（浏览器通道的定义，
-`CONTEXT.md`），不走桌面鼠标注入。
+动作由**浏览器自己的输入通道**下发，不走桌面鼠标注入。
 """
 
 from __future__ import annotations
@@ -112,7 +111,7 @@ class BrowserChannel:
 
         first = self.structure.snapshot()
         if not first.elements:
-            # **0 元素 = 静默退化**（架构决策备忘 §2.6 C-09），不是「目标不存在」——
+            # **0 元素 = 静默退化**，不是「目标不存在」——
             # 与桌面通道同一个分支（控件树读不出节点 → `locate_failed`）。
             return _failure(
                 ErrorCode.LOCATE_FAILED,
@@ -239,7 +238,7 @@ class BrowserChannel:
 
         * 文本匹配用 :func:`minicode.action.text.name_matches`（**包含**语义）；
         * 角色提示给了就再加上角色条件；
-        * 矩形读不成合法矩形的候选**丢掉**（架构决策备忘 §2.6 C-08）。
+        * 矩形读不成合法矩形的候选**丢掉**。
         """
         hint = (role_hint or "").strip().lower()
         matched = []
@@ -293,7 +292,7 @@ class BrowserChannel:
     ) -> tuple[BrowserElement | None, int, ModelTreeView | None, SelectionEcho | None]:
         """**消歧**：模型只在候选集内指认（与桌面通道同一套实现）。
 
-        脱敏闸门（架构决策备忘 §2.6 C-15）：**脱敏没上线就不许把页面结构送模型**
+        脱敏闸门：**脱敏没上线就不许把页面结构送模型**
         —— 这时这条通道被**拒绝启用**，抛 :class:`_ChannelRefused`，
         **一个模型调用都不发生**。
         """
@@ -302,7 +301,7 @@ class BrowserChannel:
         if self.redactor is None:
             raise _ChannelRefused(
                 "脱敏未上线，禁止把页面结构送模型"
-                "（架构决策备忘 §2.6 C-15：脱敏必须排在所有通道之前）"
+                "（脱敏必须排在所有通道之前）"
             )
         try:
             view = self.redactor.render([to_candidate(element) for element in candidates])

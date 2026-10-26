@@ -3,12 +3,8 @@
 断言的对象是**对外可见的契约字段**：最终落点、粗定位点、裁剪计划、
 每步回显、回落标记与原因、错误码、放大路径的契约。
 
-另有三类**源码级**检查（工单 AC 5 / AC 7 / AC 11 的字面要求就是源码级判据，
-与 `minicode/model/test_citation_discipline.py` 同一路子）：
+另有三类**源码级**检查（工单 AC 5 / AC 7 / AC 11 的字面要求就是源码级判据）：
 换算链路不许出现写死分母、不许出现写死的图像像素上限常量、本包不许引第三方包。
-
-判据来源：架构决策备忘 §2.6 的 **C-03**（分母来自标定）、**C-04**（不写死分母 /
-不按数值大小猜量纲）、**C-06**（服务端缩图 → 实际发送尺寸）、**C-16**（crop 精定位）。
 """
 
 from __future__ import annotations
@@ -514,7 +510,7 @@ class CoarseBoxTests(unittest.TestCase):
     def test_the_prompt_asks_for_a_box(self):
         """提示词问 **bounding box**（官方协议的措辞），**不许有量纲暗示**。
 
-        ⚠️ **2026-10-22（施工清单第 ⑦ 条）**：粗定位**删掉 ``point`` 字段**
+        ⚠️ **2026-10-22**：粗定位**删掉 ``point`` 字段**
         （官方全部是「每对象一个几何」）、**加 ``text`` 自报**、**加负出口**。
         """
         from minicode.ground.prompt import coarse_prompt
@@ -584,7 +580,7 @@ class CoarseBoxTests(unittest.TestCase):
             parse_coarse_target("{}")
 
     def test_the_answer_line_rules_come_from_one_shared_implementation(self):
-        """答案行 / 截断的读法**只有一份**（施工清单第 ⑦ 条：两边不许各写一份）。"""
+        """答案行 / 截断的读法**只有一份**（两边不许各写一份）。"""
         from minicode.ground import prompt as ground_prompt
         from minicode.model import answer_text
 

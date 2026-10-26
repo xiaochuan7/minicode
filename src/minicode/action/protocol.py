@@ -2,7 +2,7 @@
 
 协议形状一次立住，后续工单按 v1 扩展，不各写一套。
 
-**动作种类集合 = 架构决策备忘 §3 的 12 个**（工单 M21）::
+**动作种类集合 = 12 个**（工单 M21）::
 
     screenshot / click / move / drag / type / key / scroll / wait /
     zoom / inspect / execute_code / ask_user
@@ -57,7 +57,7 @@ CLICK_DOUBLE = 2
 
 
 class ActionKind(StrEnum):
-    """动作种类（架构决策备忘 §3 的 12 个，逐字对齐）。"""
+    """动作种类（12 个，逐字对齐）。"""
 
     #: 截图。
     SCREENSHOT = "screenshot"

@@ -14,7 +14,7 @@
     python scripts/desktop_lock.py human                   # 人类要用电脑：占锁
     python scripts/desktop_lock.py release --owner human   # 人类用完：释放
 
-判定规则见 AGENTS.md 的「真机占用锁」一节。
+判定规则就是本脚本的实现（真机占用锁：人机互斥 —— 人类要用电脑时 agent 不得动真机）。
 """
 
 from __future__ import annotations

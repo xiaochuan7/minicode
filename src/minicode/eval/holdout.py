@@ -1,14 +1,14 @@
-"""**门控结论的留出集重评**（工单 M23；施工清单 ⑨ 改切分设计）。
+"""**门控结论的留出集重评**（工单 M23）。
 
 M8 的门控结论（门控开 59.5% ≥ 门控关 57.1%）是**在同一批样本上调参数**得到的
 （一致性容差 128 px → 16 px）—— **同批调参 + 同批评估 = 过拟合**。
 本模块把判定改成**留出集**判定：**阈值只在训练折上调，结论只看留出折**。
 
-## 切分：**按 app/platform 分组 K 折**（施工清单 ⑨）
+## 切分：**按 app/platform 分组 K 折**
 
 ⚠️ **「按 index 分半」作废**：那种切分带 **−5.63 ± 0.57 pp 的构成差**
 （7 个 crop 尺寸 7/7 同号），两批不相交、构成不同 → 差值里混着构成差、
-不是效应（出处见 ``docs/research/vision-root-cause.md``「为什么必须换设计」）。
+不是效应。
 
 现在的切分纪律：
 
@@ -106,7 +106,7 @@ __all__ = [
     "tune_gate_params",
 ]
 
-#: **分组 K 折**的默认折数（施工清单 ⑨）。
+#: **分组 K 折**的默认折数。
 KFOLD_DEFAULT = 5
 
 #: **一致性容差的候选网格**（物理像素）。
@@ -132,7 +132,7 @@ TOLERANCE_CANDIDATES: tuple[float, ...] = (
 
 #: **偏离容差的候选网格**（物理像素）。
 #:
-#: 施工清单 ⑨ 把它扩到 ``{24, 32, 40, 48, 56, 64, 80, 96, 128, ∞}``：
+#: 现在把这个网格扩到 ``{24, 32, 40, 48, 56, 64, 80, 96, 128, ∞}``：
 #: 旧的 ``{0, 8, 16, …, 192, 256, 512}`` 两头都太粗，且**小于 24 px 的偏离**
 #: 在这一批记录里判不出差别（判不了 → 只给区间 → 悲观下界变差）。
 #: 末尾的 ``1e9`` = 「永不因偏离而回落」。
@@ -197,7 +197,7 @@ class FoldSplit:
         return sorted(key for key, value in self.group_assignment.items() if value == fold)
 
 
-#: **分组 K 折的切分规则**（写进代码，不是手挑 —— 施工清单 ⑨）。
+#: **分组 K 折的切分规则**（写进代码，不是手挑）。
 KFOLD_RULE = (
     "按 **app（或 group）× platform** 分组；**同组样本不拆开**（同组必在同一折）；"
     "组按「条数降序、分组键字典序」排序后，依次放进**当前条数最少**的那一折"
@@ -377,7 +377,7 @@ class HoldoutSample:
     model_calls: int
 
     def to_dict(self) -> dict[str, Any]:
-        """落盘形状（每条样本属于哪一折 —— 施工清单 ⑨）。"""
+        """落盘形状（每条样本属于哪一折）。"""
         return {
             "sample_id": self.sample_id,
             "stratum": self.stratum,
@@ -808,7 +808,7 @@ class Tuning:
         }
 
 
-#: **调参规则**（写进代码，不许手挑 —— 工单 M23 AC 2；施工清单 ⑨ 换成折外选阈）。
+#: **调参规则**（写进代码，不许手挑 —— 工单 M23 AC 2；折外选阈）。
 TUNING_RULE = (
     "只在**训练折**上扫「一致性容差 × 偏离容差」的候选网格；"
     "每个候选用**悲观下界**算训练折的「门控开」命中率；"
@@ -828,7 +828,7 @@ def tune_gate_params(
     """**在训练折上调**门控参数（返回选中的那一组 + 整个扫参过程）。
 
     ⚠️ **留出折的样本一条都不进这里** —— 调参只看训练折
-    （工单 M23 AC 2；施工清单 ⑨ 的「折外选阈值、折内评」）。
+    （工单 M23 AC 2：「折外选阈值、折内评」）。
 
     「目标占比」与「置信度」两条条件**不在网格里**：在**本模块重放的那批
     历史记录**里它们**不可判定**（那一轮粗定位只给点不给框；模型不报置信度），
@@ -1158,7 +1158,7 @@ def tune_on_training_folds(
 ) -> Tuning:
     """**在训练折上选阈值**（留出折的样本一条都不进这里）。
 
-    施工清单 ⑨ 的「折外选阈值、折内评」—— 调参只看训练折。
+    「折外选阈值、折内评」—— 调参只看训练折。
     """
     return tune_gate_params(
         training_samples(samples, fold),
@@ -1304,7 +1304,7 @@ def build_report(
     folds = range(split.folds)
     return {
         "ticket": "M23",
-        "design": "施工清单 ⑨：按 app/platform **分组 K 折**（折外选阈值、折内评）",
+        "design": "按 app/platform **分组 K 折**（折外选阈值、折内评）",
         "purpose": (
             "把门控判定改成**分组 K 折留出集**判定："
             "阈值在训练折上调，结论只看留出折"
@@ -1485,7 +1485,7 @@ def run_holdout(
     """**跑一遍分组 K 折的留出集重评**：分组切分 → 重建 → **每折：训练折调参、留出折评**。
 
     ⚠️ **每折的调参只看训练折**（:func:`tune_on_training_folds`），
-    留出折在参数定下来之后才被评估 —— 施工清单 ⑨ 的「折外选阈值、折内评」。
+    留出折在参数定下来之后才被评估 —— 「折外选阈值、折内评」。
     """
     groups: dict[str, list[str]] = {}
     for outcome in run.on_demand.values():
@@ -1541,7 +1541,7 @@ def main(argv=None) -> int:
     """``python -m minicode.eval.holdout`` —— 分组 K 折留出集重评（不重调模型）。"""
     parser = argparse.ArgumentParser(
         prog="minicode.eval.holdout",
-        description="ScreenSpot-Pro 门控结论的分组 K 折留出集重评（工单 M23 / 施工清单 ⑨）",
+        description="ScreenSpot-Pro 门控结论的分组 K 折留出集重评（工单 M23）",
     )
     parser.add_argument("--run", required=True, help="M8 那轮的 sspro-report.json")
     parser.add_argument("--dataset", required=True, help="ScreenSpot-Pro 数据集根目录")

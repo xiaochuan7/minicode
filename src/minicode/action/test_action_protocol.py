@@ -27,7 +27,7 @@ from minicode.action.surface import SurfaceSpec
 from minicode.coord.calibrate import CalibrationProbe
 from minicode.coord.coordinates import DEFAULT_OUT_OF_BOUNDS_TOLERANCE_PX, CoordinateOutOfBounds
 
-#: **架构决策备忘 §3 的 12 个动作种类**（逐字抄在这里）。
+#: **12 个动作种类**（逐字抄在这里）。
 #: 这份清单是本单的**防漂移闸门**：协议里多一个或少一个动作种类，单测就红。
 _MEMO_ACTION_KINDS = {
     "screenshot",
@@ -52,7 +52,7 @@ class ProtocolShapeTest(unittest.TestCase):
         self.assertEqual(PROTOCOL_VERSION, "cua.action/1")
 
     def test_the_action_kind_set_is_exactly_the_twelve_from_the_architecture_memo(self):
-        """防漂移闸门：动作种类集合 == 架构决策备忘 §3 的 12 个（逐个比对名字）。"""
+        """防漂移闸门：动作种类集合 == 12 个（逐个比对名字）。"""
         self.assertEqual({kind.value for kind in ActionKind}, _MEMO_ACTION_KINDS)
 
     def test_double_click_and_right_click_are_not_action_kinds(self):

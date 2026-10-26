@@ -1,4 +1,4 @@
-"""**多采样 + 放大 + 标记图**的外部行为单测（施工清单 T1 / T3 / T4）。
+"""**多采样 + 放大 + 标记图**的外部行为单测。
 
 盯的是**对外可见的契约**：
 
@@ -134,7 +134,7 @@ class UpscaleTests(unittest.TestCase):
     def test_the_sent_png_matches_the_echo_sent_size(self):
         """**送出的 PNG 的 IHDR 宽高 == 回显的 sent_width/sent_height**。
 
-        ⚠️ 这是施工清单点名要的回归：放大后**声明尺寸**与**实际发出的图**
+        ⚠️ 回归守卫：放大后**声明尺寸**与**实际发出的图**
         必须一致 —— 不一致就是**静默偏移一个放大倍数**。
         """
         model = _StubModel(

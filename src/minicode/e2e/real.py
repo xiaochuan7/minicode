@@ -6,7 +6,7 @@
   （UIA 通道 → 覆盖失败 → 切视觉 → 两级 grounding → 放大）；
 * :class:`ChromeExecutor` —— Chrome（浏览器通道）。
 
-⚠️ **动真机前必须持有** ``.scratch/desktop.lock``（AGENTS.md「真机占用锁」）——
+⚠️ **动真机前必须持有** ``.scratch/desktop.lock`` ——
 由 :mod:`minicode.e2e.__main__` 拿锁与放锁。
 
 ⚠️ **两个口径**（与 M6/M9 的测量台同一个做法）：
@@ -580,7 +580,7 @@ class WindowsDesktopExecutor:
             self._record_zoom(step, trace)
         if step.window == "settings":
             self._record_scale(wiring)
-        #: **agent 代确认**（施工清单 T10）：这一步原来需要人工代确认 →
+        #: **agent 代确认**：这一步原来需要人工代确认 →
         #: agent **自己重新抓图**读回（工单 M14 的 W-2.A：
         #: 「改动后重新抓图能读到 125%」—— 树里没有那个百分比，只能从画面读）。
         if step.human_confirm:
@@ -710,8 +710,7 @@ class WindowsDesktopExecutor:
             description=step.description,
             ok=result.ok,
             #: **不标通道**：这一坐标来自上一步的放大回答，
-            #: 放大是动作协议里的一个动作，不是定位的一个环节
-            #: （`CONTEXT.md` 的「放大」）。
+            #: 放大是动作协议里的一个动作，不是定位的一个环节。
             channel="",
             error_code=(result.error_code.value if result.error_code else ""),
             error_message=(result.error_message or ""),

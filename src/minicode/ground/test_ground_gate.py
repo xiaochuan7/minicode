@@ -4,9 +4,8 @@
 是否开启 crop 精定位、是否回落与回落原因、追踪记录里的四个埋点字段、
 评测报告的命中率与回落率，以及各家评测脚本的坐标口径转换。
 
-判据来源：架构决策备忘 §2.6 的 **C-16**（crop 精定位必须门控 + 必须有回落到
-粗定位结果的路径）、**C-04**（分母来自标定，两套命名不许混用）、
-工单 M7 的 AC 1~AC 10。
+判据来源：crop 精定位必须门控、且必须有回落到粗定位结果的路径；
+分母来自标定（两套命名不许混用）；工单 M7 的 AC 1~AC 10。
 """
 
 from __future__ import annotations
@@ -160,22 +159,15 @@ class GateParamsTests(unittest.TestCase):
 
         * **本项目自己的口径文档与代码**（阈值住在的地方）：必须同时带
           「数据集统计」与「未验证」；
-        * **派生研究文档**：必须带「数据集统计」（那里它是描述性的统计，
-          不是阈值 —— 写成「未验证的阈值」反而是错的）。
-
-        ⚠️ `docs/research/bottom-drafts/` **不在扫描范围内**：那些底稿的行号
-        被全仓逐行引用（`底稿 NN Lnnn`），改一个字就断链。
+        * **产品规格 `docs/spec.md`**：必须带「数据集统计」（那里它是描述性的
+          统计，不是阈值 —— 写成「未验证的阈值」反而是错的）。
         """
         strict = [
             *sorted(_GROUND_DIR.glob("*.py")),
-            *sorted((_REPO_ROOT / "docs" / "tickets").glob("*.md")),
-            _REPO_ROOT / "docs" / "00-现状.md",
-            *sorted((_REPO_ROOT / "docs" / "reviews").glob("*.md")),
             *sorted((_REPO_ROOT / "docs" / "adr").glob("*.md")),
         ]
         loose = [
             _REPO_ROOT / "docs" / "spec.md",
-            *sorted((_REPO_ROOT / "docs" / "research").glob("0*.md")),
         ]
         offenders: list[str] = []
         for path, markers in [(path, ("数据集统计", "未验证")) for path in strict] + [
@@ -302,7 +294,7 @@ class GatePipelineTests(unittest.TestCase):
         self.assertEqual(result.fallback_cause, FallbackCause.OUT_OF_BOUNDS.value)
 
     def test_both_stages_negative_is_a_failure_not_a_crash(self):
-        """**负出口**（施工清单第 ⑦ 条）：两级都答「图里没有」→ **报定位失败**。
+        """**负出口**：两级都答「图里没有」→ **报定位失败**。
 
         ⚠️ 回归守卫：整屏第二遍原来直接取框中心，负出口的回答**没有框**
         → 抛 ``GroundingParseError`` 崩在执行器里（wave1 的 W-1 就是这么失败的）。
@@ -316,7 +308,7 @@ class GatePipelineTests(unittest.TestCase):
         self.assertIn("负出口", result.error_message)
 
     def test_refine_deviating_from_coarse_is_recorded_not_fallback(self):
-        """精定位结果**明显偏离粗定位** → **只记录，不改落点**（施工清单第 ④ 条）。
+        """精定位结果**明显偏离粗定位** → **只记录，不改落点**。
 
         ⚠️ **2026-10-22 改口径**：偏离判据**降级为记录器** ——
         「离 crop 中心多远」换成「‖精定位 − 粗定位点‖₂」，阈值表达换成

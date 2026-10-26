@@ -176,7 +176,7 @@ def main(argv=None) -> int:
             "输出预算（默认 8192）—— 粗定位那一级**曾经**用 2000，"
             "被思考链吃光（「HTTP 200 但没有文本输出」丢样本）；"
             "4096 档残余无文本率 0.56%%（19/3404），"
-            "8192 档按幂律外推 0.03~0.07%%（施工清单第 ② 条）"
+            "8192 档按幂律外推 0.03~0.07%%"
         ),
     )
     parser.add_argument(
@@ -202,7 +202,7 @@ def main(argv=None) -> int:
         default=0,
         help=(
             "裁剪窗口宽（物理像素）；0 = **自适应**"
-            "（当前物理帧的 50%% 线性尺寸、绝对下限 512 —— 施工清单第 ⑤ 条）"
+            "（当前物理帧的 50%% 线性尺寸、绝对下限 512）"
         ),
     )
     parser.add_argument(
@@ -217,7 +217,7 @@ def main(argv=None) -> int:
         help=(
             "**档位**（WxH）—— 声明「模型实际看到的那张整屏图」的尺寸上界。"
             "不填 = **生产档 2016×1260**（`model/image.py` 的常量）；"
-            "填 `1536x960` = 跑**对照臂**（施工清单 T2）。"
+            "填 `1536x960` = 跑**对照臂**。"
             "⚠️ **档位是 CLI 参数而不是源码常量** —— 两臂要能并排跑、"
             "配对判定（McNemar）才成立"
         ),
@@ -226,7 +226,7 @@ def main(argv=None) -> int:
         "--memo-cache",
         default="",
         help=(
-            "**应答记忆的落盘缓存**（施工清单第 ⑨ 条）：给了就把每次回答写进这个"
+            "**应答记忆的落盘缓存**：给了就把每次回答写进这个"
             " JSONL，下一轮运行**先读缓存** → 跨进程的两轮（例如「只换 crop 尺寸」）"
             "共用同一次粗定位回答 → 那一对是**真配对**"
         ),
@@ -236,7 +236,7 @@ def main(argv=None) -> int:
         type=int,
         default=1,
         help=(
-            "**每一级采几次**（施工清单 T1 的 K；默认 1 = 现状）。"
+            "**每一级采几次**（K；默认 1 = 现状）。"
             "K > 1 时：粗定位换 K 种措辞、精定位换 K 个固定偏移子区域各问一次；"
             "K > 1 时还会跑**标记图选择**（T4）"
         ),
@@ -246,7 +246,7 @@ def main(argv=None) -> int:
         type=int,
         default=1,
         help=(
-            "**粗定位那一级采几次**（施工清单 T1 的 K；默认 1 = 现状）。"
+            "**粗定位那一级采几次**（K；默认 1 = 现状）。"
             "K > 1 时换 K 种措辞各问一次（变体 0 仍是主用那一次）—— "
             "这是**量 oracle-of-8** 的探针用的，不是生产默认"
         ),
@@ -256,7 +256,7 @@ def main(argv=None) -> int:
         type=float,
         default=30.0,
         help=(
-            "**目标表观像素的下限**（施工清单 T3；默认 30 px）。"
+            "**目标表观像素的下限**（默认 30 px）。"
             "crop 从物理帧 1:1 裁出后重采样放大到「目标 ≥ 这个值」"
             "（图宽 ≤ 服务端上限 2016）。**给 0 = 不放大**（对照臂）"
         ),
@@ -265,19 +265,19 @@ def main(argv=None) -> int:
         "--upscale-max-factor",
         type=float,
         default=3.0,
-        help="**放大倍数上限**（施工清单 T3；默认 3.0）",
+        help="**放大倍数上限**（默认 3.0）",
     )
     parser.add_argument(
         "--marked-candidates",
         type=int,
         default=6,
-        help="**标记图上最多画几个候选**（施工清单 T4；默认 6）",
+        help="**标记图上最多画几个候选**（默认 6）",
     )
     parser.add_argument(
         "--pool",
         default="",
         help=(
-            "**采样池的落盘路径**（施工清单 T1）：每次采样的原文与落点都写进这个"
+            "**采样池的落盘路径**：每次采样的原文与落点都写进这个"
             " JSONL（所有臂从同一份池子取 → 臂间差异不混模型随机性）"
         ),
     )
@@ -288,8 +288,7 @@ def main(argv=None) -> int:
         "--full",
         action="store_true",
         help=(
-            "跑**全量**样本（本地有图的那些），**不做**分层抽样"
-            "（施工清单第 ⑨ 条）"
+            "跑**全量**样本（本地有图的那些），**不做**分层抽样。"
         ),
     )
     parser.add_argument(
@@ -297,7 +296,7 @@ def main(argv=None) -> int:
         action="store_true",
         help=(
             "把样本切成「**调参集 / 确认集**」两段（**不重叠**），"
-            "报告里分别给 Δ / p / CI（施工清单第 ⑨ 条）。"
+            "报告里分别给 Δ / p / CI。"
             "调参集 = 分层抽样的那一批；确认集 = 其余**本地有图**的样本。"
             "⚠️ **它要跑全量**（确认集不在抽样里）—— "
             "**本轮不要求跑全量**，跑不跑由调用方决定"
@@ -309,7 +308,7 @@ def main(argv=None) -> int:
     dataset = Path(args.dataset)
     samples = load_samples(dataset)
     print(f"=== 数据集：{len(samples)} 条（{dataset}）===")
-    #: **分层抽样**的那一批 = **调参集**（施工清单第 ⑨ 条）。
+    #: **分层抽样**的那一批 = **调参集**。
     tuning = stratified_subset(samples, args.per_stratum, seed=args.seed)
     local_ids = {sample.sample_id for sample in samples if sample.image_path.exists()}
     tuning = [sample for sample in tuning if sample.sample_id in local_ids]
@@ -334,7 +333,7 @@ def main(argv=None) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     config = load_config()
-    #: **档位**（施工清单 T2）：不填 = 生产档（``model/image.py`` 的常量）。
+    #: **档位**：不填 = 生产档（``model/image.py`` 的常量）。
     #: 填了 → 那两个数就是上界（``model_input_size_for`` 仍是**声明尺寸的唯一来源**）。
     if args.model_input:
         tier_width, tier_height = _parse_size(args.model_input)
@@ -348,12 +347,12 @@ def main(argv=None) -> int:
     model = _ThreadLocalModel(
         config, JsonlRequestLog(out_dir / "model-requests.jsonl")
     )
-    #: **应答记忆端口**（施工清单第 ⑨ 条）：记忆缓存**落盘**，
+    #: **应答记忆端口**：记忆缓存**落盘**，
     #: 跨进程的两轮（例如「只换 crop 尺寸」）共用同一次上游回答 → 那一对**真配对**。
     memoized = MemoizingModelCaller(
         model, cache_path=args.memo_cache or None
     )
-    #: **采样池**（施工清单 T1）—— 所有臂从同一份池子取。
+    #: **采样池** —— 所有臂从同一份池子取。
     pool = ResponsePool(args.pool) if args.pool else None
 
     # -- 标定：每个图像尺寸各标一次（真调模型）--------------------------
@@ -491,7 +490,7 @@ def main(argv=None) -> int:
             "endpoint": config.base_url,
             "effort": args.effort,
             "max_tokens": args.max_tokens,
-            #: **档位**（施工清单 T2）—— 整屏模型输入尺寸的上界。
+            #: **档位** —— 整屏模型输入尺寸的上界。
             #: ⚠️ **每个图像尺寸的实际声明尺寸仍按那张图算**
             #: （``model_input_size_for`` 是声明尺寸的唯一来源）。
             "model_input_tier": [tier_width, tier_height],
@@ -522,7 +521,7 @@ def main(argv=None) -> int:
         "model_calls": {
             "sent": memoized.calls,
             "replayed": memoized.replays,
-            #: **阶段标签**（施工清单第 ⑨ 条）：每条回答属于哪一级
+            #: **阶段标签**：每条回答属于哪一级
             #: （coarse / whole2nd / refine / calib）→ **事后**分辨哪一级被复用。
             #: ⚠️ **只是标签**：**不参与任何坐标换算**，也不改变任何判定。
             "stages": memoized.stage_report(),
@@ -569,7 +568,7 @@ def main(argv=None) -> int:
         "elapsed_seconds": round(time.time() - started, 1),
     }
     if args.confirmation_split:
-        #: **调参集 / 确认集**两段（**不重叠**）—— 施工清单第 ⑨ 条。
+        #: **调参集 / 确认集**两段（**不重叠**）。
         report["confirmation_split"] = _confirmation_split_report(
             tuning_ids={sample.sample_id for sample in tuning},
             run_ids={sample.sample_id for sample in chosen},
@@ -584,14 +583,14 @@ def main(argv=None) -> int:
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (out_dir / "sspro-table.md").write_text(table + "\n", encoding="utf-8")
-    #: **采样池落盘**（施工清单 T1）—— 每次采样的原文与落点都在里面。
+    #: **采样池落盘** —— 每次采样的原文与落点都在里面。
     if pool is not None:
         pool_path = pool.save()
         report["response_pool"] = {
             "path": str(pool_path),
             "samples": len(pool.entries()),
             "note": (
-                "采样池：每次采样的**原文与落点**（施工清单 T1）。"
+                "采样池：每次采样的**原文与落点**。"
                 "所有臂从同一份池子取 → 臂间差异不混模型随机性"
             ),
         }
@@ -650,7 +649,7 @@ def _confirmation_split_report(
     run_ids: set[str],
     arms: dict[str, list[ArmOutcome]],
 ) -> dict[str, Any]:
-    """**调参集 / 确认集**两段（**不重叠**）的统计（施工清单第 ⑨ 条）。
+    """**调参集 / 确认集**两段（**不重叠**）的统计。
 
     * **调参集** = 分层抽样的那一批（阈值在那批上选）；
     * **确认集** = 本轮跑的样本里**其余**的那些（阈值不在它们身上选过）。
@@ -702,7 +701,7 @@ def _calibrate(
     from minicode.calib.tolerance import CALIBRATION_MIN_HIT_RATE
 
     #: **声明的模型输入尺寸**（按**这张图**的尺寸算）。
-    #: ⚠️ **档位是 CLI 参数**（施工清单 T2）—— 不填就用生产档的上界。
+    #: ⚠️ **档位是 CLI 参数** —— 不填就用生产档的上界。
     declared = model_input_size_for(
         width, height, max_width=tier[0], max_height=tier[1]
     )
@@ -881,8 +880,7 @@ def _server_scale_evidence(
 def _paired_line(item: dict) -> str:
     """配对比较那一行（Δ / CI / **三个 p** / **MDE**）。
 
-    ⚠️ **主报是 mid-p**；普通精确二项与 χ²+连续性校正是**保守对照**
-    （施工清单第 ⑨ 条）。
+    ⚠️ **主报是 mid-p**；普通精确二项与 χ²+连续性校正是**保守对照**。
     ⚠️ **MDE** = 这个样本量下能判出的最小效应（百分点）——
     「|Δ| ≥ MDE 即够」；达不到是**样本量不够**，不是「没效果」。
     """

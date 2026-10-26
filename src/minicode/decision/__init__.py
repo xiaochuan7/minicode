@@ -16,8 +16,8 @@ harness 在**受控环境**里执行，把标准输出、异常与新截图回�
 > 承担（``python -m minicode.decision``）。受控执行环境的契约
 > （能不能 import / 能不能写文件）在 :mod:`minicode.action.program` 里有单测。
 >
-> **词汇**：「决策层」「动作程序」「停止条件」「思考预算（effort）」按根目录
-> ``CONTEXT.md`` 的定义。
+> **词汇**：本包统一使用「决策层」「动作程序」「停止条件」「思考预算（effort）」
+> 这几个词。
 """
 
 from __future__ import annotations

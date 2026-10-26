@@ -2,7 +2,7 @@
 
 **坐标换算链路的唯一真值来源是冻结原型** :mod:`minicode.coord`：
 本模块只负责把「这一张图」描述成它自己的 :class:`FrameGeometry`，
-换算本身一律走 ``CoordinateAdapter`` / ``CropRefiner``（架构备忘 §2.5 ②）。
+换算本身一律走 ``CoordinateAdapter`` / ``CropRefiner``。
 
 两套契约在这里分开：
 

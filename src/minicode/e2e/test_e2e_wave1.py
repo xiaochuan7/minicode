@@ -210,7 +210,7 @@ def test_failing_clause_fails_the_task():
 
 
 def test_human_confirm_task_is_executed_by_the_agent():
-    """**「人工代确认」→ agent 代确认**（施工清单 T10）：**不再阻塞**。
+    """**「人工代确认」→ agent 代确认**：**不再阻塞**。
 
     步骤**照跑**（agent 自己执行 + 自己读回验收）→ 这张票**不再**记
     「待人工确认」，也**不计入失败**。

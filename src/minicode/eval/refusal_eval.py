@@ -2,9 +2,9 @@
 
 **为什么需要它**：ScreenSpot-Pro 每一条都**保证目标存在** ⇒ 离线口径里
 「假命中」「拒答 precision」**压根看不见** ⇒ 「假命中归零」在离线口径里是
-**自证的**【一手·公开口径，``docs/research/r-s2-false-hit.md`` §5】。
+**自证的**【一手·公开口径】。
 
-**做法（施工清单 §六 6.2 最后一条）**：**同图取错位 crop** 当负样本 ——
+**做法**：**同图取错位 crop** 当负样本 ——
 在**同一张图**上取一块**不含目标**的窗口（与正样本**同样大小**），
 问模型找那个目标 → **正确行为是负出口**（答「这张图里没有对应的元素」）。
 
@@ -254,7 +254,7 @@ def _report_sample_ids(report_path: Path, arm: str = "always") -> list[str]:
 def _false_refusals(report_path: Path, arm: str = "always") -> dict[str, Any]:
     """**误拒数**（正样本上模型走了负出口）—— **只从已有跑批读**，不另跑正样本。
 
-    口径与 ``docs/research/r-s2-false-hit.md:33-34`` 逐字一致：
+    口径：
     ``fallback_cause == "no_output"`` **且** 落在 ``crop_contains``（含住了却拒）。
     """
     payload = json.loads(Path(report_path).read_text(encoding="utf-8"))

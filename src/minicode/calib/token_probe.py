@@ -1,6 +1,6 @@
 """**图像 token 探针**：服务端到底看到了多大的那张图？
 
-**为什么要有它**（施工清单第 ⑥ 条）：
+**为什么要有它**：
 
 Anthropic 官方明确说过「服务端会再缩 → 模型在一个我们没观察过的空间里出坐标
 → 系统性点击漂移」。我们自己的坐标契约是「声明的尺寸 = 模型看到的那张图」，
@@ -152,7 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _reconfigure_output()
     parser = argparse.ArgumentParser(
         prog="minicode.calib.token_probe",
-        description="图像 token 探针：服务端到底看到了多大的那张图（施工清单第 ⑥ 条）",
+        description="图像 token 探针：服务端到底看到了多大的那张图",
     )
     parser.add_argument(
         "--scale",

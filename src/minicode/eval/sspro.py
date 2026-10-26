@@ -240,7 +240,7 @@ class ArmOutcome:
     fallback_cause: str
     model_calls: int
     error: str = ""
-    # -- 施工清单第 ① 条埋点（8 个字段）---------------------------------
+    # -- 埋点（8 个字段）-------------------------------------------------
     #: **crop 窗口有没有完整含住 GT 框**（``None`` = 这一臂没开过窗）。
     crop_contains_target: bool | None = None
     #: **没含住的原因**：``out-of-frame`` / ``coarse-picked-wrong`` /
@@ -267,7 +267,7 @@ class ArmOutcome:
     dist_to_bbox: float | None = None
     #: 这一臂的**图像 token**（按 28 px patch 规则对**实际发出的那张图**估计）。
     image_tokens: int | None = None
-    # -- 施工清单 T3 / T4 / T5 的埋点 -------------------------------------
+    # -- 放大 / 标记图 / 离线重算的埋点 ------------------------------------
     #: **crop 放大的倍数**（T3）—— 1 = 没放大。
     refine_upscale_factor: float | None = None
     #: **精定位的候选数**（T4：K 次采样里解析出可用落点的次数）。
@@ -354,11 +354,11 @@ GATE_INPUT_SOURCES: dict[str, str] = {
 }
 
 
-#: **阶段标签**（施工清单第 ⑨ 条：「每条回答打阶段标签 coarse / whole2nd / refine」）。
+#: **阶段标签**（「每条回答打阶段标签 coarse / whole2nd / refine」）。
 #:
 #: ⚠️ **这只是标签**：用来**事后分辨哪一级被复用了**。
 #: 它**不参与任何坐标换算**，也不改变任何判定 —— 换算链的唯一真值来源
-#: 仍然是标定结果（架构决策备忘 §2.6 C-04）。
+#: 仍然是标定结果。
 STAGE_COARSE = "coarse"
 STAGE_WHOLE_SECOND = "whole2nd"
 STAGE_REFINE = "refine"
@@ -422,12 +422,12 @@ class MemoizingModelCaller:
 
     键 = (提示词, 画面哈希) —— 只有**完全相同**的请求才复用。
 
-    **落盘缓存**（施工清单第 ⑨ 条）：``cache_path`` 给了就把回答写进
+    **落盘缓存**：``cache_path`` 给了就把回答写进
     JSONL 缓存、下次运行**先读缓存**。这样**跨进程**的两轮（例如
     「只换 crop 尺寸」）也能**共用同一次粗定位回答** → 那一对是**真配对**，
     差异里**不混模型随机性**。
 
-    **阶段标签**（施工清单第 ⑨ 条：「每条回答打阶段标签 coarse / whole2nd /
+    **阶段标签**（「每条回答打阶段标签 coarse / whole2nd /
     refine」）：缓存条目里落一个 ``stage`` 字段（由 :func:`prompt_stage`
     从**提示词**判定）→ **事后**能分辨「哪一级被复用了」。
     ⚠️ **它只是标签**：**不参与任何坐标换算**，也不改变任何判定。
@@ -763,7 +763,7 @@ def _crop_containment(
 ) -> tuple[bool | None, str]:
     """crop 窗口**有没有完整含住 GT 框**，以及没含住的**原因**。
 
-    原因三选一（施工清单第 ① 条）：
+    原因三选一：
 
     * ``out-of-frame`` —— GT 框本身就出了这张图（**不可能**含住）；
     * ``coarse-picked-wrong`` —— GT 框的中心**不在** crop 窗内
@@ -937,7 +937,7 @@ def model_input_target_sizes(
     """**目标在「模型输入图」里的像素尺寸**分布（按 ui_type 分层）。
 
     验收线 F 组要看的就是这个数：整屏那一级**缩过图**，icon 在模型看到的那张图里
-    会变成几个像素（施工清单第 ⑥ 条：icon 中位要 ≥ 16 px）。
+    会变成几个像素（icon 中位要 ≥ 16 px）。
 
     口径：目标 GT 框的**较大边**（物理像素）× ``模型输入宽 / 原图宽``
     —— 与「模型看到的那张图」同一个空间。
@@ -982,7 +982,7 @@ def refine_model_input_target_sizes(
       （受**档位**限制：2016 档的 icon 中位 15.75 px，**天花板就在那儿**）；
     * **本函数** —— 目标在**精定位那张图**（crop 1:1 裁出后**重采样放大**）里的尺寸
       = 目标的物理边长 × **实际用的放大倍数**。
-      这是施工清单 **T3** 的那个数（「icon 表观中位 ≥ 30 px」）**真正对应的口径**。
+      这是「icon 表观中位 ≥ 30 px」这个指标**真正对应的口径**。
 
     口径：GT 框的**较大边**（物理像素）× 该样本**实际用到的放大倍数**。
     """
@@ -1089,7 +1089,7 @@ def near_miss_calibration(
     outcomes: Sequence[ArmOutcome],
     taus: Sequence[float] = (5, 10, 20, 50, 100),
 ) -> dict[str, Any]:
-    """**近失带的离线校准**（验收线 B 组 / 施工清单第 ① 条埋点的下游用法）。
+    """**近失带的离线校准**（验收线 B 组 / 埋点的下游用法）。
 
     对每个 τ 给两个数：
 
@@ -1244,7 +1244,7 @@ def _paired(
     label_right: str,
     coarse_arm: Sequence[ArmOutcome] = (),
 ) -> dict[str, Any]:
-    """**配对比较**（施工清单第 ⑨ 条）：同批样本、复用同一次上游回答。
+    """**配对比较**：同批样本、复用同一次上游回答。
 
     * ``b`` / ``c`` —— 2×2 表里两个不一致格的计数；
     * ``p`` —— **mid-p McNemar**（双侧，α=0.05）**主报**，
@@ -1263,8 +1263,7 @@ def _paired(
 
     ⚠️ **分层变量必须先于被测步确定**（否则是 collider 偏差）：
     粗定位那一级在被测的 crop 精定位**之前**就定了 →
-    条件在**先于处理的变量**上 → 不构成 collider
-    （依据见 ``docs/research/vision-final-plan.md``「评测设计」§2）。
+    条件在**先于处理的变量**上 → 不构成 collider。
     """
     from .stats import (
         mcnemar_chisq_cc,
@@ -1476,7 +1475,7 @@ def compare_arms(
         **(
             {"coarse_only": summarize(coarse_only)} if coarse_only else {}
         ),
-        #: **配对比较**（施工清单第 ⑨ 条）：主检验 = 配对 mid-p McNemar +
+        #: **配对比较**：主检验 = 配对 mid-p McNemar +
         #: 配对 bootstrap 的 Δ 95% CI。**CI 跨 0 就不能写「改进成立」。**
         "paired": {
             "on_demand_vs_always": _paired(
