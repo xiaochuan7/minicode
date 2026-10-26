@@ -9,6 +9,29 @@ execution seam.
 
 **v0.1.1 · MIT · Python ≥ 3.11**
 
+- **是什么**：Windows 桌面 computer-use agent——目标描述 → 自己找元素 → 点击 → 校验回读。
+- **给谁用**：想让 LLM 操作 Windows 桌面、又不想被某个专用 grounding 模型绑死的场景。
+- **凭什么**：模型无关（任意 OpenAI / Anthropic 兼容端点）+ 结构优先（UIA 唯一命中时零模型调用、0.0 px）+ 评测可复现（评测台与画图脚本都在仓库里）。
+
+---
+
+## 目录
+
+- [它是什么](#它是什么)
+- [能干什么（实测数字，不是宣传口径）](#能干什么实测数字不是宣传口径)
+- [架构](#架构)
+- [不能干什么（同样重要）](#不能干什么同样重要)
+- [与同类项目的定位差异](#与同类项目的定位差异)
+- [安装](#安装)
+- [配置](#配置)
+- [用法](#用法)
+- [目录结构](#目录结构)
+- [测试](#测试)
+- [隐私与安全](#隐私与安全)
+- [License](#license)
+- [维护者备注](#维护者备注)
+- [English Summary](#english-summary)
+
 ---
 
 ## 它是什么
@@ -83,12 +106,33 @@ flowchart TB
 - **模型选编号，不给坐标**：候选源先生成带编号的候选表，模型只答编号，落点取候选框物理中心，
   零换算（真机转换误差中位 0.0 px）。
 
+一次动作的全链路：
+
+```mermaid
+flowchart LR
+    A["目标描述"] --> B["候选表<br/>UIA 控件框 / OCR 词框"]
+    B --> C["模型只答编号"]
+    C --> D["落点 = 候选框物理中心<br/>零换算"]
+    D --> E["执行 + 回读校验"]
+    E -->|不通过| B
+```
+
 ## 不能干什么（同样重要）
 
 - **图标类控件只有 47.13%**：图标没有可见文本，OCR 词框原理上召回不了，只能靠视觉通道，是当前最大短板。
 - **Windows 设置类任务没有跑通**：wave1 的「读显示缩放值」、wave2 的「在设置面板里改一项设置」都失败。
 - **需要登录态的站点要人工先登录**：微信等需要手机扫码的场景，agent 不做登录（这类任务在评测里记为 infeasible，不计入通过）。
 - **只支持 Windows 10/11**（UIA / Win32 / Windows OCR）；v0.1.1 的 API 仍可能变。
+
+## 与同类项目的定位差异
+
+| 项目 | 它主打什么 | minicode 的差异 |
+|---|---|---|
+| UFO²（微软） | UIA + 像素检测混合的 GUI agent，偏 Office 场景自动化 | 不绑定某一家端点；单一可替换执行缝，真机与假桌面共用同一套接线 |
+| Windows-MCP | 轻量 MCP server，把 Windows 操作暴露给 LLM | 不止暴露操作：候选表、落点校验、评测台都在仓库里，可判定验收线 |
+| UI-TARS（字节） | 端到端训练的 GUI grounding 模型 | 不训练自己的模型；结构优先，UIA 能唯一命中时不进模型 |
+
+minicode 的取舍是：不训练自己的模型、不绑定某一家端点，把工程力气花在「结构优先 + 视觉兜底」的接线、可判定的验收线、以及能复现的评测台上。
 
 ## 安装
 
@@ -168,7 +212,24 @@ minicode action --fake --out runs   # 假桌面跑一遍最小闭环（不碰真
 minicode action --target "开始"      # 真机最小闭环：截图 → 定位 → 点击 → 校验
 ```
 
-`minicode --help` 的本机真实终端输出（不是渲染、不是示意图）：
+`minicode --help` 的本机真实终端输出（不是渲染、不是示意图），关键摘录：
+
+```text
+minicode —— Windows 桌面 computer-use agent
+用法：minicode <命令> [参数]
+命令：
+  capability  UIA 通道能力探测：读控件树并回报候选
+  calib       视觉通道标定：探针图 → 判定标度 → 准入判定
+  ground      视觉定位：截图 → 候选表 → 模型选编号 → 落点
+  action      最小闭环：截图 → 定位 → 点击 → 校验
+  eval        评测：数据集跑批与统计（ScreenSpot-Pro 等）
+  e2e         端到端任务跑批（真机；动真机前先拿桌面锁）
+  serve       本地 HTTP 服务 / 动作记录查询
+  mcp         MCP server：把动作能力暴露给外部 agent
+```
+
+<details>
+<summary>完整输出（18 行，本机真实终端，可展开）</summary>
 
 ```powershell
 minicode —— Windows 桌面 computer-use agent
@@ -191,7 +252,23 @@ minicode —— Windows 桌面 computer-use agent
   minicode action --target "开始"
 ```
 
-`minicode action --fake --out runs` 的本机真实终端输出（假桌面，不碰真鼠标）：
+</details>
+
+`minicode action --fake --out runs` 的本机真实终端输出（假桌面，不碰真鼠标），关键摘录：
+
+```text
+========== M0 最小闭环 ==========
+动作结果：ok=True 落点=(1049, 1564)
+意图    ：点击「开始」
+回读偏差：0 px（验收要求 0）
+落点复验：偏差=0.5 px（要求 ≤2 px）→ 通过
+"image_source": "virtual-desktop|fake",
+"channel": "uia",
+"model_calls": 0,
+```
+
+<details>
+<summary>完整输出（116 行，本机真实终端，可展开）</summary>
 
 ```text
 ========== M0 最小闭环 ==========
@@ -312,7 +389,25 @@ minicode —— Windows 桌面 computer-use agent
 ==================================
 ```
 
-`minicode action --target "开始"` 的本机真实终端输出（真机；含落点坐标、回读偏差、落点复验、channel、model_calls）：
+</details>
+
+`minicode action --target "开始"` 的本机真实终端输出（真机；含落点坐标、回读偏差、落点复验、channel、model_calls），关键摘录：
+
+```text
+========== 本机 DPI 状态报告 ==========
+  DPI 感知模式      : PER_MONITOR_AWARE_V2  [OK]
+  物理分辨率        : 2560 x 1600 px
+  缩放比            : 1.5x   (有效 DPI 144)
+========== M0 最小闭环 ==========
+动作结果：ok=True 落点=(950, 1564)
+回读偏差：0 px（验收要求 0）
+落点复验：偏差=0.0 px（要求 ≤2 px）→ 通过
+"channel": "uia",
+"model_calls": 0,
+```
+
+<details>
+<summary>完整输出（126 行，本机真实终端，可展开）</summary>
 
 ```text
 ========== 本机 DPI 状态报告 ==========
@@ -443,6 +538,8 @@ minicode —— Windows 桌面 computer-use agent
 ==================================
 ```
 
+</details>
+
 上面命令清单里的最后一条等价于 `python -m minicode.action --target "开始"`（`pip install -e .` 之后两种写法都可以）。
 动真机前请先拿桌面锁（人机互斥，锁文件不进 git）：
 
@@ -514,3 +611,16 @@ python -m ruff check .
 
 `docs/assets/social-preview.png` 是 GitHub 仓库 **Settings → Social preview** 专用的分享预览图，
 需要在网页设置里单独上传，不嵌进 README 正文。
+
+## English Summary
+
+minicode is a **Windows desktop computer-use agent** that turns a natural-language target into a
+verified click: it reads the UIA control tree first, and falls back to a screenshot → candidate-table →
+model-picks-a-number pipeline only when structure cannot describe the target.
+
+- **Model-agnostic**: works with any OpenAI- or Anthropic-compatible endpoint; no dedicated grounding model required.
+- **Structure-first**: when UIA yields a unique hit, the agent lands with **0.0 px** error and **0 model calls**.
+- **Reproducible evaluation**: the evaluation harness and charting scripts live in the repo.
+
+Measured on a ScreenSpot-Pro sample, grounding accuracy is **59.02% (108/183, Wilson 95% CI [51.78%, 65.89%])**;
+icon targets remain the weakest class at **47.13% (41/87)**.
