@@ -1,5 +1,7 @@
 # minicode
 
+![minicode](docs/assets/hero.png)
+
 > 让大模型像人一样操作 Windows 桌面：看屏幕、读控件树、点控件、敲键盘、自己校验。
 
 A structure-first, vision-fallback **Windows desktop computer-use agent** with a single replaceable
@@ -33,6 +35,31 @@ minicode 是一个跑在 Windows 上的 computer-use agent 框架：
 
 > 评测口径：同一配置跨跑批实测相差 10 条（约 5.5 pp；配对检验 p=0.0989、CI 跨 0），因此本仓只报**单批实测值**，
 > 不拼接最好成绩。上面的 59.02% 是同配置重跑得到的保守值（上一轮同配置曾报 64.48%，未通过可复现性检验）。
+
+![benchmark](docs/assets/benchmark.png)
+
+> 数据与画图脚本都在仓库里（scripts/make_benchmark_chart.py），可复现。
+
+## 架构
+
+```mermaid
+flowchart TB
+    L5["L5 安全与审计<br/>动作记录(SHA-256) · 脱敏器 · 审批闸门"]
+    L4["L4 校验与纠错<br/>期望断言 · 界面无变化检测 · 停止条件"]
+    L3["L3 决策层<br/>模型产动作程序 · 受控执行 · 回灌"]
+    L2["L2 视觉定位<br/>准入闸门 → 整屏粗定位 → crop 精定位<br/>模型只答编号，落点取框中心"]
+    L1["L1 结构感知<br/>UIA 控件树 · 唯一命中即 0 模型调用"]
+    L0["L0 设备与坐标<br/>物理像素 × 虚拟桌面原点（唯一真值）"]
+    SEAM{{"唯一测试缝<br/>动作执行缝<br/>输入：目标描述 + 一帧截图 + 可选控件树<br/>输出：动作 + 最终落点 + 意图"}}
+    L5 --> L4 --> L3 --> SEAM
+    L3 --> L2
+    L2 --> L1 --> L0
+    SEAM --> L0
+    classDef core fill:#1b2a41,stroke:#4f9db8,color:#e8eef5
+    classDef dev fill:#2a1f14,stroke:#c99a4a,color:#f2e6d5
+    class L0,L1,L2 core
+    class SEAM dev
+```
 
 ## 不能干什么（同样重要）
 
@@ -118,6 +145,14 @@ minicode --help                     # 列出全部子命令
 minicode action --fake --out runs   # 假桌面跑一遍最小闭环（不碰真桌面，CI 可跑）
 minicode action --target "开始"      # 真机最小闭环：截图 → 定位 → 点击 → 校验
 ```
+
+![minicode --help](docs/assets/cli-help.png)
+
+（真实终端截图，非渲染）
+
+![真机执行](docs/assets/cli-real.png)
+
+（真实终端截图，非渲染）
 
 上面最后一条等价于 `python -m minicode.action --target "开始"`（`pip install -e .` 之后两种写法都可以）。
 动真机前请先拿桌面锁（人机互斥，锁文件不进 git）：
