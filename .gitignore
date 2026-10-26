@@ -1,15 +1,24 @@
+# 本地配置（含密钥）—— 永不提交
 .env
-.venv/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# 工具缓存
 .pytest_cache/
 .ruff_cache/
-.scratch/
-# 并行开发用的 git worktree 目录（每个 agent 一个工作树 + 分支）
-.worktrees/
-# 真机占用锁（人机互斥状态位）：`.scratch/desktop.lock`
-# M0 最小闭环的动作记录落盘目录（运行时产物）
+
+# 运行时产物（动作记录 / 截图 / 评测报告）
 runs/
 .tmp_runs/
-# PROMPTS.md 内含真实密钥，不要提交
+
+# 临时工作目录（含真机占用锁 .scratch/desktop.lock）—— 人机互斥状态位不进 git
+.scratch/
+
+# 本地提示词笔记（不发布）
 PROMPTS.md

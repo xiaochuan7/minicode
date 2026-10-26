@@ -10,6 +10,9 @@ requires-python = ">=3.11"
 # core 路径只依赖标准库：坐标换算、执行层(ctypes)、协议骨架都必须能在零第三方依赖下跑起来。
 dependencies = []
 
+[project.scripts]
+minicode = "minicode.__main__:main"
+
 [project.optional-dependencies]
 # 开发工具
 dev = ["ruff>=0.17", "pytest>=9.0"]
