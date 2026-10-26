@@ -1,26 +1,44 @@
+<div align="center">
+
 # minicode
 
-![minicode](docs/assets/hero.png)
+**Structure-first, vision-fallback Windows desktop computer-use agent.**
 
-> 让大模型像人一样操作 Windows 桌面：看屏幕、读控件树、点控件、敲键盘、自己校验。
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-3DA639)](LICENSE)
+[![Release](https://img.shields.io/badge/Release-v0.1.3-2C63C7)](CHANGELOG.md)
+[![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows/)
+[![Tests](https://img.shields.io/badge/Tests-1326%20passed-2EA44F)](#测试)
 
-A structure-first, vision-fallback **Windows desktop computer-use agent** with a single replaceable
-execution seam.
+![banner](docs/assets/banner.png)
 
-**v0.1.1 · MIT · Python ≥ 3.11**
+给一句目标描述，它自己找元素、点击、校验回读——跑在 Windows 桌面上的 computer-use agent，纯 Python。
 
-- **是什么**：Windows 桌面 computer-use agent——目标描述 → 自己找元素 → 点击 → 校验回读。
-- **给谁用**：想让 LLM 操作 Windows 桌面、又不想被某个专用 grounding 模型绑死的场景。
-- **凭什么**：模型无关（任意 OpenAI / Anthropic 兼容端点）+ 结构优先（UIA 唯一命中时零模型调用、0.0 px）+ 评测可复现（评测台与画图脚本都在仓库里）。
+**结构优先**：能用 UIA 控件树 / 浏览器 DOM 描述清楚的目标不猜像素；视觉通道只做兜底，且模型只答编号、不产出坐标。
+
+**模型无关**：任意 OpenAI 兼容端点或 Anthropic Messages 都能接，换模型不换接线；core 路径零第三方依赖。
+
+**实测摘要**（ScreenSpot-Pro 官方 bbox 命中口径，n=183 分层抽样）：
+
+| 口径 | 命中率 | Wilson 95% CI |
+|---|---|---|
+| 整体 | **59.02%**（108/183） | [51.78%, 65.89%] |
+| 文本类 | 69.79%（67/96） | [59.99%, 78.07%] |
+| 图标类 | 47.13%（41/87） | [36.98%, 57.51%] |
+| 粗定位基线 | 43.17%（79/183） | [36.21%, 50.41%] |
+
+真机端到端（主口径）：wave1 3/5（60%）、wave2 3/9（33.3%）。短板如实列出，见[诚实短板](#诚实短板)。
+
+</div>
 
 ---
 
 ## 目录
 
 - [它是什么](#它是什么)
-- [能干什么（实测数字，不是宣传口径）](#能干什么实测数字不是宣传口径)
+- [实测：分维度命中率](#实测分维度命中率)
+- [诚实短板](#诚实短板)
 - [架构](#架构)
-- [不能干什么（同样重要）](#不能干什么同样重要)
 - [与同类项目的定位差异](#与同类项目的定位差异)
 - [安装](#安装)
 - [配置](#配置)
@@ -29,14 +47,18 @@ execution seam.
 - [测试](#测试)
 - [隐私与安全](#隐私与安全)
 - [License](#license)
-- [维护者备注](#维护者备注)
+- [附注](#附注)
 - [English Summary](#english-summary)
-
----
 
 ## 它是什么
 
-minicode 是一个跑在 Windows 上的 computer-use agent 框架：
+minicode 是一个 Windows 桌面 computer-use agent：给一个目标描述，它自己找元素、点击、校验回读。纯 Python（3.11+），core 路径零第三方依赖（坐标换算、ctypes 执行层、协议骨架都能裸跑），图像与截图能力拆进可选 extras（`vision`：pillow + numpy；`exec`：mss + numpy）。
+
+一次视觉定位的工作流（无字概念图，对应下文「模型选编号，不给坐标」的设计）：
+
+![workflow](docs/assets/workflow.png)
+
+从左到右：看到屏幕 → 圈定候选 → 选中 → 落点回读。落到工程上：
 
 - **结构优先**：能用控件树（UIA）、浏览器 DOM、Windows OCR 词框描述清楚的目标，就不靠像素猜；
 - **视觉兜底**：结构描述不了的目标（图标、画布、跨应用），走「截图 → 候选表 → 模型选编号 → 落点」；
@@ -44,26 +66,52 @@ minicode 是一个跑在 Windows 上的 computer-use agent 框架：
 - **自己校验**：动作执行前重读、执行后回读，失败如实上报，不把「成功但坐标为空」当成成功；
 - **单一测试缝**：整个系统只有一个可替换的执行缝，同一套接线既能跑真机，也能在假桌面上跑 CI。
 
-## 能干什么（实测数字，不是宣传口径）
+## 实测：分维度命中率
 
-| 能力 | 实测 | 口径 |
-|---|---|---|
-| 屏幕控件定位（ScreenSpot-Pro 抽样） | **59.02%**（108/183），Wilson 95% CI **[51.78%, 65.89%]** | 183 条抽样；2016×1260 模型输入；always 臂（不做多次采样投票） |
-| └ 文本类控件 | **69.79%**（67/96） | 同上 |
-| └ 图标类控件 | **47.13%**（41/87） | 同上 —— 见「不能干什么」 |
-| 真机端到端任务 wave1 | **3/5（60%）** | 主口径；浏览器三票全通过（打开职位详情 / 输入中文关键词 / 滚动 + 设置筛选） |
-| 真机端到端任务 wave2 | **3/9（33.3%）** | 主口径；微信 / 设置面板 / 配置切换三组任务 |
-| UIA 通道（控件树唯一命中） | 落点误差 **0.0 px**、模型调用 **0 次** | 真机 22 个控件；候选唯一时纯结构定位，不进模型 |
-| 视觉通道准入标定 | 14 次标定会话全部准入可用，96 px 方块命中率 0.976~1.00 | 2560×1600 探针；早期 6 次 K=5、之后 8 次 K=21；标度判不准就拒绝运行 |
+三张图都由仓库里的 `scripts/make_figures.py` 生成，数据写死在脚本里并逐条标注来源字段（`runs/v2-eval-2016-control/sspro-report.json`），重跑可得同一张图。
 
-> 评测口径：同一配置跨跑批实测相差 10 条（约 5.5 pp；配对检验 p=0.0989、CI 跨 0），因此本仓只报**单批实测值**，
-> 不拼接最好成绩。上面的 59.02% 是同配置重跑得到的保守值（上一轮同配置曾报 64.48%，未通过可复现性检验）。
+![by-overall](docs/assets/by-overall.png)
 
-![benchmark](docs/assets/benchmark.png)
+![by-category](docs/assets/by-category.png)
 
-> 数据与画图脚本都在仓库里（scripts/make_benchmark_chart.py），可复现。
+![by-platform](docs/assets/by-platform.png)
+
+数值对照（与上图逐格一致）：
+
+| 类别 | 命中率 | n | 平台 | 命中率 | n |
+|---|---|---|---|---|---|
+| Office | 87.5% | 16 | linux | 70.0% | 50 |
+| Dev | 62.5% | 16 | macos | 67.2% | 64 |
+| OS | 61.8% | 76 | windows | 43.5% | 69 |
+| Scientific | 56.7% | 30 | | | |
+| CAD | 44.4% | 9 | | | |
+| Creative | 44.4% | 36 | | | |
+
+真机端到端（主口径）：wave1 3/5 = 60%；wave2 3/9 = 33.3%。
+
+其他实测：
+
+| 项 | 实测 |
+|---|---|
+| UIA 控件树唯一命中 | 落点 0.0 px、模型调用 0 次 |
+| 假命中（开窗场景） | 20/175 次 |
+| 回落率 | 6.86% |
+
+> **跨跑批噪声**：同配置两次独立跑批差 ±5.46 pp（±10 条，mid-p p=0.0989，CI 跨 0）。
+> 所以对外只报配对比较，不报「单次跑批绝对分的历史提升」。
+
+## 诚实短板
+
+- **windows 平台 43.5% 明显低于 linux 70.0% 和 macos 67.2%**（n=69 / 50 / 64）；
+- **图标类 47.13% 明显低于文本类 69.79%**：图标没有可见文本，OCR 词框原理上召回不了，只能靠视觉通道，是当前最大短板；
+- **CAD 44.4%、Creative 44.4% 是弱项组**（n=9 / 36）；
+- **需要登录态的网站要人工先登录一次**（如微信扫码），agent 不做登录；
+- **L3 的规划质量没有自动化覆盖**（只有 harness 单测）；
+- **API 在 v0.1.x 仍可能变**。
 
 ## 架构
+
+![architecture](docs/assets/architecture.png)
 
 ```mermaid
 flowchart TB
@@ -88,43 +136,24 @@ flowchart TB
 
 | 层 | 包 | 职责 |
 |---|---|---|
-| L5 安全与审计 | `audit` · `privacy` · `redact` · `approval` | 敏感窗口不拍、凭据不出网、危险动作要审批 |
-| L4 校验与纠错 | `verification` · `reflection` | 执行前重读、执行后回读、失败重试/停手 |
-| L3 决策 | `decision` | 产出「一段动作程序」，在受控环境里执行 |
-| L2 视觉定位 | `ground` · `model` · `calib` | 候选表 → 模型选编号 → 物理像素落点 |
-| L1 结构感知 | `uia` · `browser` | 控件树 / DOM 快照：能结构化就不猜像素 |
-| L0 设备与坐标 | `coord` · `exec` | 虚拟桌面坐标、DPI、截图、点击（冻结原型） |
+| L5 安全与审计 | `audit` · `privacy` · `redact` · `approval` | 动作记录只落 SHA-256、脱敏器、审批闸门、敏感窗口不拍 |
+| L4 校验与纠错 | `verification` · `reflection` | 执行前重读、执行后回读、失败重试或停手 |
+| L3 决策 | `decision` | 产出一段动作程序，在受控环境里执行 |
+| L2 视觉定位 | `ground` · `model` · `calib` | 候选表到模型选编号到物理像素落点，带准入闸门 |
+| L1 结构感知 | `uia` · `browser` | 控件树与 DOM 快照，能结构化就不猜像素 |
+| L0 设备与坐标 | `coord` · `exec` | 虚拟桌面坐标、DPI、截图、SendInput（冻结原型） |
 
-三条关键设计（详见 [ARCHITECTURE.md](ARCHITECTURE.md)）：
+### 三条关键设计
 
-- **唯一的测试缝**：整个系统只有一个可替换的「动作执行缝」，所以真机与假桌面共用同一套接线
-  （[ADR 0007](docs/adr/0007-single-test-seam-action-execution.md)）。
-- **坐标契约**：工程端全程物理像素（唯一真值空间）；模型端量纲**不写死**，由运行时标定在候选标度里
-  判定（本机真实会话判出的是「模型看的那张图的绝对像素」）；视觉通道的最终落点是
-  **crop 内坐标 + crop 物理原点**，UIA 通道落点 = 控件框物理像素中心
-  （[ADR 0006](docs/adr/0006-crop-local-coordinate-contract.md)）。
-- **模型选编号，不给坐标**：候选源先生成带编号的候选表，模型只答编号，落点取候选框物理中心，
-  零换算（真机转换误差中位 0.0 px）。
+1. **唯一测试缝就是动作执行缝**：输入「目标描述 + 一帧截图 + 可选控件树」，输出「动作 + 最终落点 + 意图」。真机与假桌面共用同一套接线（[ADR 0007](docs/adr/0007-single-test-seam-action-execution.md)）。
+2. **坐标契约**：工程端全程物理像素，唯一真值等于物理像素乘以虚拟桌面原点；模型端量纲不写死，由运行时标定在候选标度里判定；视觉落点等于 crop 内坐标加 crop 物理原点（[ADR 0006](docs/adr/0006-crop-local-coordinate-contract.md)）。
+3. **模型选编号，不给坐标**：候选源先生成带编号候选表，模型只答编号，落点取候选框物理中心，零换算。真机转换误差中位 0.0 px。
 
-一次动作的全链路：
-
-```mermaid
-flowchart LR
-    A["目标描述"] --> B["候选表<br/>UIA 控件框 / OCR 词框"]
-    B --> C["模型只答编号"]
-    C --> D["落点 = 候选框物理中心<br/>零换算"]
-    D --> E["执行 + 回读校验"]
-    E -->|不通过| B
-```
-
-## 不能干什么（同样重要）
-
-- **图标类控件只有 47.13%**：图标没有可见文本，OCR 词框原理上召回不了，只能靠视觉通道，是当前最大短板。
-- **Windows 设置类任务没有跑通**：wave1 的「读显示缩放值」、wave2 的「在设置面板里改一项设置」都失败。
-- **需要登录态的站点要人工先登录**：微信等需要手机扫码的场景，agent 不做登录（这类任务在评测里记为 infeasible，不计入通过）。
-- **只支持 Windows 10/11**（UIA / Win32 / Windows OCR）；v0.1.1 的 API 仍可能变。
+完整取舍见 [ARCHITECTURE.md](ARCHITECTURE.md) 与 [docs/adr/](docs/adr/)（8 条架构决策记录）。
 
 ## 与同类项目的定位差异
+
+只写客观定位，不写别人的分数：
 
 | 项目 | 它主打什么 | minicode 的差异 |
 |---|---|---|
@@ -142,9 +171,7 @@ cd minicode
 pip install -e ".[vision,exec]"
 ```
 
-**为什么 core 是零依赖**：坐标换算（标准库 `math`）、执行层（`ctypes` 直调 Win32 API）、模型 HTTP
-（标准库 `urllib`）都不需要第三方包，所以 `dependencies = []`。只有两处真正的外部能力拆进 extras：
-截图与图像处理（`exec`：mss + numpy；`vision`：Pillow）。
+**为什么 core 是零依赖**：坐标换算（标准库 `math`）、执行层（`ctypes` 直调 Win32 API）、模型 HTTP（标准库 `urllib`）都不需要第三方包，所以 `dependencies = []`。只有两处真正的外部能力拆进 extras：截图与图像处理（`exec`：mss + numpy；`vision`：pillow + numpy）。
 
 开发（跑测试 / ruff）：
 
@@ -154,8 +181,9 @@ pip install -e ".[vision,exec,dev]"
 
 ## 配置
 
-把 `.env.example` 复制成仓库根目录的 `.env`，填四行：`provider / base_url / api_key / model`。
-`.env` 已被 `.gitignore` 排除，**不要提交**。
+模型无关：支持两类端点——任意 **OpenAI 兼容端点**（`POST /chat/completions`，`Authorization: Bearer`）与 **Anthropic Messages**（`POST /v1/messages`，`x-api-key` + `anthropic-version`）。配置键 `MINICODE_PROVIDER` / `MINICODE_BASE_URL` / `MINICODE_API_KEY` / `MINICODE_MODEL`，旧键 `MINICODE_ANTHROPIC_*` 仍然兼容。
+
+把 `.env.example` 复制成仓库根目录的 `.env`，填四行：`provider / base_url / api_key / model`。`.env` 已被 `.gitignore` 排除，**不要提交**。四个可直接抄的例子：
 
 ### OpenAI
 
@@ -193,16 +221,9 @@ MINICODE_API_KEY=<your-key>
 MINICODE_MODEL=claude-sonnet-4-5
 ```
 
-**其它 OpenAI 兼容端点**（Moonshot / 智谱 / 硅基流动 / Ollama / vLLM / LM Studio / OpenRouter / OneAPI …）
-同理：`provider=openai`，把 `base_url` 指到它的 `/v1` 即可。不需要鉴权的本地端点（如 Ollama）把
-`api_key` 填任意非空字符串。
+**其它 OpenAI 兼容端点**（Moonshot / 智谱 / 硅基流动 / Ollama / vLLM / LM Studio / OpenRouter / OneAPI …）同理：`provider=openai`，把 `base_url` 指到它的 `/v1` 即可。不需要鉴权的本地端点（如 Ollama）把 `api_key` 填任意非空字符串。
 
-两个协议的关键差别：`anthropic` 的 `base_url` **不要**带 `/v1`（程序会拼 `/v1/messages`）；
-`openai` 的 `base_url` **要**带版本路径 `/v1`（程序会拼 `/chat/completions`）。
-
-> **向后兼容**：旧键 `MINICODE_ANTHROPIC_BASE_URL` / `MINICODE_ANTHROPIC_API_KEY` 仍然可用；
-> 新键优先于旧键。启动时会在 stderr 打一行实际生效的配置（`api_key` 脱敏，只留前 4 后 4），
-> 说明每个值来自哪个键。
+两个协议的关键差别：`anthropic` 的 `base_url` **不要**带 `/v1`（程序会拼 `/v1/messages`）；`openai` 的 `base_url` **要**带版本路径 `/v1`（程序会拼 `/chat/completions`）。启动时会在 stderr 打一行实际生效的配置（`api_key` 脱敏，只留前 4 后 4），说明每个值来自哪个键。
 
 ## 用法
 
@@ -212,340 +233,23 @@ minicode action --fake --out runs   # 假桌面跑一遍最小闭环（不碰真
 minicode action --target "开始"      # 真机最小闭环：截图 → 定位 → 点击 → 校验
 ```
 
-`minicode --help` 的本机真实终端输出（不是渲染、不是示意图），关键摘录：
-
-```text
-minicode —— Windows 桌面 computer-use agent
-用法：minicode <命令> [参数]
-命令：
-  capability  UIA 通道能力探测：读控件树并回报候选
-  calib       视觉通道标定：探针图 → 判定标度 → 准入判定
-  ground      视觉定位：截图 → 候选表 → 模型选编号 → 落点
-  action      最小闭环：截图 → 定位 → 点击 → 校验
-  eval        评测：数据集跑批与统计（ScreenSpot-Pro 等）
-  e2e         端到端任务跑批（真机；动真机前先拿桌面锁）
-  serve       本地 HTTP 服务 / 动作记录查询
-  mcp         MCP server：把动作能力暴露给外部 agent
-```
-
-<details>
-<summary>完整输出（18 行，本机真实终端，可展开）</summary>
-
-```powershell
-minicode —— Windows 桌面 computer-use agent
-
-用法：minicode <命令> [参数]
-
-命令：
-  capability  UIA 通道能力探测：读控件树并回报候选
-  calib       视觉通道标定：探针图 → 判定标度 → 准入判定
-  ground      视觉定位：截图 → 候选表 → 模型选编号 → 落点
-  action      最小闭环：截图 → 定位 → 点击 → 校验
-  eval        评测：数据集跑批与统计（ScreenSpot-Pro 等）
-  e2e         端到端任务跑批（真机；动真机前先拿桌面锁）
-  serve       本地 HTTP 服务 / 动作记录查询
-  mcp         MCP server：把动作能力暴露给外部 agent
-
-各命令的完整参数：minicode <命令> --help
-两条最常见的用法：
-  minicode --help
-  minicode action --target "开始"
-```
-
-</details>
-
-`minicode action --fake --out runs` 的本机真实终端输出（假桌面，不碰真鼠标），关键摘录：
+真机最小闭环的本机真实终端输出（2026-10-26 采集，摘录；完整输出与采集命令见 [docs/EXAMPLES.md](docs/EXAMPLES.md)）：
 
 ```text
 ========== M0 最小闭环 ==========
-动作结果：ok=True 落点=(1049, 1564)
+动作结果：ok=True 落点=(917, 1564)
 意图    ：点击「开始」
-回读偏差：0 px（验收要求 0）
-落点复验：偏差=0.5 px（要求 ≤2 px）→ 通过
-"image_source": "virtual-desktop|fake",
-"channel": "uia",
-"model_calls": 0,
-```
-
-<details>
-<summary>完整输出（116 行，本机真实终端，可展开）</summary>
-
-```text
-========== M0 最小闭环 ==========
-启动自检：awareness=PER_MONITOR_AWARE_V2 | physical=(2560, 1600) | device_caps_dpi=144 | capture=(2560, 1600)
-注入自检：sizeof(INPUT)=40 (期望 40) | probe_return=1
-动作结果：ok=True 落点=(1049, 1564)
-意图    ：点击「开始」
-回读偏差：0 px（验收要求 0）
-落点复验：偏差=0.5 px（要求 ≤2 px）→ 通过
-动作记录：runs\action-records.jsonl
-{
-  "protocol_version": "cua.action/1",
-  "timestamp": "2026-10-26T12:18:03+08:00",
-  "action": "click",
-  "intent": "点击「开始」",
-  "target": {
-    "name": "开始",
-    "rect": [
-      1016,
-      1528,
-      1083,
-      1600
-    ],
-    "control_type": "Button",
-    "window_handle": 65784,
-    "window_title": "任务栏"
-  },
-  "point": {
-    "x": 1049,
-    "y": 1564,
-    "space": "physical-surface"
-  },
-  "capture": {
-    "width": 2560,
-    "height": 1600
-  },
-  "sent_size": {
-    "width": 2560,
-    "height": 1600
-  },
-  "image_source": "virtual-desktop|fake",
-  "screenshot_sha256": "7d145e42fb8059ca095ed6eb032ebfefe0aede3cc86ce2c017a3defed2adaad6",
-  "result": {
-    "ok": true,
-    "error_code": null,
-    "error_message": null,
-    "cursor_readback": [
-      1049,
-      1564
-    ],
-    "cursor_delta_px": 0
-  },
-  "rejected_candidates": [],
-  "timings_ms": {
-    "locate": 0.03460000152699649,
-    "decision": 0.0,
-    "execute_verify": 100.71860000607558
-  },
-  "timings_share": {
-    "locate": 0.00034341342532431395,
-    "decision": 0.0,
-    "execute_verify": 0.9996565865746757
-  },
-  "action_timing": {
-    "pre_move_ms": 60.22769998526201,
-    "hold_ms": 40.368600020883605,
-    "total_ms": 100.62499999185093,
-    "double_click_gap_ms": null,
-    "double_click_requested_gap_ms": null,
-    "scroll_settle_ms": 0.0,
-    "scroll_delta": 0,
-    "wait_ms": 0
-  },
-  "verification": {
-    "landing_delta_px": 0.5,
-    "landing_verified": true
-  },
-  "query_scope": "",
-  "params": {
-    "x": 1049,
-    "y": 1564,
-    "space": "physical-surface"
-  },
-  "failures": {
-    "locate": null,
-    "decision": null,
-    "execute": null
-  },
-  "redaction": null,
-  "selection_echo": null,
-  "allows_visual_fallback": false,
-  "channel": "uia",
-  "failure_type": "",
-  "model_calls": 0,
-  "unavailable_capture_sources": {},
-  "candidate_limit": 0,
-  "candidate_limit_source": "",
-  "visual_admission": null,
-  "coarse_point": null,
-  "crop_plan": null,
-  "grounding_echoes": [],
-  "fallback": false,
-  "fallback_reason": "",
-  "fallback_cause": "",
-  "gate_hit": false,
-  "gate_reasons": [],
-  "gate_undecidable": [],
-  "refine_enabled": false,
-  "state": {
-    "before": null,
-    "after": null
-  },
-  "verification_result": null,
-  "approval": null,
-  "privacy": null,
-  "notes": []
-}
-==================================
-```
-
-</details>
-
-`minicode action --target "开始"` 的本机真实终端输出（真机；含落点坐标、回读偏差、落点复验、channel、model_calls），关键摘录：
-
-```text
-========== 本机 DPI 状态报告 ==========
-  DPI 感知模式      : PER_MONITOR_AWARE_V2  [OK]
-  物理分辨率        : 2560 x 1600 px
-  缩放比            : 1.5x   (有效 DPI 144)
-========== M0 最小闭环 ==========
-动作结果：ok=True 落点=(950, 1564)
 回读偏差：0 px（验收要求 0）
 落点复验：偏差=0.0 px（要求 ≤2 px）→ 通过
 "channel": "uia",
 "model_calls": 0,
 ```
 
-<details>
-<summary>完整输出（126 行，本机真实终端，可展开）</summary>
-
-```text
-========== 本机 DPI 状态报告 ==========
-  DPI 感知模式      : PER_MONITOR_AWARE_V2  [OK]
-  物理分辨率        : 2560 x 1600 px
-  逻辑分辨率        : 1707 x 1067 px
-  缩放比            : 1.5x   (有效 DPI 144)
-  GetDeviceCaps     : HORZRES=2560 VERTRES=1600 LOGPIXELSX=144  [与 GetSystemMetrics 一致]
-  虚拟桌面          : 原点=(0, 0)  尺寸=2560 x 1600 px
-  显示器数量        : 1
-  坐标约定          : 物理像素，原点=虚拟桌面左上角
-=========================================
-========== M0 最小闭环 ==========
-启动自检：awareness=PER_MONITOR_AWARE_V2 | physical=(2560, 1600) | device_caps_dpi=144 | capture=(2560, 1600)
-注入自检：sizeof(INPUT)=40 (期望 40) | probe_return=1
-动作结果：ok=True 落点=(950, 1564)
-意图    ：点击「开始」
-回读偏差：0 px（验收要求 0）
-落点复验：偏差=0.0 px（要求 ≤2 px）→ 通过
-动作记录：runs\action-records.jsonl
-{
-  "protocol_version": "cua.action/1",
-  "timestamp": "2026-10-26T12:18:28+08:00",
-  "action": "click",
-  "intent": "点击「开始」",
-  "target": {
-    "name": "开始",
-    "rect": [
-      916,
-      1528,
-      984,
-      1600
-    ],
-    "control_type": "Button",
-    "window_handle": 65952,
-    "window_title": null
-  },
-  "point": {
-    "x": 950,
-    "y": 1564,
-    "space": "physical-surface"
-  },
-  "capture": {
-    "width": 2560,
-    "height": 1600
-  },
-  "sent_size": {
-    "width": 2560,
-    "height": 1600
-  },
-  "image_source": "virtual-desktop|mss",
-  "screenshot_sha256": "cd24b2498754641e487b1f87548d1e2cb6a45dba6bea6f3af271f7d94390f3d2",
-  "result": {
-    "ok": true,
-    "error_code": null,
-    "error_message": null,
-    "cursor_readback": [
-      950,
-      1564
-    ],
-    "cursor_delta_px": 0
-  },
-  "rejected_candidates": [],
-  "timings_ms": {
-    "locate": 159.90249998867512,
-    "decision": 0.0,
-    "execute_verify": 105.23369998554699
-  },
-  "timings_share": {
-    "locate": 0.6030956919659468,
-    "decision": 0.0,
-    "execute_verify": 0.39690430803405324
-  },
-  "action_timing": {
-    "pre_move_ms": 60.425000003306195,
-    "hold_ms": 43.994200008455664,
-    "total_ms": 105.02839999389835,
-    "double_click_gap_ms": null,
-    "double_click_requested_gap_ms": null,
-    "scroll_settle_ms": 0.0,
-    "scroll_delta": 0,
-    "wait_ms": 0
-  },
-  "verification": {
-    "landing_delta_px": 0.0,
-    "landing_verified": true
-  },
-  "query_scope": "",
-  "params": {
-    "x": 950,
-    "y": 1564,
-    "space": "physical-surface"
-  },
-  "failures": {
-    "locate": null,
-    "decision": null,
-    "execute": null
-  },
-  "redaction": null,
-  "selection_echo": null,
-  "allows_visual_fallback": false,
-  "channel": "uia",
-  "failure_type": "",
-  "model_calls": 0,
-  "unavailable_capture_sources": {},
-  "candidate_limit": 0,
-  "candidate_limit_source": "",
-  "visual_admission": null,
-  "coarse_point": null,
-  "crop_plan": null,
-  "grounding_echoes": [],
-  "fallback": false,
-  "fallback_reason": "",
-  "fallback_cause": "",
-  "gate_hit": false,
-  "gate_reasons": [],
-  "gate_undecidable": [],
-  "refine_enabled": false,
-  "state": {
-    "before": null,
-    "after": null
-  },
-  "verification_result": null,
-  "approval": null,
-  "privacy": null,
-  "notes": []
-}
-==================================
-```
-
-</details>
-
-上面命令清单里的最后一条等价于 `python -m minicode.action --target "开始"`（`pip install -e .` 之后两种写法都可以）。
 动真机前请先拿桌面锁（人机互斥，锁文件不进 git）：
 
 ```powershell
 python scripts/desktop_lock.py acquire --ticket demo
-python -m minicode.action --target "开始"
+minicode action --target "开始"
 python scripts/desktop_lock.py release
 ```
 
@@ -579,9 +283,12 @@ src/minicode/
   eval/ e2e/ serve/ mcp/  评测 / 端到端 / HTTP 服务 / MCP
 docs/
   adr/                    8 条架构决策记录
+  EXAMPLES.md             真实终端输出全记录（采集命令可复跑）
   spec.md                 产品规格
   privacy-policy.md       隐私政策
-scripts/desktop_lock.py   真机占用锁（人机互斥）
+scripts/
+  desktop_lock.py         真机占用锁（人机互斥）
+  make_figures.py         README 三张数据图的生成脚本
 ```
 
 ## 测试
@@ -593,34 +300,40 @@ python -m ruff check .
 # All checks passed!
 ```
 
-`src/minicode/coord`、`exec`、`verify` 是三个已验证的冻结原型：coord 与 exec 各有 README 与自测脚本，
-`verify/` 下是**会真调 API / 真截图 / 真点鼠标**的脚本式实测（默认不被 pytest 收集）。
+`src/minicode/coord`、`exec`、`verify` 是三个已验证的冻结原型：coord 与 exec 各有 README 与自测脚本，`verify/` 下是**会真调 API / 真截图 / 真点鼠标**的脚本式实测（默认不被 pytest 收集）。
 
 ## 隐私与安全
 
 - 密钥只从仓库根目录的 `.env` 读，代码里没有第二个凭据来源；请求日志只记耗材与状态，不记密钥。
-- 敏感窗口（标题命中敏感词表 / 系统对话框）在**抓帧之前**就被拦下，画面不进模型上下文。
-- 控件树送模型前必须过脱敏器（两个开关同时打开才放行，fail-closed）。
-- 详见 [隐私政策](docs/privacy-policy.md)。
+- 动作记录只落 SHA-256，不落截图本体；敏感窗口（标题命中敏感词表 / 系统对话框）在**抓帧之前**就被拦下，画面不进模型上下文。
+- 控件树送模型前必须过脱敏器（两个开关同时打开才放行，fail-closed）；危险动作要过审批闸门。
+- 详见[隐私政策](docs/privacy-policy.md)。
 
 ## License
 
 [MIT](LICENSE) © 2026 xiaochuan7
 
-## 维护者备注
+## 附注
 
-`docs/assets/social-preview.png` 是 GitHub 仓库 **Settings → Social preview** 专用的分享预览图，
-需要在网页设置里单独上传，不嵌进 README 正文。
+`docs/assets/social-preview.png` 是 GitHub 仓库 **Settings → Social preview** 专用的分享预览图，需要在网页设置里单独上传，不嵌进 README 正文。
 
 ## English Summary
 
-minicode is a **Windows desktop computer-use agent** that turns a natural-language target into a
-verified click: it reads the UIA control tree first, and falls back to a screenshot → candidate-table →
-model-picks-a-number pipeline only when structure cannot describe the target.
+minicode is a **Windows desktop computer-use agent** written in pure Python (3.11+, zero-dependency
+core): given a natural-language target, it finds the element, clicks it, and verifies the result by
+reading the screen back.
 
-- **Model-agnostic**: works with any OpenAI- or Anthropic-compatible endpoint; no dedicated grounding model required.
-- **Structure-first**: when UIA yields a unique hit, the agent lands with **0.0 px** error and **0 model calls**.
+- **Model-agnostic**: works with any OpenAI-compatible endpoint (`POST /chat/completions`) or
+  Anthropic Messages (`POST /v1/messages`); switching models does not change the wiring.
+- **Structure-first**: UIA control trees and browser DOM snapshots are preferred — when UIA yields
+  a unique hit, the agent lands with **0.0 px** error and **0 model calls**. Vision is a fallback:
+  screenshot → candidate table → the model picks a number (never coordinates) → landing point.
 - **Reproducible evaluation**: the evaluation harness and charting scripts live in the repo.
 
-Measured on a ScreenSpot-Pro sample, grounding accuracy is **59.02% (108/183, Wilson 95% CI [51.78%, 65.89%])**;
-icon targets remain the weakest class at **47.13% (41/87)**.
+Measured on a ScreenSpot-Pro stratified sample (official bbox-hit protocol, n=183), grounding
+accuracy is **59.02% (108/183, Wilson 95% CI [51.78%, 65.89%])**, versus **43.17% (79/183)** for
+the coarse-only baseline. Known weaknesses, stated plainly: icon targets (**47.13%**, 41/87) trail
+text targets (**69.79%**, 67/96); windows screens score **43.5%** (n=69) against linux 70.0%
+(n=50) and macos 67.2% (n=64); CAD and Creative both sit at 44.4%; sites requiring login still
+need a human to sign in once; L3 planning quality has no automated coverage yet; and the API may
+still change within v0.1.x.

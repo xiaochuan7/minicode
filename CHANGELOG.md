@@ -2,6 +2,26 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
+## v0.1.3 — 2026-10-26
+
+纯文档与视觉资产变更，不含任何代码能力变更（src/ 零改动，实测数字不变）。
+
+### 变更
+
+- README 从零重构：第一屏（项目名 + 英文副标题 + 徽章行 + 头图 + 电梯陈述 + 实测数字摘要表）
+  → 分维度实测（三张数据图）→ 诚实短板 → 架构（mermaid + 层到包映射 + 三条关键设计 + ADR）
+  → 定位差异 → 安装 / 配置 / 用法 → 目录结构 / 测试 / 隐私与安全 → English Summary，全程 TOC。
+- 视觉系统统一重做（近黑底 + 青色 / 琥珀点缀）：`docs/assets/banner.png`（头图）、
+  `workflow.png`（工作流概念图）、`architecture.png`（架构氛围图）、
+  `social-preview.png`（GitHub Social preview 专用，网页设置里上传）；
+  旧 `hero.png`、`benchmark.png` 删除。
+- 三张真实数据图改由 `scripts/make_figures.py` 生成（`by-overall.png` 带 Wilson 95% CI 误差棒、
+  `by-category.png`、`by-platform.png`），数据写死在脚本并标注来源字段，重跑可得同一张图。
+- 三段本机真实终端输出移出 README 正文：正文只留真机最小闭环摘录，
+  完整输出与采集命令集中在 `docs/EXAMPLES.md`。
+- 徽章改为 shields.io 静态徽章（Python 3.11+ / License MIT / Release v0.1.3 / Platform Windows /
+  Tests 1326 passed），无 CI、覆盖率、下载量徽章。
+
 ## v0.1.1 — 2026-10-26
 
 纯文档与视觉资产变更，不改任何代码能力（实测数字仍是 v0.1.0 那一批）。
