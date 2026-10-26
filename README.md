@@ -7,7 +7,7 @@
 A structure-first, vision-fallback **Windows desktop computer-use agent** with a single replaceable
 execution seam.
 
-**v0.1.0 · MIT · Python ≥ 3.11**
+**v0.1.1 · MIT · Python ≥ 3.11**
 
 ---
 
@@ -49,7 +49,7 @@ flowchart TB
     L3["L3 决策层<br/>模型产动作程序 · 受控执行 · 回灌"]
     L2["L2 视觉定位<br/>准入闸门 → 整屏粗定位 → crop 精定位<br/>模型只答编号，落点取框中心"]
     L1["L1 结构感知<br/>UIA 控件树 · 唯一命中即 0 模型调用"]
-    L0["L0 设备与坐标<br/>物理像素 × 虚拟桌面原点（唯一真值）"]
+    L0["L0 设备与坐标<br/>物理像素 × 虚拟桌面原点(唯一真值)"]
     SEAM{{"唯一测试缝<br/>动作执行缝<br/>输入：目标描述 + 一帧截图 + 可选控件树<br/>输出：动作 + 最终落点 + 意图"}}
     L5 --> L4 --> L3 --> SEAM
     L3 --> L2
@@ -61,12 +61,34 @@ flowchart TB
     class SEAM dev
 ```
 
+六层，自下而上：
+
+| 层 | 包 | 职责 |
+|---|---|---|
+| L5 安全与审计 | `audit` · `privacy` · `redact` · `approval` | 敏感窗口不拍、凭据不出网、危险动作要审批 |
+| L4 校验与纠错 | `verification` · `reflection` | 执行前重读、执行后回读、失败重试/停手 |
+| L3 决策 | `decision` | 产出「一段动作程序」，在受控环境里执行 |
+| L2 视觉定位 | `ground` · `model` · `calib` | 候选表 → 模型选编号 → 物理像素落点 |
+| L1 结构感知 | `uia` · `browser` | 控件树 / DOM 快照：能结构化就不猜像素 |
+| L0 设备与坐标 | `coord` · `exec` | 虚拟桌面坐标、DPI、截图、点击（冻结原型） |
+
+三条关键设计（详见 [ARCHITECTURE.md](ARCHITECTURE.md)）：
+
+- **唯一的测试缝**：整个系统只有一个可替换的「动作执行缝」，所以真机与假桌面共用同一套接线
+  （[ADR 0007](docs/adr/0007-single-test-seam-action-execution.md)）。
+- **坐标契约**：工程端全程物理像素（唯一真值空间）；模型端量纲**不写死**，由运行时标定在候选标度里
+  判定（本机真实会话判出的是「模型看的那张图的绝对像素」）；视觉通道的最终落点是
+  **crop 内坐标 + crop 物理原点**，UIA 通道落点 = 控件框物理像素中心
+  （[ADR 0006](docs/adr/0006-crop-local-coordinate-contract.md)）。
+- **模型选编号，不给坐标**：候选源先生成带编号的候选表，模型只答编号，落点取候选框物理中心，
+  零换算（真机转换误差中位 0.0 px）。
+
 ## 不能干什么（同样重要）
 
 - **图标类控件只有 47.13%**：图标没有可见文本，OCR 词框原理上召回不了，只能靠视觉通道，是当前最大短板。
 - **Windows 设置类任务没有跑通**：wave1 的「读显示缩放值」、wave2 的「在设置面板里改一项设置」都失败。
 - **需要登录态的站点要人工先登录**：微信等需要手机扫码的场景，agent 不做登录（这类任务在评测里记为 infeasible，不计入通过）。
-- **只支持 Windows 10/11**（UIA / Win32 / Windows OCR）；v0.1.0 的 API 仍可能变。
+- **只支持 Windows 10/11**（UIA / Win32 / Windows OCR）；v0.1.1 的 API 仍可能变。
 
 ## 安装
 
@@ -146,15 +168,282 @@ minicode action --fake --out runs   # 假桌面跑一遍最小闭环（不碰真
 minicode action --target "开始"      # 真机最小闭环：截图 → 定位 → 点击 → 校验
 ```
 
-![minicode --help](docs/assets/cli-help.png)
+`minicode --help` 的本机真实终端输出（不是渲染、不是示意图）：
 
-（真实终端截图，非渲染）
+```powershell
+minicode —— Windows 桌面 computer-use agent
 
-![真机执行](docs/assets/cli-real.png)
+用法：minicode <命令> [参数]
 
-（真实终端截图，非渲染）
+命令：
+  capability  UIA 通道能力探测：读控件树并回报候选
+  calib       视觉通道标定：探针图 → 判定标度 → 准入判定
+  ground      视觉定位：截图 → 候选表 → 模型选编号 → 落点
+  action      最小闭环：截图 → 定位 → 点击 → 校验
+  eval        评测：数据集跑批与统计（ScreenSpot-Pro 等）
+  e2e         端到端任务跑批（真机；动真机前先拿桌面锁）
+  serve       本地 HTTP 服务 / 动作记录查询
+  mcp         MCP server：把动作能力暴露给外部 agent
 
-上面最后一条等价于 `python -m minicode.action --target "开始"`（`pip install -e .` 之后两种写法都可以）。
+各命令的完整参数：minicode <命令> --help
+两条最常见的用法：
+  minicode --help
+  minicode action --target "开始"
+```
+
+`minicode action --fake --out runs` 的本机真实终端输出（假桌面，不碰真鼠标）：
+
+```text
+========== M0 最小闭环 ==========
+启动自检：awareness=PER_MONITOR_AWARE_V2 | physical=(2560, 1600) | device_caps_dpi=144 | capture=(2560, 1600)
+注入自检：sizeof(INPUT)=40 (期望 40) | probe_return=1
+动作结果：ok=True 落点=(1049, 1564)
+意图    ：点击「开始」
+回读偏差：0 px（验收要求 0）
+落点复验：偏差=0.5 px（要求 ≤2 px）→ 通过
+动作记录：runs\action-records.jsonl
+{
+  "protocol_version": "cua.action/1",
+  "timestamp": "2026-10-26T12:18:03+08:00",
+  "action": "click",
+  "intent": "点击「开始」",
+  "target": {
+    "name": "开始",
+    "rect": [
+      1016,
+      1528,
+      1083,
+      1600
+    ],
+    "control_type": "Button",
+    "window_handle": 65784,
+    "window_title": "任务栏"
+  },
+  "point": {
+    "x": 1049,
+    "y": 1564,
+    "space": "physical-surface"
+  },
+  "capture": {
+    "width": 2560,
+    "height": 1600
+  },
+  "sent_size": {
+    "width": 2560,
+    "height": 1600
+  },
+  "image_source": "virtual-desktop|fake",
+  "screenshot_sha256": "7d145e42fb8059ca095ed6eb032ebfefe0aede3cc86ce2c017a3defed2adaad6",
+  "result": {
+    "ok": true,
+    "error_code": null,
+    "error_message": null,
+    "cursor_readback": [
+      1049,
+      1564
+    ],
+    "cursor_delta_px": 0
+  },
+  "rejected_candidates": [],
+  "timings_ms": {
+    "locate": 0.03460000152699649,
+    "decision": 0.0,
+    "execute_verify": 100.71860000607558
+  },
+  "timings_share": {
+    "locate": 0.00034341342532431395,
+    "decision": 0.0,
+    "execute_verify": 0.9996565865746757
+  },
+  "action_timing": {
+    "pre_move_ms": 60.22769998526201,
+    "hold_ms": 40.368600020883605,
+    "total_ms": 100.62499999185093,
+    "double_click_gap_ms": null,
+    "double_click_requested_gap_ms": null,
+    "scroll_settle_ms": 0.0,
+    "scroll_delta": 0,
+    "wait_ms": 0
+  },
+  "verification": {
+    "landing_delta_px": 0.5,
+    "landing_verified": true
+  },
+  "query_scope": "",
+  "params": {
+    "x": 1049,
+    "y": 1564,
+    "space": "physical-surface"
+  },
+  "failures": {
+    "locate": null,
+    "decision": null,
+    "execute": null
+  },
+  "redaction": null,
+  "selection_echo": null,
+  "allows_visual_fallback": false,
+  "channel": "uia",
+  "failure_type": "",
+  "model_calls": 0,
+  "unavailable_capture_sources": {},
+  "candidate_limit": 0,
+  "candidate_limit_source": "",
+  "visual_admission": null,
+  "coarse_point": null,
+  "crop_plan": null,
+  "grounding_echoes": [],
+  "fallback": false,
+  "fallback_reason": "",
+  "fallback_cause": "",
+  "gate_hit": false,
+  "gate_reasons": [],
+  "gate_undecidable": [],
+  "refine_enabled": false,
+  "state": {
+    "before": null,
+    "after": null
+  },
+  "verification_result": null,
+  "approval": null,
+  "privacy": null,
+  "notes": []
+}
+==================================
+```
+
+`minicode action --target "开始"` 的本机真实终端输出（真机；含落点坐标、回读偏差、落点复验、channel、model_calls）：
+
+```text
+========== 本机 DPI 状态报告 ==========
+  DPI 感知模式      : PER_MONITOR_AWARE_V2  [OK]
+  物理分辨率        : 2560 x 1600 px
+  逻辑分辨率        : 1707 x 1067 px
+  缩放比            : 1.5x   (有效 DPI 144)
+  GetDeviceCaps     : HORZRES=2560 VERTRES=1600 LOGPIXELSX=144  [与 GetSystemMetrics 一致]
+  虚拟桌面          : 原点=(0, 0)  尺寸=2560 x 1600 px
+  显示器数量        : 1
+  坐标约定          : 物理像素，原点=虚拟桌面左上角
+=========================================
+========== M0 最小闭环 ==========
+启动自检：awareness=PER_MONITOR_AWARE_V2 | physical=(2560, 1600) | device_caps_dpi=144 | capture=(2560, 1600)
+注入自检：sizeof(INPUT)=40 (期望 40) | probe_return=1
+动作结果：ok=True 落点=(950, 1564)
+意图    ：点击「开始」
+回读偏差：0 px（验收要求 0）
+落点复验：偏差=0.0 px（要求 ≤2 px）→ 通过
+动作记录：runs\action-records.jsonl
+{
+  "protocol_version": "cua.action/1",
+  "timestamp": "2026-10-26T12:18:28+08:00",
+  "action": "click",
+  "intent": "点击「开始」",
+  "target": {
+    "name": "开始",
+    "rect": [
+      916,
+      1528,
+      984,
+      1600
+    ],
+    "control_type": "Button",
+    "window_handle": 65952,
+    "window_title": null
+  },
+  "point": {
+    "x": 950,
+    "y": 1564,
+    "space": "physical-surface"
+  },
+  "capture": {
+    "width": 2560,
+    "height": 1600
+  },
+  "sent_size": {
+    "width": 2560,
+    "height": 1600
+  },
+  "image_source": "virtual-desktop|mss",
+  "screenshot_sha256": "cd24b2498754641e487b1f87548d1e2cb6a45dba6bea6f3af271f7d94390f3d2",
+  "result": {
+    "ok": true,
+    "error_code": null,
+    "error_message": null,
+    "cursor_readback": [
+      950,
+      1564
+    ],
+    "cursor_delta_px": 0
+  },
+  "rejected_candidates": [],
+  "timings_ms": {
+    "locate": 159.90249998867512,
+    "decision": 0.0,
+    "execute_verify": 105.23369998554699
+  },
+  "timings_share": {
+    "locate": 0.6030956919659468,
+    "decision": 0.0,
+    "execute_verify": 0.39690430803405324
+  },
+  "action_timing": {
+    "pre_move_ms": 60.425000003306195,
+    "hold_ms": 43.994200008455664,
+    "total_ms": 105.02839999389835,
+    "double_click_gap_ms": null,
+    "double_click_requested_gap_ms": null,
+    "scroll_settle_ms": 0.0,
+    "scroll_delta": 0,
+    "wait_ms": 0
+  },
+  "verification": {
+    "landing_delta_px": 0.0,
+    "landing_verified": true
+  },
+  "query_scope": "",
+  "params": {
+    "x": 950,
+    "y": 1564,
+    "space": "physical-surface"
+  },
+  "failures": {
+    "locate": null,
+    "decision": null,
+    "execute": null
+  },
+  "redaction": null,
+  "selection_echo": null,
+  "allows_visual_fallback": false,
+  "channel": "uia",
+  "failure_type": "",
+  "model_calls": 0,
+  "unavailable_capture_sources": {},
+  "candidate_limit": 0,
+  "candidate_limit_source": "",
+  "visual_admission": null,
+  "coarse_point": null,
+  "crop_plan": null,
+  "grounding_echoes": [],
+  "fallback": false,
+  "fallback_reason": "",
+  "fallback_cause": "",
+  "gate_hit": false,
+  "gate_reasons": [],
+  "gate_undecidable": [],
+  "refine_enabled": false,
+  "state": {
+    "before": null,
+    "after": null
+  },
+  "verification_result": null,
+  "approval": null,
+  "privacy": null,
+  "notes": []
+}
+==================================
+```
+
+上面命令清单里的最后一条等价于 `python -m minicode.action --target "开始"`（`pip install -e .` 之后两种写法都可以）。
 动真机前请先拿桌面锁（人机互斥，锁文件不进 git）：
 
 ```powershell
@@ -177,37 +466,6 @@ python scripts/desktop_lock.py release
 | `minicode mcp` | MCP server：把动作能力暴露给外部 agent |
 
 每个子命令的完整参数见 `minicode <命令> --help`。
-
-## 架构
-
-六层，自下而上：
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ L5 安全审计   audit · privacy · redact · approval            │  敏感窗口不拍、凭据不出网、危险动作要审批
-├──────────────────────────────────────────────────────────────┤
-│ L4 校验纠错   verification · reflection                      │  执行前重读、执行后回读、失败重试/停手
-├──────────────────────────────────────────────────────────────┤
-│ L3 决策       decision                                       │  产出「一段动作程序」，在受控环境里执行
-├──────────────────────────────────────────────────────────────┤
-│ L2 视觉定位   ground · model · calib                         │  候选表 → 模型选编号 → 物理像素落点
-├──────────────────────────────────────────────────────────────┤
-│ L1 结构感知   uia · browser                                  │  控件树 / DOM 快照：能结构化就不猜像素
-├──────────────────────────────────────────────────────────────┤
-│ L0 设备与坐标 coord · exec                                   │  虚拟桌面坐标、DPI、截图、点击（冻结原型）
-└──────────────────────────────────────────────────────────────┘
-```
-
-三条关键设计（详见 [ARCHITECTURE.md](ARCHITECTURE.md)）：
-
-- **唯一的测试缝**：整个系统只有一个可替换的「动作执行缝」，所以真机与假桌面共用同一套接线
-  （[ADR 0007](docs/adr/0007-single-test-seam-action-execution.md)）。
-- **坐标契约**：工程端全程物理像素（唯一真值空间）；模型端量纲**不写死**，由运行时标定在候选标度里
-  判定（本机真实会话判出的是「模型看的那张图的绝对像素」）；视觉通道的最终落点是
-  **crop 内坐标 + crop 物理原点**，UIA 通道落点 = 控件框物理像素中心
-  （[ADR 0006](docs/adr/0006-crop-local-coordinate-contract.md)）。
-- **模型选编号，不给坐标**：候选源先生成带编号的候选表，模型只答编号，落点取候选框物理中心，
-  零换算（真机转换误差中位 0.0 px）。
 
 ## 目录结构
 
@@ -251,3 +509,8 @@ python -m ruff check .
 ## License
 
 [MIT](LICENSE) © 2026 xiaochuan7
+
+## 维护者备注
+
+`docs/assets/social-preview.png` 是 GitHub 仓库 **Settings → Social preview** 专用的分享预览图，
+需要在网页设置里单独上传，不嵌进 README 正文。

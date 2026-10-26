@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
+## v0.1.1 — 2026-10-26
+
+纯文档与视觉资产变更，不改任何代码能力（实测数字仍是 v0.1.0 那一批）。
+
+### 新增
+
+- README 视觉资产：`docs/assets/hero.png`（首图）、`docs/assets/benchmark.png`
+  （能力对比图，配 `scripts/make_benchmark_chart.py` 可复现）、
+  `docs/assets/social-preview.png`（只用于 GitHub 仓库 Settings → Social preview，不进正文）。
+- README 新增「层 → 包」映射表，mermaid 六层图与旧 ASCII 图合并为一节。
+
+### 修复
+
+- README 里两个不存在的图片引用（`docs/assets/cli-help.png`、`docs/assets/cli-real.png`）
+  在 GitHub 上显示破图 → 删除，改为 `minicode --help`、`minicode action --fake --out runs`、
+  真机 `minicode action --target "开始"` 三段本机真实终端输出（含落点坐标、回读偏差、
+  落点复验、channel、model_calls）。
+- README 有两个同名「架构」节 → 合并为一节（mermaid 图 → 层级表 → 三条关键设计），
+  旧的 ASCII 层级图由新增的「层 → 包」映射表取代，两个 ADR 链接保留。
+- README 里写死的版本号 v0.1.0 更新为 v0.1.1。
+
 ## v0.1.0 — 2026-10-26
 
 首个可用版本：把内部验证过的原型整理成可安装、可配置、可评测的公开项目。
