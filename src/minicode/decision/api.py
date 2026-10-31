@@ -70,11 +70,17 @@ class ProtocolApi:
         approval_gate: ApprovalGate | None = None,
         ocr_port: OcrPort | None = None,
         verification_reader: Callable[[], Mapping[str, Any] | None] | None = None,
+        keyboard_input_allowed: bool = True,
     ):
         self._seam = seam
         self._locator = locator
         self._anchor = anchor or WindowAnchor(hwnd=0)
         self._frame_provider = frame_provider
+        #: **键盘输入开关**（审查安全 #2）：非交互前端（HTTP / MCP 的动作程序）
+        #: 一律 ``False`` —— 键盘注入在没有人值守的前端不给这条路。
+        #: 审批门兜的是「危险词」，兜不住「普通文本打到危险焦点」；
+        #: 交互前端（本地命令行）保持 ``True``，行为不变。
+        self._keyboard_input_allowed = bool(keyboard_input_allowed)
         #: **目标级期望**（工单 M12）：用户对**整个目标**写的一句期望。
         #: 它跟着每一步走（缝去校验它），**不成立不算这一步失败**
         #: —— 成立则任务达成（由 :mod:`minicode.reflection.stop` 读出来）。
@@ -245,7 +251,27 @@ class ProtocolApi:
 
         ⚠️ **审批在这里问**（工单 M16）：这两种动作**不经过缝**，
         闸门若只装在缝上就会漏掉它们（输入一条命令、发一条消息都在这条路上）。
+
+        ⚠️ **非交互前端一律拒绝**（审查安全 #2）：``keyboard_input_allowed=False``
+        （HTTP / MCP 的动作程序都是）时**连审批都不问**——键盘注入在
+        没有人值守的前端没有合法路径（``injection_blocked``，零动作下发、任务停）。
         """
+        if not self._keyboard_input_allowed:
+            reason = (
+                "非交互前端（HTTP / MCP 的动作程序）不接受键盘输入："
+                "type_text/press_key 一律拒绝 —— 需要输入时改用交互前端或人工完成"
+            )
+            self.halted = True
+            self.halt_reason = reason
+            record = {
+                "kind": "type_text",
+                "target": str(text),
+                "ok": False,
+                "point": None,
+                "error": ErrorCode.INJECTION_BLOCKED.value,
+            }
+            self.calls.append(record)
+            return record
         approval = self._ask_approval(
             # ⚠️ **意图里不带输入的正文**（C-15：用户输入的正文不进日志，
             #: 审批请求会落进动作记录）。正文只交给**分类**（extra_text），
@@ -273,8 +299,27 @@ class ProtocolApi:
         return self._record_action("type_text", result, detail=str(text))
 
     def press_key(self, *keys: str) -> dict[str, Any]:
-        """按键（``press_key('ctrl', 'c')``）。同 :meth:`type_text`：不走缝。"""
+        """按键（``press_key('ctrl', 'c')``）。同 :meth:`type_text`：不走缝。
+
+        ⚠️ 同 :meth:`type_text`：**非交互前端一律拒绝**（审查安全 #2）。
+        """
         combo = tuple(str(key) for key in keys)
+        if not self._keyboard_input_allowed:
+            reason = (
+                "非交互前端（HTTP / MCP 的动作程序）不接受键盘输入："
+                "type_text/press_key 一律拒绝 —— 需要按键时改用交互前端或人工完成"
+            )
+            self.halted = True
+            self.halt_reason = reason
+            record = {
+                "kind": "press_key",
+                "target": ",".join(combo),
+                "ok": False,
+                "point": None,
+                "error": ErrorCode.INJECTION_BLOCKED.value,
+            }
+            self.calls.append(record)
+            return record
         approval = self._ask_approval(
             intent=f"按键「{','.join(combo)}」",
             target_description="当前焦点控件",

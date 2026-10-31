@@ -176,10 +176,11 @@ class ToolCallTest(unittest.TestCase):
             self.assertEqual(injector.events, [])
 
     def test_a_dangerous_action_inside_a_program_is_denied_and_runs_nothing(self):
-        """危险动作在 MCP 这一层**照样要人点头**（M16 的闸门永远在）。
+        """键盘输入在 MCP 这一层**一律拒绝**（审查安全 #2 的契约变更）。
 
-        没人能批（stdio 形态下标准输入是协议流，不是终端）→ 不批 →
-        **零动作下发**。
+        MCP 是**非交互前端**：动作程序里的 type_text / press_key 连审批都不问，
+        直接 ``injection_blocked``（键盘注入只留给有人值守的交互前端）。
+        危险词类（如「删除」）则仍然由审批门兜底 —— 双保险。
         """
         with tempfile.TemporaryDirectory() as tmp:
             injector = FakeInputInjector()
@@ -195,10 +196,10 @@ class ToolCallTest(unittest.TestCase):
             self.assertEqual(len(payload["calls"]), 1)
             self.assertFalse(payload["calls"][0]["ok"])
             self.assertEqual(
-                payload["calls"][0]["error"], ErrorCode.APPROVAL_DENIED.value
+                payload["calls"][0]["error"], ErrorCode.INJECTION_BLOCKED.value
             )
             self.assertEqual(injector.events, [])
-            # **停止信号**：危险动作没获批 → 停下、交人（宿主看得见）。
+            # **停止信号**：非交互前端的键盘注入被拒 → 停下、交人（宿主看得见）。
             self.assertTrue(payload["halted"])
             self.assertTrue(payload["halt_reason"])
 

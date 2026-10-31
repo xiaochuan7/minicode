@@ -161,11 +161,16 @@ class ActionService:
         sink = ListTraceSink()
         seam = self._seam_factory(sink)
         # 接口面用的是**同一条缝**（因此同一套坐标口径、同一道审批闸门）。
+        # ⚠️ **keyboard_input_allowed=False**（审查安全 #2）：这个服务是
+        # HTTP / MCP 这类**非交互前端**的共用实现 —— 程序里的
+        # type_text / press_key 一律拒绝（``injection_blocked``），
+        # 键盘注入只留给有人值守的交互前端。
         api = ProtocolApi(
             seam=seam,
             locator=seam.locator,
             anchor=seam.anchor,
             approval_gate=seam.approval_gate,
+            keyboard_input_allowed=False,
         )
         outcome = run_program(request.program, api.as_mapping())
 

@@ -149,8 +149,24 @@ DANGER_RULES: tuple[DangerRule, ...] = (
             "cmd.exe",
             "cmd /",
             "shell",
+            # 审查安全 #2：**输入正文里的高危命令形态**——这些词不是「意图措辞」，
+            # 是防 ``type_text("rm -rf C:\\")`` 这类零审批键盘注入的。
+            # 只收高信号形态（"rm -" 而不是 "rm "，免得误伤 warm/arm 一类英文词）。
+            "rm -",
+            "rmdir",
+            "deltree",
+            "format c",
+            "format d",
+            "shutdown",
+            "taskkill",
+            "diskpart",
+            "mkfs",
+            "sudo",
         ),
-        source="工单 M16 AC 1 点名的「运行命令行」+ 同义说法",
+        source=(
+            "工单 M16 AC 1 点名的「运行命令行」+ 同义说法；"
+            "审查安全#2 补输入正文里的高危命令形态"
+        ),
     ),
     DangerRule(
         category=DangerCategory.SYSTEM_SETTINGS,
@@ -286,12 +302,18 @@ def match_category(
     intent: str = "",
     target_description: str = "",
     extra_text: str = "",
+    real_element_text: str = "",
 ) -> DangerMatch | None:
     """这段文字命中了哪一类危险动作（没命中返回 ``None``）。
 
     **命中即生效**（fail-closed）：不判断语义、不判断轻重。
+
+    ⚠️ ``real_element_text``（审查安全 #2）：**真实作用的元素**的文本
+    （UIA 控件名 / 窗口标题）。模型自报的措辞可能与实际作用的元素不一致
+    （目标描述写「确定」、实际点在名为「删除」的按钮上）——
+    分类必须两个都看，**任何一边命中都要审批**。
     """
-    text = f"{intent} {target_description} {extra_text}".lower()
+    text = f"{intent} {target_description} {extra_text} {real_element_text}".lower()
     if not text.strip():
         return None
     for rule in DANGER_RULES:
@@ -311,6 +333,7 @@ def classify(
     intent: str = "",
     target_description: str = "",
     extra_text: str = "",
+    real_element_text: str = "",
     category: DangerCategory | str | None = None,
 ) -> DangerMatch | None:
     """判定「这件事属于哪一类危险动作」。
@@ -330,4 +353,5 @@ def classify(
         intent=intent,
         target_description=target_description,
         extra_text=extra_text,
+        real_element_text=real_element_text,
     )

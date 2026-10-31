@@ -130,6 +130,7 @@ class ApprovalGate:
         intent: str = "",
         target_description: str = "",
         extra_text: str = "",
+        real_element_text: str = "",
         category: DangerCategory | str | None = None,
     ) -> DangerMatch | None:
         """这个动作属于哪一类危险动作（不危险返回 ``None``）。
@@ -140,6 +141,7 @@ class ApprovalGate:
             intent=intent,
             target_description=target_description,
             extra_text=extra_text,
+            real_element_text=real_element_text,
             category=category,
         )
 
@@ -160,10 +162,17 @@ class ApprovalGate:
         * 危险 → 产生一份**审批请求**（带 dry-run 的呈现）→ 问审批人 →
           **批了才放行**。没批 / 没有审批人 / 结论对不上 → **零动作下发**。
         """
+        # 审查安全 #2：**真实作用的元素一起参与分类** —— preview 里的
+        # 控件名与窗口标题是 UIA 树里读出来的**事实**，模型自报的措辞
+        # 可能与它不一致（写「确定」实际点「删除」）。任何一边命中都要审批。
+        real_element_text = ""
+        if preview is not None:
+            real_element_text = f"{preview.control_name or ''} {preview.window_title or ''}"
         match = self.classify(
             intent=intent,
             target_description=target_description,
             extra_text=extra_text,
+            real_element_text=real_element_text,
             category=category,
         )
         if match is None:

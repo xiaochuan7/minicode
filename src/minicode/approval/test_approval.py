@@ -42,6 +42,7 @@ from minicode.model.client import ModelReply
 from minicode.model.effort import Effort
 from minicode.model.fakes import FakeModelClient
 from minicode.reflection.stop import STOP_DANGEROUS_ACTION, StopPolicy
+from minicode.serve.service import ActionService
 
 from .catalog import (
     CATEGORY_TITLES,
@@ -57,6 +58,7 @@ from .fakes import (
     FakeWindowInspector,
     ScriptedApprover,
 )
+from .fakes import AutoApprover as ApproveApprover
 from .gate import APPROVAL_HANDOFF_NOTE, ApprovalGate
 from .ports import SensitiveWindowPolicy, WindowInfo
 from .request import ApprovalDecision, TargetPreview
@@ -542,10 +544,13 @@ class ClipboardApprovalTest(unittest.TestCase):
 class GateOnTheChainTest(unittest.TestCase):
     """闸门在**真实链路**上生效：动作不执行，任务停下来交人。"""
 
-    def _run(self, target: str, *, approver):
+    def _run(self, target: str, *, approver, control_name: str = "发送消息"):
         policy = StopPolicy(max_rounds=2)
         gate = ApprovalGate(approver=approver)
-        seam = _build_seam(gate=gate, sink=policy)
+        # ⚠️ 审查安全 #2 起，**真实控件名参与分类**：fixture 的控件名就是
+        # 「会被分类看到的那个名字」。危险场景用「发送消息」；
+        # 「普通动作」场景必须给一个真普通的控件名（不然分类命中是**对的**）。
+        seam = _build_seam(gate=gate, sink=policy, locator=_FakeLocator(name=control_name))
         api = ProtocolApi(seam=seam, approval_gate=gate)
         harness = DecisionHarness(
             caller=FakeModelClient(
@@ -569,7 +574,8 @@ class GateOnTheChainTest(unittest.TestCase):
         self.assertEqual(report.calls[0]["error"], ErrorCode.APPROVAL_DENIED.value)
 
     def test_an_ordinary_action_still_runs(self):
-        report = self._run("开始", approver=DenyApprover())
+        # 控件就叫「开始」、目标也写「开始」——两头都是普通语义，不产生审批。
+        report = self._run("开始", approver=DenyApprover(), control_name="开始")
         self.assertNotEqual(report.stop_reason, STOP_DANGEROUS_ACTION)
 
     def test_typing_a_command_is_also_gated(self):
@@ -599,6 +605,164 @@ class GateOnTheChainTest(unittest.TestCase):
         self.assertNotIn(secret, request.intent)
         self.assertNotIn(secret, request.target_description)
         self.assertNotIn(secret, request.to_text())
+
+
+# ---------------------------------------------------------------------------
+# 审批分类看真实元素（审查安全 #2）
+# ---------------------------------------------------------------------------
+
+
+class RealElementClassificationTest(unittest.TestCase):
+    """审批分类必须看**真实作用的元素**（控件名 / 窗口标题），不只看模型自报的措辞。
+
+    原 Bug：``ApprovalGate.check`` 的分类输入只有 ``intent`` / ``target_description``
+    （都是**模型自报**的措辞），``preview.control_name``（UIA 树里**真实**的控件名）
+    不参与分类 —— 目标描述写「确定」、实际点在名为「删除」的按钮上 → 零审批直接下发。
+    """
+
+    def test_a_confirm_word_over_a_delete_button_requires_approval(self):
+        approver = DenyApprover()
+        gate = ApprovalGate(approver=approver)
+        injector = FakeInputInjector()
+        seam = _build_seam(
+            gate=gate,
+            injector=injector,
+            locator=_FakeLocator(name="删除", window_title="文件管理"),
+        )
+        api = ProtocolApi(seam=seam, approval_gate=gate)
+        record = api.click("确定")
+        self.assertFalse(record["ok"])
+        self.assertEqual(record["error"], ErrorCode.APPROVAL_DENIED.value)
+        self.assertEqual(len(approver.requests), 1)
+        assert approver.requests[0].category == DangerCategory.DELETE
+        # **零动作下发**。
+        self.assertEqual(injector.events, [])
+
+    def test_the_window_title_alone_can_trigger_approval(self):
+        """窗口标题也参与分类：普通描述、但目标窗口是敏感/危险语义的 → 也要审批。"""
+        approver = DenyApprover()
+        gate = ApprovalGate(approver=approver)
+        seam = _build_seam(
+            gate=gate,
+            locator=_FakeLocator(name="OK", window_title="卸载程序"),
+        )
+        api = ProtocolApi(seam=seam, approval_gate=gate)
+        record = api.click("确认按钮")
+        self.assertFalse(record["ok"])
+        assert len(approver.requests) >= 1
+
+    def test_typing_a_shell_command_form_is_gated_even_without_catalog_words(self):
+        """``rm -rf`` 这类命令形态（词表原文没有）也要审批。
+
+        原 Bug：``type_text("rm -rf C:\\")`` 的正文不含词表词 → 零审批直接注入键盘。
+        """
+        approver = DenyApprover()
+        gate = ApprovalGate(approver=approver)
+        seam = _build_seam(gate=gate)
+        api = ProtocolApi(seam=seam, approval_gate=gate)
+        record = api.type_text("rm -rf C:\\Users\\me")
+        self.assertFalse(record["ok"])
+        self.assertEqual(record["error"], ErrorCode.APPROVAL_DENIED.value)
+        self.assertEqual(seam.injector.events, [])
+
+
+class NonInteractiveKeyboardPolicyTest(unittest.TestCase):
+    """非交互前端（HTTP / MCP 的动作程序）**不接受键盘输入**（审查安全 #2）。
+
+    键盘注入（type_text / press_key）在没有人值守的前端一律拒绝：
+    审批门兜的是「危险词」，兜不住「普通文本打到危险焦点」 ——
+    非交互前端干脆不给这条路（fail-closed）。
+    """
+
+    def _api(self) -> tuple[ProtocolApi, ActionExecutionSeam]:
+        gate = ApprovalGate(approver=None)
+        seam = _build_seam(gate=gate)
+        api = ProtocolApi(seam=seam, approval_gate=gate, keyboard_input_allowed=False)
+        return api, seam
+
+    def test_type_text_is_denied_on_a_non_interactive_frontend(self):
+        api, seam = self._api()
+        record = api.type_text("你好")
+        self.assertFalse(record["ok"])
+        self.assertEqual(record["error"], ErrorCode.INJECTION_BLOCKED.value)
+        self.assertIn("非交互", api.halt_reason)
+        self.assertEqual(seam.injector.events, [])
+        # **停下来交人**：程序还想继续注入键盘 → 整个任务停。
+        self.assertTrue(api.halted)
+
+    def test_press_key_is_denied_on_a_non_interactive_frontend(self):
+        api, seam = self._api()
+        record = api.press_key("enter")
+        self.assertFalse(record["ok"])
+        self.assertEqual(record["error"], ErrorCode.INJECTION_BLOCKED.value)
+        self.assertEqual(seam.injector.events, [])
+        self.assertTrue(api.halted)
+
+    def test_clicks_still_work_on_a_non_interactive_frontend(self):
+        """策略只收紧键盘：点击仍走缝、仍由审批门判定（不误伤普通自动化）。"""
+        approver = ApproveApprover()
+        gate = ApprovalGate(approver=approver)
+        seam = _build_seam(gate=gate, locator=_FakeLocator(name="开始", window_title="桌面"))
+        api = ProtocolApi(seam=seam, approval_gate=gate, keyboard_input_allowed=False)
+        record = api.click("开始")
+        self.assertTrue(record["ok"], record.get("error"))
+
+
+class ProgramKeyboardPolicyTest(unittest.TestCase):
+    """``ActionService.execute_program``（HTTP / MCP 共用实现）默认禁键盘输入。"""
+
+    def _service(self, injector: FakeInputInjector) -> ActionService:
+        gate = ApprovalGate(approver=None)
+        return ActionService(
+            seam_factory=lambda sink: _build_seam(gate=gate, injector=injector, sink=sink),
+            log_directory=self._tmp.name,
+        )
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_program_calling_type_text_is_denied_by_default(self):
+        from minicode.serve.protocol import PROTOCOL_VERSION
+
+        injector = FakeInputInjector()
+        service = self._service(injector)
+        response = service.execute_program(
+            {
+                "protocol": PROTOCOL_VERSION,
+                "program": "type_text('你好')\npress_key('enter')\n",
+            }
+        )
+        kinds = [call["kind"] for call in response.calls]
+        self.assertEqual(kinds, ["type_text", "press_key"])
+        for call in response.calls:
+            self.assertFalse(call["ok"])
+            self.assertEqual(call["error"], ErrorCode.INJECTION_BLOCKED.value)
+        self.assertTrue(response.halted)
+        self.assertEqual(injector.events, [])
+
+    def test_a_program_clicking_is_not_blocked_by_the_keyboard_policy(self):
+        from minicode.serve.protocol import PROTOCOL_VERSION
+
+        injector = FakeInputInjector()
+        gate = ApprovalGate(approver=ApproveApprover())
+        service = ActionService(
+            seam_factory=lambda sink: _build_seam(
+                gate=gate,
+                injector=injector,
+                sink=sink,
+                locator=_FakeLocator(name="开始", window_title="桌面"),
+            ),
+            log_directory=self._tmp.name,
+        )
+        response = service.execute_program(
+            {"protocol": PROTOCOL_VERSION, "program": "click('开始')\n"}
+        )
+        self.assertTrue(response.calls[0]["ok"], response.calls[0].get("error"))
 
 
 # ---------------------------------------------------------------------------
