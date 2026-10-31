@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from minicode.action.errors import ErrorCode
@@ -184,6 +185,37 @@ class ObserveTest(unittest.TestCase):
         result = api.observe()
         self.assertEqual(result["text"], "开始")
         self.assertTrue(result["text_available"])
+
+    def test_the_ocr_reading_is_redacted_before_it_enters_context_or_records(self):
+        """审查安全 #4：OCR **全文默认脱敏**后才回灌模型上下文 / 进记录。
+
+        PII（手机号等）与密钥形态在源头就被换成占位符 ——
+        ``observe()`` 的 ``text`` 是模型**唯一**能看到的文本。
+        """
+        api = ProtocolApi(
+            seam=_FakeSeam(),
+            ocr_port=FakeOcrPort(text="客户 13812345678 已付款"),
+        )
+        result = api.observe()
+        self.assertTrue(result["text_available"])
+        self.assertNotIn("13812345678", result["text"])
+        self.assertIn("[REDACTED]", result["text"])
+
+    def test_the_decision_report_write_passes_through_sanitize_record(self):
+        """审查安全 #5（源码级）：decision-report.json 落盘前必须过 sanitize_record。
+
+        动作记录在 ``build_record().to_dict()`` 里已经脱敏（M17 AC 5），
+        决策报告此前是**唯一没过脱敏的落盘通道** —— type_text 完整正文、
+        未脱敏 OCR 全文随报告一起明文进盘。
+        """
+        source = (Path(__file__).resolve().parent / "__main__.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "sanitize_record(",
+            source,
+            "decision-report.json 落盘前必须过 sanitize_record（与动作记录同一套规则）",
+        )
 
     def test_an_unreadable_ocr_is_not_faked(self):
         """OCR 读不出来 → 空串 + false（读不到 ≠ 读到空）。"""

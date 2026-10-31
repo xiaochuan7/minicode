@@ -33,6 +33,7 @@ from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.request_log import InMemoryRequestLog
 from minicode.redact.config import load_model_context_config
+from minicode.redact.log import sanitize_record
 from minicode.redact.redactor import TreeRedactor
 from minicode.reflection.retry import RetryingSeam
 from minicode.reflection.stop import StopPolicy
@@ -265,9 +266,15 @@ def main(argv=None) -> int:
         telemetry.add_trace(trace)
     telemetry_report = telemetry.report()
 
+    # ⚠️ **落盘前脱敏**（审查安全 #5）：decision-report.json 与动作记录
+    # （`build_record().to_dict()` 内部已过 `sanitize_record`）走**同一套规则** ——
+    # type_text 的完整正文、未脱敏的 OCR 全文此前会随报告明文进盘，
+    # 报告一分享即泄露（C-15 红线）。
     (out_dir / "decision-report.json").write_text(
         json.dumps(
-            {**report.to_dict(), "telemetry": telemetry_report.to_dict()},
+            sanitize_record(
+                {**report.to_dict(), "telemetry": telemetry_report.to_dict()}
+            ),
             ensure_ascii=False,
             indent=2,
         ),

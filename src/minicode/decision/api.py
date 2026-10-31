@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -30,6 +31,7 @@ from minicode.action.protocol import Action, ActionKind
 from minicode.action.seam import ActionExecutionSeam, SeamRequest
 from minicode.approval.gate import ApprovalGate
 from minicode.approval.request import TargetPreview
+from minicode.redact.patterns import redact_secrets
 from minicode.verification.diff import (
     OUTCOME_CHANGED,
     ChangeDetectParams,
@@ -46,6 +48,17 @@ __all__ = ["ProtocolApi", "DANGEROUS_ACTION_ERROR"]
 #: ⚠️ 它**就是动作协议的错误码**（``ErrorCode.APPROVAL_DENIED``）——
 #: 动作被闸门拦下、**零动作下发**，上层按码分流。
 DANGEROUS_ACTION_ERROR = ErrorCode.APPROVAL_DENIED.value
+
+
+def _ocr_redaction_enabled() -> bool:
+    """OCR 全文脱敏的开关（审查安全 #4）—— **默认开**（fail-closed）。
+
+    显式关闭：环境变量 ``MINICODE_OCR_REDACT`` 设为 ``0`` / ``off`` /
+    ``false`` / ``no``。关掉等于把整屏明文 OCR 回灌给所选端点 ——
+    这是「显式放行」，不是默认行为。
+    """
+    raw = os.environ.get("MINICODE_OCR_REDACT", "").strip().lower()
+    return raw not in {"0", "off", "false", "no"}
 
 #: **落点偏离量**：校验层**没有**这个读数（``VerificationResult`` 里没有，
 #: ``action/ports.py`` 的 ``LocateResult`` 里也没有）。
@@ -620,6 +633,11 @@ class ProtocolApi:
 
         读不出来（没接 OCR / 后端不可用 / 识别失败）→ 空串 + ``False``：
         **不假装读到**（工单 D-1）。
+
+        ⚠️ **全文默认脱敏**（审查安全 #4）：OCR 读到的是**整屏**的文字 ——
+        密钥形态与 PII（手机号 / 身份证 / 邮箱 / 银行卡）在**源头**就换成
+        占位符，之后无论回灌模型上下文还是落进记录都只有脱敏后的文本。
+        显式放行：环境变量 ``MINICODE_OCR_REDACT=0``（默认开）。
         """
         if self._ocr_port is None:
             return "", False
@@ -627,7 +645,10 @@ class ProtocolApi:
             text = self._ocr_port.read(frame)
         except Exception:
             return "", False
-        return str(text), True
+        text = str(text)
+        if _ocr_redaction_enabled():
+            text, _hits = redact_secrets(text)
+        return text, True
 
     def _frame(self) -> CapturedFrame | None:
         if self._frame_provider is None:
