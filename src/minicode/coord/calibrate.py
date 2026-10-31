@@ -348,9 +348,15 @@ class CandidateResult:
     errors_px: Tuple[float, ...]
     predictions: Tuple[Tuple[float, float], ...]
 
-    @property
-    def acceptable(self) -> bool:
-        return self.max_error_px <= 0.0 or True  # 由外部 tolerance 判定，见 CalibrationResult
+    def acceptable(self, tolerance_px: float) -> bool:
+        """这个候选标度在给定容差下是否可接受：``max_error_px <= tolerance_px``。
+
+        ⚠️ 审查 Bug #4（P1-5）修复：原实现 ``return self.max_error_px <= 0.0
+        or True`` **恒为 True**（注释说「由外部 tolerance 判定」却把判定
+        藏成了永远放行）—— 标定层最忌讳的静默放行。现在判定依据（容差）
+        由调用方**显式给**，本方法只是做比较，不再自带结论。
+        """
+        return self.max_error_px <= float(tolerance_px)
 
 
 @dataclass(frozen=True)
