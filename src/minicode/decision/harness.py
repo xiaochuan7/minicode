@@ -278,6 +278,10 @@ class DecisionHarness:
         #: **声明给模型的尺寸**（**算一次**，全任务共用一份；见
         #: :meth:`_declared_size`）。``None`` = 还没量到表面尺寸。
         self._model_input_size: tuple[int, int] | None = None
+        #: **帧级编码缓存**（性能 #2）：同一帧的「缩放 + PNG + base64」只算一次。
+        #: 值里**连着帧对象本身**（防 id 复用撞缓存）；每次取图后把不在当前
+        #: 上下文里的帧清掉（缓存大小 = 上下文保留的帧数，不无界增长）。
+        self._encode_memo: dict[int, tuple[CapturedFrame, str]] = {}
 
     # ------------------------------------------------------------------
     # 主循环
@@ -491,12 +495,28 @@ class DecisionHarness:
         ⚠️ **送模型的那一份是缩放过的副本**（缩到**声明尺寸**）——
         留在上下文里的帧**保持原始物理分辨率**（校验层的 OCR 与差分要全分辨率，
         缩了就判不准）。
+
+        ⚠️ **帧级编码缓存**（性能 #2）：上下文里**不变**的那几张帧，每一轮
+        都被重新「缩放 + PNG + base64」一遍然后扔掉 —— 纯 CPU 白付 3~8s/轮。
+        同一帧对象第二次出现直接复用上一轮的编码结果。
         """
+        frames = list(context.frames())
         encoded: list[str] = []
-        for frame in context.frames():
+        memo: dict[int, tuple[CapturedFrame, str]] = {}
+        for frame in frames:
+            cached = self._encode_memo.get(id(frame))
+            if cached is not None and cached[0] is frame:
+                memo[id(frame)] = cached
+                if cached[1]:
+                    encoded.append(cached[1])
+                continue
             data = encode_frame_base64(self._model_frame(frame))
+            # 值里连着帧对象（同一条引用）→ 这个 id 不可能被别的帧复用。
+            memo[id(frame)] = (frame, data)
             if data:
                 encoded.append(data)
+        # 只留**这一轮还在上下文里**的帧（滚出上下文的旧帧连同编码一起放掉）。
+        self._encode_memo = memo
         return tuple(encoded)
 
     def _model_frame(self, frame: CapturedFrame) -> CapturedFrame:

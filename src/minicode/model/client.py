@@ -26,10 +26,13 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -596,9 +599,41 @@ class ModelClient:
         self.request_log = request_log
         self.timeout_s = timeout_s
         self._clock = clock
+        # **传输层 keep-alive**（性能 #1）：urllib 每次请求新建 TCP+TLS，
+        # 10~20MB 的图像请求从 TCP 慢启动传 —— 每步白付 0.5~1.5s 握手与慢启动。
+        # 改用 http.client 长连接：同一端点在客户端生命周期内复用连接。
+        # （证书校验用默认 SSL 上下文 —— 仓库红线：不许 CERT_NONE。）
+        self._connections: dict[tuple[str, str, int | None], http.client.HTTPConnection] = {}
+        self._connection_lock = threading.Lock()
         # 启动日志：**构造时打一次**（不是每次请求），说清协议 / 端点 / 模型，
         # 以及密钥到底从哪个 env 键来；api_key 已脱敏（只留前 4 后 4）。
         print(config.describe(), file=sys.stderr)
+
+    def close(self) -> None:
+        """把复用的连接关掉（进程退出前 / 显式清理用；不调也由 GC 兜底）。"""
+        with self._connection_lock:
+            for connection in self._connections.values():
+                try:
+                    connection.close()
+                except Exception:  # noqa: BLE001 —— 清理路径不许抛
+                    pass
+            self._connections.clear()
+
+    def _connection_for(self, parts: urllib.parse.SplitResult) -> http.client.HTTPConnection:
+        """取（或建）一条到该端点的长连接（**带锁**：决策循环可能并发调）。"""
+        key = (parts.scheme, parts.hostname or "", parts.port)
+        connection = self._connections.get(key)
+        if connection is None:
+            if parts.scheme == "https":
+                connection = http.client.HTTPSConnection(
+                    parts.hostname or "", parts.port, timeout=self.timeout_s
+                )
+            else:
+                connection = http.client.HTTPConnection(
+                    parts.hostname or "", parts.port, timeout=self.timeout_s
+                )
+            self._connections[key] = connection
+        return connection
 
     def complete(
         self,
@@ -717,22 +752,38 @@ class ModelClient:
         headers: Mapping[str, str],
         body: Mapping[str, Any],
     ) -> tuple[int, bytes]:
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers=dict(headers),
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
-                return int(response.status), response.read()
-        except urllib.error.HTTPError as exc:
-            # HTTP 错误也是一次请求的**结果**（状态码 + 响应体），不是传输失败。
-            return int(exc.code), exc.read()
-        except urllib.error.URLError as exc:
-            raise ModelTransportError(f"请求 {endpoint} 失败：{exc.reason}") from exc
-        except TimeoutError as exc:
-            raise ModelTransportError(f"请求 {endpoint} 超时（{self.timeout_s}s）") from exc
+        """POST 一次（**长连接复用**；对外的语义与 urllib 版一致）。
+
+        * 返回 ``(状态码, 响应体字节)`` —— HTTP 4xx/5xx 也是**结果**，不是失败；
+        * 传输层坏（连接被服务端先关 / 超时 / DNS 失败）→
+          :class:`ModelTransportError`；
+        * **陈旧连接重试一次**：keep-alive 的连接可能已被服务端（或中间盒）
+          静默关闭 —— 换新连接再试一次，第二次还坏才算传输失败。
+        """
+        payload = json.dumps(body).encode("utf-8")
+        parts = urllib.parse.urlsplit(endpoint)
+        path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+        last_error: Exception | None = None
+        # ⚠️ 锁只护**连接字典**的取/删，不护网络 I/O（模型调用动辄几十秒，
+        # 全程持锁会把客户端串死）。决策循环是单线程调模型 —— 同一客户端
+        # 的并发使用本就不在支持范围内。
+        for _attempt in range(2):
+            with self._connection_lock:
+                connection = self._connection_for(parts)
+            try:
+                connection.request("POST", path, body=payload, headers=dict(headers))
+                response = connection.getresponse()
+                data = response.read()
+                return int(response.status), data
+            except (http.client.HTTPException, OSError, TimeoutError) as exc:
+                # 连接层坏（含服务端先关了 keep-alive）：扔掉这条连接（下次重建），
+                # 有且仅有一次重试机会。
+                with self._connection_lock:
+                    self._connections.pop(
+                        (parts.scheme, parts.hostname or "", parts.port), None
+                    )
+                last_error = exc
+        raise ModelTransportError(f"请求 {endpoint} 失败：{last_error}") from last_error
 
     def _log(
         self,

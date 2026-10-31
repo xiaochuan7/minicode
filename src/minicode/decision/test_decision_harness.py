@@ -30,6 +30,7 @@ from minicode.reflection.stop import (
 from minicode.verification.fakes import make_frame
 
 from .api import ProtocolApi
+from .context import ContextWindow
 from .harness import DecisionHarness
 
 
@@ -149,6 +150,60 @@ def _harness(programs, *, frames=(), max_rounds=2):
     caller = _FakeCaller(programs)
     harness = DecisionHarness(caller=caller, api=api, max_rounds=max_rounds)
     return harness, api, caller, seam
+
+
+class FrameEncodeMemoTest(unittest.TestCase):
+    """性能 #2：上下文里**不变**的帧每轮只编码一次（缩放 + PNG + base64 不重付）。"""
+
+    def test_the_same_frame_is_encoded_once_across_rounds(self):
+        """两轮共用同一帧 → 第二轮命中缓存，编码函数只被调一次。"""
+        from unittest import mock
+
+        from minicode.decision import harness as harness_module
+
+        harness, _api, _caller, _seam = _harness(["pass\n", "pass\n"])
+        original = harness_module.encode_frame_base64
+        calls: list[Any] = []
+
+        def counting(frame):
+            calls.append(frame)
+            return original(frame)
+
+        with mock.patch.object(harness_module, "encode_frame_base64", counting):
+            harness.run("目标")
+        self.assertEqual(
+            len(calls),
+            1,
+            f"同一帧两轮里被编码了 {len(calls)} 次（缓存没生效）",
+        )
+        # 缓存只留**还在上下文里**的帧 —— 不随轮数无界增长。
+        self.assertLessEqual(len(harness._encode_memo), harness.keep_frames)
+
+    def test_a_new_frame_gets_encoded_fresh(self):
+        """换新帧（对象不同）→ 必须真的编码，不许拿旧帧的缓存冒充。"""
+        from unittest import mock
+
+        from minicode.decision import harness as harness_module
+
+        harness, _api, _caller, _seam = _harness(["pass\n", "pass\n"])
+        context = ContextWindow(keep_frames=2)
+        frame_a = make_frame(64, 48)
+        context.add_round(summary="第 0 轮", frame=frame_a)
+        first = harness._images(context)
+        frame_b = make_frame(64, 48, changed_blocks=[0])
+        context.add_round(summary="第 1 轮", frame=frame_b)
+        original = harness_module.encode_frame_base64
+        calls: list[Any] = []
+
+        def counting(frame):
+            calls.append(frame)
+            return original(frame)
+
+        with mock.patch.object(harness_module, "encode_frame_base64", counting):
+            second = harness._images(context)
+        self.assertEqual(len(calls), 1, "只有新帧需要编码")
+        self.assertEqual(len(second), 2)
+        self.assertNotIn(first[0], second[1:], "新帧不许复用旧帧的编码")
 
 
 class ConditionalCaptureTest(unittest.TestCase):
