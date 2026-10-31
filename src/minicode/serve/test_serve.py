@@ -31,11 +31,14 @@ from minicode.action.errors import ErrorCode
 from minicode.action.fakes import FakeInputInjector
 from minicode.serve import cli, http
 from minicode.serve.fakes import FAKE_LANDING, FAKE_TARGET, fake_wiring
-from minicode.serve.protocol import ActionRequest, RequestError
+from minicode.serve.protocol import ActionRequest, ActionResponse, RequestError
 from minicode.serve.service import ActionService
 
 #: 协议里的错误码取值集合（对外暴露的错误码必须是它的子集）。
 _PROTOCOL_ERROR_CODES = {code.value for code in ErrorCode}
+
+#: 测试用的服务端 token（P0-A：写接口鉴权）。
+_TOKEN = "nightly-test-token-0123456789"
 
 
 def _run_cli(argv: list[str]) -> tuple[int, str]:
@@ -146,7 +149,10 @@ class HttpSurfaceTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._dir = Path(self._tmp.name)
         self._service = _service(self._dir)
-        self._server = http.build_server(self._service, host="127.0.0.1", port=0)
+        # P0-A：写接口默认 fail-closed，带鉴权的测试显式给 token。
+        self._server = http.build_server(
+            self._service, host="127.0.0.1", port=0, token=_TOKEN
+        )
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         self.addCleanup(self._stop)
@@ -168,7 +174,7 @@ class HttpSurfaceTest(unittest.TestCase):
                 "POST",
                 "/v1/actions",
                 body=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "X-Minicode-Token": _TOKEN},
             )
             response = connection.getresponse()
             return response.status, json.loads(response.read().decode("utf-8"))
@@ -289,6 +295,166 @@ class HttpSurfaceTest(unittest.TestCase):
             connection.close()
 
 
+class HttpTrustBoundaryTest(unittest.TestCase):
+    """P0-A：写接口的信任边界（鉴权 / 来源 / 内容类型 / 体积 / 并发）。
+
+    背景：服务只绑回环**不等于**只有本机的人能驱动它 —— 任意网页可以用
+    ``Content-Type: text/plain`` 的简单跨域请求绕过 CORS 预检，直接打这个
+    能真点鼠标的服务；DNS rebinding 之后还能把请求伪装成「同源」。
+
+    防线（全 fail-closed）：
+
+    * ``Host`` 必须是回环地址（防 DNS rebinding）；
+    * ``Content-Type`` 必须是 ``application/json``（text/plain 这类简单请求直接 403）；
+    * 必须带自定义头 ``X-Minicode-Token``（自定义头迫使跨域先过预检，而预检我们不应）；
+    * 服务端没配 token 时**写接口一律 403**（不许「先跑起来再说」）；
+    * 请求体大小上限 + 并发上限（大 body / 连接洪水拖不垮）。
+    """
+
+    def _make_server(self, token: str | None):
+        """起一个（可带可不带 token 的）假桌面服务，自动清理。"""
+        tmp = tempfile.TemporaryDirectory()
+        self._dir = Path(tmp.name)
+        service = _service(self._dir)
+        server = http.build_server(service, host="127.0.0.1", port=0, token=token)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(http.close_server, server)
+        self.addCleanup(thread.join, timeout=10)
+        self.addCleanup(tmp.cleanup)
+        return server
+
+    def _post_raw(
+        self,
+        server,
+        *,
+        headers: dict[str, str],
+        body: bytes = b"{}",
+    ) -> tuple[int, dict[str, str], dict]:
+        """发一条原始 POST，拿（状态码，响应头，响应体）。"""
+        connection = httpclient.HTTPConnection(*server.server_address, timeout=10)
+        try:
+            connection.request("POST", "/v1/actions", body=body, headers=headers)
+            response = connection.getresponse()
+            raw = response.read().decode("utf-8")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = {"_raw": raw[:200]}
+            return response.status, dict(response.getheaders()), payload
+        finally:
+            connection.close()
+
+    def _json_headers(self, token: str | None = _TOKEN, content_type: str = "application/json"):
+        headers = {"Content-Type": content_type}
+        if token is not None:
+            headers["X-Minicode-Token"] = token
+        return headers
+
+    def test_a_write_request_without_a_configured_token_is_rejected(self):
+        """服务端没配 token → 写接口一律 403（fail-closed：不许先跑起来再说）。"""
+        server = self._make_server(token=None)
+        status, _headers, body = self._post_raw(
+            server,
+            headers=self._json_headers(token=_TOKEN),
+            body=json.dumps({"protocol": _version(), "target": FAKE_TARGET}).encode("utf-8"),
+        )
+        self.assertEqual(status, 403)
+        self.assertFalse(body["ok"])
+        self.assertEqual(set(body), set(ActionResponse(
+            protocol_version=_version(), ok=False,
+            error_code=ErrorCode.INVALID_REQUEST.value, error_message="x",
+        ).to_dict()))
+
+    def test_a_write_request_with_a_wrong_token_is_rejected(self):
+        server = self._make_server(token=_TOKEN)
+        status, _headers, body = self._post_raw(
+            server,
+            headers=self._json_headers(token="definitely-not-the-token"),
+            body=json.dumps({"protocol": _version(), "target": FAKE_TARGET}).encode("utf-8"),
+        )
+        self.assertEqual(status, 403)
+        self.assertFalse(body["ok"])
+
+    def test_a_write_request_with_a_missing_token_header_is_rejected(self):
+        server = self._make_server(token=_TOKEN)
+        status, _headers, body = self._post_raw(
+            server,
+            headers={"Content-Type": "application/json"},
+            body=json.dumps({"protocol": _version(), "target": FAKE_TARGET}).encode("utf-8"),
+        )
+        self.assertEqual(status, 403)
+        self.assertFalse(body["ok"])
+
+    def test_a_cross_origin_text_plain_write_is_rejected(self):
+        """``Content-Type: text/plain`` 的简单跨域请求（免预检）必须 403。
+
+        这是原审查里的 P0 打法：浏览器允许网页对回环服务发 text/plain 的
+        POST 而不做预检 —— 只要服务不强制 application/json，任意网页就能
+        驱动鼠标键盘。
+        """
+        server = self._make_server(token=_TOKEN)
+        status, _headers, body = self._post_raw(
+            server,
+            headers=self._json_headers(content_type="text/plain"),
+            body=json.dumps({"protocol": _version(), "target": FAKE_TARGET}).encode("utf-8"),
+        )
+        self.assertEqual(status, 403)
+        self.assertFalse(body["ok"])
+
+    def test_a_forged_host_header_is_rejected(self):
+        """DNS rebinding：域名解析到 127.0.0.1，``Host`` 却是攻击者域名 → 403。"""
+        server = self._make_server(token=_TOKEN)
+        status, _headers, body = self._post_raw(
+            server,
+            headers={
+                "Host": "evil.example.com",
+                "Content-Type": "application/json",
+                "X-Minicode-Token": _TOKEN,
+            },
+            body=json.dumps({"protocol": _version(), "target": FAKE_TARGET}).encode("utf-8"),
+        )
+        self.assertEqual(status, 403)
+        self.assertFalse(body["ok"])
+
+    def test_a_correct_token_with_a_loopback_host_is_accepted(self):
+        """四道防线全过（回环 Host + application/json + 对的 token）→ 动作真正执行。"""
+        server = self._make_server(token=_TOKEN)
+        status, _headers, body = self._post_raw(
+            server,
+            headers=self._json_headers(token=_TOKEN),
+            body=json.dumps({"protocol": _version(), "target": FAKE_TARGET}).encode("utf-8"),
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+
+    def test_an_oversized_body_is_rejected(self):
+        server = self._make_server(token=_TOKEN)
+        big = b"x" * (http.MAX_BODY_BYTES + 1)
+        status, _headers, _body = self._post_raw(
+            server,
+            headers=self._json_headers(token=_TOKEN),
+            body=big,
+        )
+        self.assertEqual(status, 413)
+
+    def test_a_preflight_gets_no_cors_permission(self):
+        """预检（OPTIONS）**不应答任何 ``Access-Control-*``**：跨域读不到任何东西。"""
+        server = self._make_server(token=_TOKEN)
+        connection = httpclient.HTTPConnection(*server.server_address, timeout=10)
+        try:
+            connection.request("OPTIONS", "/v1/actions", headers={"Origin": "https://evil.example.com"})
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 405)
+            self.assertIsNone(
+                response.getheader("Access-Control-Allow-Origin"),
+                "不许给任何跨域读权限",
+            )
+        finally:
+            connection.close()
+
+
 class SameRequestSameResultTest(unittest.TestCase):
     """AC3：同一条请求经 CLI 与 HTTP 得到**相同的动作与落点**（同一个实现）。"""
 
@@ -300,7 +466,7 @@ class SameRequestSameResultTest(unittest.TestCase):
             cli_payload = json.loads(out)
 
             service = _service(Path(http_dir))
-            server = http.build_server(service, host="127.0.0.1", port=0)
+            server = http.build_server(service, host="127.0.0.1", port=0, token=_TOKEN)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
@@ -316,7 +482,7 @@ class SameRequestSameResultTest(unittest.TestCase):
                                 "action": "click",
                             }
                         ).encode("utf-8"),
-                        headers={"Content-Type": "application/json"},
+                        headers={"Content-Type": "application/json", "X-Minicode-Token": _TOKEN},
                     )
                     response = connection.getresponse()
                     http_payload = json.loads(response.read().decode("utf-8"))
