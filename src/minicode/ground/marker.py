@@ -76,7 +76,16 @@ def draw_stars(
             f"应为 {expected} 字节，实际 {len(frame.payload)} 字节"
         )
     #: **BGR 顺序**（帧的排布是 BGR / BGRA）。
-    pixel = bytes((color[2], color[1], color[0]))
+    #:
+    #: ⚠️ **颜色字节数必须与帧的通道数一致**（审查 Bug #2）：
+    #: ``_fill_polygon`` 按 ``channels`` 字节切片赋值，bytearray 的切片赋值
+    #: **允许不等长** —— 3 字节颜色写进 4 字节切片会把整帧**每像素收缩 1 字节**，
+    #: stride 全错、PNG 编码直接炸。BGRA 的第 4 字节（alpha）写 255（不透明）。
+    pixel = bytes(
+        (color[2], color[1], color[0], 255)
+        if channels == 4
+        else (color[2], color[1], color[0])
+    )
     payload = bytearray(frame.payload)
     for cx, cy in points:
         _fill_polygon(
@@ -111,7 +120,15 @@ def _fill_polygon(
 
     只需要「点在多边形内」这一件事 —— 不用抗锯齿（标记要的是**看得见**，
     不是好看）。
+
+    ⚠️ ``color`` 的长度必须等于 ``channels``（等长切片赋值）——
+    不等长时 bytearray 会收缩/膨胀，整帧 stride 错位（审查 Bug #2）。
     """
+    if len(color) != channels:
+        raise ValueError(
+            f"颜色字节数 {len(color)} 与帧通道数 {channels} 不一致 —— "
+            "切片赋值会改变缓冲长度，整帧 stride 错位"
+        )
     ys = [point[1] for point in vertices]
     y_start = max(0, int(math.floor(min(ys))))
     y_end = min(height - 1, int(math.ceil(max(ys))))
