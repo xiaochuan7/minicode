@@ -22,7 +22,7 @@
 |---|---|---|
 | **密码** | 密码框（IsPassword=True）的值一律是占位符 `***`，明文不外发。 | `minicode.redact.redactor:TreeRedactor.render` |
 | **草稿正文 / 正文类控件的值** | 正文类控件（edit, document, text）的值一律不外发（聊天草稿、编辑框正文都在这一类）。 | `minicode.redact.redactor:TreeRedactor.render` |
-| **密钥形态的片段** | 5 类敏感模式一律换成占位符 `[REDACTED]`：私钥头、密钥前缀形态、JWT 三段、长十六进制串、长 base64。 | `minicode.redact.patterns:redact_secrets` |
+| **密钥形态的片段** | 9 类敏感模式一律换成占位符 `[REDACTED]`：私钥头、密钥前缀形态、JWT 三段、长十六进制串、长 base64、手机号、身份证、邮箱、银行卡。 | `minicode.redact.patterns:redact_secrets` |
 | **控件树里未登记的字段** | fail-closed：未登记的原始属性连**字段名**都不出现。 | `minicode.redact.redactor:TreeRedactor.render` |
 | **敏感窗口的画面** | 黑名单窗口（标题命中敏感词表或对话框类名）**根本不许拍**：抓帧之前就被拦下，画面不进模型上下文，动作记录里只记「这个窗口被跳过了」。这一层在**审批之前**跑 —— 命中就**根本走不到**审批那一层。 | `minicode.privacy.guard:SensitiveWindowGuard.check` |
 
