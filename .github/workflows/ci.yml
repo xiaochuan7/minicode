@@ -1,0 +1,25 @@
+name: CI
+
+# 评测方法论修复（审查报告 评测#6）：此前的「Tests 1326 passed」徽章是人工数出来的
+# `def test_` 个数，任何后续提交即失真。CI 上线后徽章换成 CI 状态，数字由 CI 动态验证。
+# core 的单元测试零网络依赖（假桌面 / 桩模型），windows-latest 上成本极低。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装（含 dev 工具与 vision/exec extras）
+        run: pip install -e ".[vision,exec,dev]"
+      - name: ruff（静态检查）
+        run: python -m ruff check .
+      - name: pytest（全量单元测试，假桌面不碰真机）
+        run: python -m pytest -q

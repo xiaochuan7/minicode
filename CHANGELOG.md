@@ -16,6 +16,48 @@
   `Access-Control-*`）。**有意的契约变更**：既有 HTTP 测试由「无鉴权直连 200」
   改为显式带 token —— 这是安全修复改变了契约，不是测试被删或被跳过。
 
+### 正确性修复（P1）
+
+- **P1-1 · 多显示器视觉通道**（审查 Bug#1）：真机接线把主屏口径传给视觉通道的
+  `full_screen_size`，抓帧却抓整个虚拟桌面 —— 多显示器下每次视觉定位入口即
+  `LOCATE_FAILED`（单屏两口径恰好重合所以测不出）。接线统一为**抓帧口径**
+  （`uia/live.py` 用 `current_virtual_desktop()`；`e2e/visual.py` 的
+  `VisualChannel` 新增显式参数，缺省运行时量虚拟桌面）。新增合成双屏单测。
+- **P1-2 · BGRA 帧标记**（审查 Bug#2）：`draw_stars` 按 4 字节切片赋 3 字节颜色，
+  BGRA 帧整帧损坏（bytearray 切片赋值会收缩）。颜色按通道数构造（alpha=255）+
+  等长防御。新增 marker 单测 6 条（先红后绿）。
+- **P1-3 · 审批分类纳入真实元素**（审查安全#2）：分类原来只扫模型自报措辞 ——
+  写「确定」实际点「删除」零审批。现在 UIA **真实控件名与窗口标题**一起进分类
+  文本；COMMAND_LINE 词表补高危命令形态（`rm -`、`shutdown`、`taskkill` 等）。
+  **契约变更**：非交互前端（HTTP / MCP 动作程序）的键盘输入（type_text /
+  press_key）**一律拒绝**（`injection_blocked`，连审批都不问）；交互前端不变。
+- **P1-4 · PII 脱敏与落盘**（审查安全#3#4#5）：脱敏正则新增手机号 / 身份证 /
+  邮箱 / 银行卡四类（与密钥类同一套规则）；`observe()` 的整屏 OCR 全文**默认
+  脱敏后**才回灌/落盘（`MINICODE_OCR_REDACT=0` 显式关闭）；decision-report.json
+  落盘前过 `sanitize_record`（与动作记录同一套）。隐私策略文档按生成器重新生成。
+- **P1-5 · 标定恒真判定**（审查 Bug#4，**冻结原型 coord/ 的唯一例外**，单列）：
+  `CandidateResult.acceptable` 原实现恒为 True（`<= 0.0 or True`），且全仓零
+  调用方。改为显式容差判定 `acceptable(tolerance_px)`。理由与验证见该 commit。
+
+### 性能（P2，均含改前/改后量化）
+
+- **传输层 keep-alive**（性能#1）：`urllib` 每请求新建 TCP+TLS → `http.client`
+  长连接复用 + 陈旧连接重建重试。量化：实测端点 TCP+TLS 握手中位 **459 ms/请求**
+  （本机回环差值 0.03 ms 为诚实下界）。
+- **帧级编码缓存**（性能#2）：上下文里不变的帧每轮重新「缩放+PNG+base64」→
+  按帧对象身份 memo（每轮裁剪，不无界增长）。量化：2560×1600→1280×800 全量
+  编码中位 **438.4 ms/帧**（同机 5 次取中位），命中后 ≈0.002 ms/帧；
+  3 张不变帧每轮省约 **1.32 s** 纯 CPU。
+
+### 工程化
+
+- **CI 上线**（评测#6）：`.github/workflows/ci.yml` —— windows-latest + Python 3.11，
+  每次 push/PR 跑全量 pytest + ruff。README 的「Tests 1326 passed」静态徽章
+  （人工数 `def test_` 的结果，任何提交即失真）换成 **CI 状态徽章**；数字墙与
+  测试节不再写死人工计数。
+- 删除死代码 `scripts/make_benchmark_chart.py`（它生成的图在 v0.1.3 已删，
+  且依赖项目未安装的 matplotlib）。
+
 ### 对外表述修正（逐条可核对，未新增任何数字）
 
 - README 数字墙 59.02% 加脚注：该数字为**点式定位路径**（模型直接输出坐标 + 运行时

@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/License-MIT-3DA639)](LICENSE)
 [![Release](https://img.shields.io/badge/Release-v0.1.4-2C63C7)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows/)
-[![Tests](https://img.shields.io/badge/Tests-1326%20passed-2EA44F)](#测试)
+[![CI](https://github.com/xiaochuan7/minicode/actions/workflows/ci.yml/badge.svg)](https://github.com/xiaochuan7/minicode/actions/workflows/ci.yml)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
@@ -29,7 +29,7 @@
 
 | | | | |
 |:--:|:--:|:--:|:--:|
-| **59.02%**<br><sub>整体命中率<br>108/183</sub> | **43.17%**<br><sub>粗定位基线<br>79/183</sub> | **0.0 px**<br><sub>UIA 唯一命中<br>落点误差</sub> | **1326**<br><sub>单元测试<br>257 subtests</sub> |
+| **59.02%**<br><sub>整体命中率<br>108/183</sub> | **43.17%**<br><sub>粗定位基线<br>79/183</sub> | **0.0 px**<br><sub>UIA 唯一命中<br>落点误差</sub> | **CI 全绿**<br><sub>单元测试<br>每次提交动态验证</sub> |
 
 ScreenSpot-Pro 官方 bbox 命中口径，n=183 分层抽样；全部数字的 Wilson 95% CI 见[实测](#实测分维度命中率)。
 
@@ -216,9 +216,13 @@ python scripts/desktop_lock.py release
 ## 测试
 
 ```powershell
-python -m pytest -q     # 1326 passed, 257 subtests passed
-python -m ruff check .  # All checks passed!
+python -m pytest -q     # 全量单元测试（假桌面，不碰真机）
+python -m ruff check .  # 静态检查
 ```
+
+CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）：windows-latest + Python 3.11，
+每次 push / PR 跑全量 pytest 与 ruff —— 测试规模由 CI 动态验证，
+README 不再写死一个人工数出来的数字（人工计数任何提交即失真）。
 
 `src/minicode/coord`、`exec`、`verify` 是三个已验证的冻结原型：coord 与 exec 各有 README 与自测脚本，`verify/` 下是**会真调 API / 真截图 / 真点鼠标**的脚本式实测（默认不被 pytest 收集）。
 
