@@ -33,6 +33,11 @@
 
 ScreenSpot-Pro 官方 bbox 命中口径，n=183 分层抽样；全部数字的 Wilson 95% CI 见[实测](#实测分维度命中率)。
 
+> **脚注 · 59.02% 走的是哪条路**：这个数字是**点式定位路径**的成绩（模型直接输出坐标，
+> 配运行时标定），**不是**首屏宣传的「模型只答编号」路线在同口径下的分数——编号候选
+> 分支只在 42 条小子样本上量过，未在这 183 条上复测。两者不可互相换算，请勿用 59.02%
+> 估计编号路线的成绩（详见[评测配置](#评测配置)）。
+
 ### 三步跑起来
 
 | 1 · 装 | 2 · 配 | 3 · 跑 |
@@ -64,7 +69,22 @@ ScreenSpot-Pro 官方 bbox 命中口径，n=183 分层抽样；全部数字的 W
 
 真机端到端（主口径）：wave1 3/5（60%）、wave2 3/9（33.3%）。
 
-> **跨跑批噪声**：同配置两次独立跑批差 ±5.46 pp（±10 条，mid-p p=0.0989，CI 跨 0）。所以对外只报配对比较，不报「单次跑批绝对分的历史提升」。
+> 对外只报配对比较，不报「单次跑批绝对分的历史提升」。此前引用的跨跑批噪声数字
+> （±5.46 pp / mid-p p=0.0989）因仓库内无产物可复算已撤下，待配对明细入库后恢复
+> （见 [CHANGELOG](CHANGELOG.md) 未发布节）。
+
+### 评测配置
+
+- **判定口径**：ScreenSpot-Pro 官方 bbox 命中判定（落点按 img_size 归一化后落在 GT 框内，
+  双侧闭区间），与官方脚本一致；GT 只用于判定，无自我循环。
+- **样本量与抽样**：计划分层抽样 330 条；本地缺图的样本被静默过滤后实际 n=183。
+  这是**非随机子集**：分维度结论——尤其平台维度（windows 43.5% vs linux 70.0%）——
+  受缺失机制影响，解读要打折。
+- **调参集即评测集**：整屏档位、crop 几何等超参是在同一批 183 条上扫描选优后报的同批
+  分数，绝对值带未量化的乐观偏差；同批配对的相对比较（59.02% vs 43.17%）受此影响较小。
+  修复路径：跑独立确认集后替换头条数字。
+- **模型与端点未记录**：该批分数所用的模型与端点没有记录在仓库里，这是本仓库已知的
+  复现缺口。在补上记录之前，请不要把 59.02% 当作任何特定模型的成绩来引用。
 
 ## 诚实短板
 
@@ -229,7 +249,13 @@ reading the screen back.
 
 Measured on a ScreenSpot-Pro stratified sample (official bbox-hit protocol, n=183), grounding
 accuracy is **59.02% (108/183, Wilson 95% CI [51.78%, 65.89%])**, versus **43.17% (79/183)** for the
-coarse-only baseline. Known weaknesses, stated plainly: icon targets (**47.13%**, 41/87) trail text
+coarse-only baseline. Caveats, stated plainly: that headline number comes from the **point-path**
+grounding route (the model outputs coordinates directly); the number-picking route advertised above
+was only ever measured on a 42-sample pilot, not on this same 183-sample batch; the n=183 set is a
+non-random remnant of a planned 330 (samples with missing local images were silently dropped); the
+model and endpoint behind the run are not recorded in the repo — a known reproducibility gap; and
+hyperparameters were tuned on this same batch, so absolute values carry an unquantified optimistic
+bias. Known weaknesses, stated plainly: icon targets (**47.13%**, 41/87) trail text
 targets (**69.79%**, 67/96); windows screens score **43.5%** (n=69) against linux 70.0% (n=50) and
 macos 67.2% (n=64); CAD and Creative both sit at 44.4%; sites requiring login still need a human to
 sign in once; L3 planning quality has no automated coverage yet; and the API may still change
