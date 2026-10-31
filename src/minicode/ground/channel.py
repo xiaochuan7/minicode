@@ -547,10 +547,13 @@ class TwoStageGrounder:
         """
         frame = request.frame
         if (frame.width, frame.height) != self.full_screen_size:
+            # ⚠️ full_screen_size 的语义是「**这个通道会收到多大的整屏帧**」——
+            # 接线时必须给**抓帧口径**（WindowsCaptureSource 抓整个虚拟桌面），
+            # 不是主屏口径（审查 Bug#1）。不一致 = 在一个没声明过的空间里换算。
             return VisualLocateResult(
                 error_code=ErrorCode.LOCATE_FAILED,
                 error_message=(
-                    f"整屏帧尺寸 {frame.width}×{frame.height} 与标定探针尺寸 "
+                    f"整屏帧尺寸 {frame.width}×{frame.height} 与通道声明的整屏口径 "
                     f"{self.full_screen_size[0]}×{self.full_screen_size[1]} 不一致 —— "
                     "模型输入尺寸不可复用，拒绝换算"
                 ),

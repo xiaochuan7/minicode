@@ -315,6 +315,7 @@ class VisualChannel:
         bypass_admission: bool = False,
         model_input: tuple[int, int] | None = None,
         candidate_source: Any | None = None,
+        full_screen_size: tuple[int, int] | None = None,
     ):
         """
         ``model_input``
@@ -324,6 +325,13 @@ class VisualChannel:
             → 1280×800）。
             ⚠️ 源码里**不写死** ``(2048, 1280)`` 那样手填的值
             （工单 A-2：手填的尺寸错了就静默偏移）。
+        ``full_screen_size``
+            **整屏帧的口径**（审查 Bug#1）：视觉通道收到的整屏帧**实际是多大**，
+            换算链路就按多大声明。⚠️ 它与标定探针的尺寸是**两个来源**——
+            抓帧抓的是**整个虚拟桌面**（``exec.capture.grab_frame`` 缺省），
+            探针画在**主屏**上；单屏机器两者恰好重合，多显示器下用主屏口径
+            会让 ``locate()`` 在入口被尺寸门拒掉。``None``（缺省）= 运行时按
+            虚拟桌面量（量不到时回落标定记录，保持旧行为）。
         ``candidate_source``
             **候选源**（B-1 的「模型选编号」分支，端口形状见
             :class:`minicode.ground.candidates.CandidateSource`）。
@@ -335,6 +343,7 @@ class VisualChannel:
         self.bypass_admission = bypass_admission
         self.model_input = model_input
         self.candidate_source = candidate_source
+        self._full_screen_size = full_screen_size
         self._calib: dict[str, Any] = {}
         self._grounder = None
         self._context: dict[str, Any] = {}
@@ -380,7 +389,10 @@ class VisualChannel:
             scale=calibration["scale"],
             #: **与标定探针同一个声明值**（换算链路的分母只有一个来源）。
             model_input_size=calibration["model_input_size"],
-            full_screen_size=(calibration["width"], calibration["height"]),
+            #: ⚠️ **整屏口径 = 抓帧口径**（审查 Bug#1）：整屏帧抓的是**整个虚拟
+            #: 桌面**，full_screen_size 必须同口径 —— 标定探针（主屏）的宽高
+            #: 在多显示器下与它必然错位，单屏恰好重合所以测试测不出来。
+            full_screen_size=self._frame_size(calibration),
             gate_mode=self.gate_mode,
             #: **候选源**（B-1 的「模型选编号」分支）。给了它：匹配得上候选就
             #: 走编号选择（落点 = 候选框物理中心）；匹配不上或挑不出编号 →
@@ -420,6 +432,23 @@ class VisualChannel:
         return _ZoomLocator()
 
     # -- 内部 -------------------------------------------------------------
+
+    def _frame_size(self, calibration: dict[str, Any]) -> tuple[int, int]:
+        """**整屏帧的口径**：显式给的 > 运行时量虚拟桌面 > 标定记录（旧行为）。
+
+        ⚠️ 抓帧（``exec.capture.grab_frame`` 缺省）抓的是**整个虚拟桌面**，
+        所以默认按虚拟桌面量；非 Windows 上量不到（Win32 不在）才回落
+        标定记录 —— 那是「行为与从前一致」的保底，不是正确口径。
+        """
+        if self._full_screen_size is not None:
+            return (int(self._full_screen_size[0]), int(self._full_screen_size[1]))
+        try:
+            from minicode.action.windows import current_virtual_desktop
+
+            desktop = current_virtual_desktop()
+            return (int(desktop.width), int(desktop.height))
+        except Exception:  # noqa: BLE001 —— 非 Windows / Win32 不可用：回落旧口径
+            return (int(calibration["width"]), int(calibration["height"]))
 
     def _calibrate(self) -> dict[str, Any]:
         """标定（真调模型）+ 准入判定。**只跑一次**。"""

@@ -211,11 +211,19 @@ def _run(args) -> int:
 
     # -- 接线（UIA 通道 + 视觉通道）--------------------------------------
     channel = UiaChannel(query=port, capability=table)
+    # ⚠️ **整屏口径 = 抓帧口径**（审查 Bug#1）：视觉通道收到的整屏帧是
+    # WindowsCaptureSource 抓的**整个虚拟桌面**（exec/capture.grab_frame 的缺省），
+    # 所以 full_screen_size 必须用虚拟桌面度量，**不是**主屏 SM_CXSCREEN。
+    # 单屏机器两个口径恰好重合（所以单屏测试全绿也测不出来）；多显示器下用
+    # 主屏口径会让 locate() 在入口就被尺寸门拒掉 —— 视觉通道整条不可用。
+    # 标定探针保持主屏口径（探针 overlay 画在主屏上，量的是模型的输入空间行为），
+    # 两个口径在多显示器下**故意不同源**；混合 DPI 的多屏是已知边界
+    # （标定标度按主屏判定，副屏 DPI 不同时会偏，需要时再做分屏标定）。
     grounder = TwoStageGrounder(
         client,
         scale=outcome.detected_scale,
         model_input_size=model_input,
-        full_screen_size=(width, height),
+        full_screen_size=(desktop.width, desktop.height),
     )
     effective_admission = admission_port
     if args.bypass_admission:
