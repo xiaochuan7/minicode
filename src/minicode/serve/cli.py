@@ -68,6 +68,25 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="用假桌面跑一遍（不碰真桌面、不注入任何输入）",
     )
+    act.add_argument(
+        "--auth-level",
+        default=None,
+        metavar="L0|L1|L2|L3",
+        help="真机运行的授权级别（W2 四级授权；缺省 = 不带护栏，行为同 v0.1.4）"
+        "。L0 只读 / L1 白名单（配 --whitelist）/ L2 审批 / L3 无人值守（单次 ≤20 分钟）",
+    )
+    act.add_argument(
+        "--whitelist",
+        action="append",
+        default=[],
+        metavar="SUBSTR",
+        help="L1 白名单：窗口类名/标题的子串（可重复，大小写不敏感）",
+    )
+    act.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="逐条打印将下发的动作但不执行（护栏 10；L0 自动为真）",
+    )
 
     log = sub.add_parser("log", help="读回动作日志")
     log.add_argument("--out", default="runs/serve", help="动作日志目录")
@@ -99,16 +118,29 @@ def _parse_params(pairs: list[str]) -> dict[str, Any]:
     return params
 
 
-def build_service(*, log_directory: str | Path, fake: bool) -> ActionService:
+def build_service(
+    *,
+    log_directory: str | Path,
+    fake: bool,
+    auth_level: str | None = None,
+    whitelist: list[str] | None = None,
+    dry_run: bool = False,
+) -> ActionService:
     """造一个动作服务。
 
     ``fake=True`` → **假桌面**（假截图源 / 假控件树 / 假注入器）：
     不碰真桌面、不注入任何输入、不花钱。
-    ``fake=False`` → 真机接线（UIA 通道 + 真机注入 + 审批闸门 + 提权检测）。
+    ``fake=False`` → 真机接线（UIA 通道 + 真机注入 + 审批闸门 + 提权检测）；
+    给 ``auth_level`` 则再包**运行护栏**（W2：四级授权 + 十条护栏）。
     """
     if fake:
         return _fake_service(log_directory)
-    return _real_service(log_directory)
+    return _real_service(
+        log_directory,
+        auth_level=auth_level,
+        whitelist=tuple(whitelist or ()),
+        dry_run=dry_run,
+    )
 
 
 def _fake_service(log_directory: str | Path) -> ActionService:
@@ -118,15 +150,30 @@ def _fake_service(log_directory: str | Path) -> ActionService:
     return fake_service(log_directory)
 
 
-def _real_service(log_directory: str | Path) -> ActionService:
+def _real_service(
+    log_directory: str | Path,
+    *,
+    auth_level: str | None = None,
+    whitelist: tuple[str, ...] = (),
+    dry_run: bool = False,
+) -> ActionService:
     """真机接线（**不碰锁** —— 锁由 :func:`_run_act` 持有到动作执行完）。
 
     ⚠️ **动真机前必须拿锁**（真机占用锁：人机互斥）：人类在用电脑时
     本命令**拒绝动真机**，不与人类抢鼠标。
+
+    ⚠️ ``auth_level`` 给出时按 :mod:`minicode.guard` 装配护栏
+    （非法级别在这里明确报错 —— 不猜）。
     """
     from .real import build_real_service
 
-    return build_real_service(log_directory)
+    if auth_level is None:
+        return build_real_service(log_directory)
+    from minicode.guard.levels import parse_level
+    from minicode.guard.policy import load_policy
+
+    policy = load_policy(level=parse_level(auth_level), whitelist=whitelist)
+    return build_real_service(log_directory, guard_policy=policy, dry_run=dry_run)
 
 
 def _print_action(response, as_json: bool) -> None:
@@ -168,13 +215,60 @@ def _run_act(args) -> int:
 
         holds_lock = acquire("M18")
         try:
-            service = build_service(log_directory=args.out, fake=False)
+            service = build_service(
+                log_directory=args.out,
+                fake=False,
+                auth_level=args.auth_level,
+                whitelist=args.whitelist,
+                dry_run=args.dry_run,
+            )
             response = service.execute(payload)
         finally:
             if holds_lock:
                 release()
+        _print_run_summary(service)
     _print_action(response, args.json)
     return EXIT_OK if response.ok else EXIT_FAILED
+
+
+def _print_run_summary(service: ActionService) -> None:
+    """护栏 9：带护栏的真机运行结束打印运行摘要（写 summary.json + stderr）。"""
+    from minicode.guard.recorder import RunSummary, render_summary, write_summary
+    from minicode.guard.runtime import BudgetLedger, FailureFuse
+
+    session = getattr(service, "guard_session", None)
+    if session is None:
+        return
+    ledger: BudgetLedger = session.ledger
+    fuse: FailureFuse = session.fuse
+    recorder = session.recorder
+    ok_steps = failed_steps = 0
+    if recorder is not None:
+        for row in recorder.read_rows():
+            if row.get("type") == "step":
+                if row["result"]["ok"]:
+                    ok_steps += 1
+                else:
+                    failed_steps += 1
+    summary = RunSummary(
+        level=session.policy.level.value,
+        dry_run=session.dry_run,
+        steps=ledger.steps,
+        elapsed_s=ledger.elapsed_s(),
+        denials=list(session.denials),
+        estop_triggered=session.estop.triggered if session.estop is not None else False,
+        ok_steps=ok_steps,
+        failed_steps=failed_steps,
+        model_calls=ledger.model_calls,
+        budget=ledger.to_dict(),
+        fuse=fuse.to_dict(),
+        trace_path=str(recorder.path) if recorder is not None else "",
+        policy=session.policy.to_dict(),
+    )
+    if recorder is not None:
+        write_summary(recorder.directory, summary)
+    else:
+        print(render_summary(summary))
 
 
 def _run_log(args) -> int:

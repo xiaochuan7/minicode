@@ -57,7 +57,13 @@ __all__ = [
 
 
 class DangerCategory(StrEnum):
-    """**危险动作的类别**（工单 M16 AC 1 点名的十一类）。"""
+    """**危险动作的类别**（工单 M16 AC 1 点名的十一类 + W2 护栏补三类）。
+
+    ⚠️ W2 的三个（``write_file`` / ``submit_form`` / ``close_unsaved``）
+    **没有关键词规则**（``DANGER_RULES`` 里不出现）—— 它们只由护栏的
+    **影响面判定**（``minicode.guard.irreversible``）产出，
+    供授权级审批门构造审批请求用。
+    """
 
     #: 删除。
     DELETE = "delete"
@@ -81,6 +87,12 @@ class DangerCategory(StrEnum):
     CLIPBOARD_READ = "clipboard_read"
     #: 截含敏感窗口的屏（**由状态触发**：前台窗口命中敏感词表）。
     SENSITIVE_SCREENSHOT = "sensitive_screenshot"
+    #: 写文件（**W2 护栏**：保存 / 另存为 / 写入）。
+    WRITE_FILE = "write_file"
+    #: 提交表单（**W2 护栏**：提交 / 下单 / 确认订单）。
+    SUBMIT_FORM = "submit_form"
+    #: 关闭未保存窗口（**W2 护栏**：丢工作成果）。
+    CLOSE_UNSAVED = "close_unsaved"
 
 
 #: 每一类的**人读名**（审批请求与日志里给人看的）。
@@ -96,6 +108,10 @@ CATEGORY_TITLES: dict[DangerCategory, str] = {
     DangerCategory.ELEVATION: "提权弹窗",
     DangerCategory.CLIPBOARD_READ: "读剪贴板",
     DangerCategory.SENSITIVE_SCREENSHOT: "截含敏感窗口的屏",
+    # W2 护栏补三类（只由影响面判定产出，见 DangerCategory docstring）。
+    DangerCategory.WRITE_FILE: "写文件",
+    DangerCategory.SUBMIT_FORM: "提交表单",
+    DangerCategory.CLOSE_UNSAVED: "关闭未保存窗口",
 }
 
 

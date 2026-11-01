@@ -91,7 +91,10 @@ def cmd_status(_args: argparse.Namespace) -> int:
 def cmd_acquire(args: argparse.Namespace) -> int:
     data = _read()
     if data is None:
-        _write_atomic({"owner": "agent", "ticket": args.ticket, "since": _stamp()})
+        payload = {"owner": "agent", "ticket": args.ticket, "since": _stamp()}
+        if args.note:
+            payload["note"] = args.note
+        _write_atomic(payload)
         print(f"acquired  {LOCK_PATH}  （本轮票号 {args.ticket}）")
         return 0
 
@@ -110,7 +113,10 @@ def cmd_acquire(args: argparse.Namespace) -> int:
             minutes = int(age.total_seconds() // 60)
             print(f"held by agent  （{minutes} 分钟前，视为本进程自己在用）")
             return 0
-        _write_atomic({"owner": "agent", "ticket": args.ticket, "since": _stamp()})
+        payload = {"owner": "agent", "ticket": args.ticket, "since": _stamp()}
+        if args.note:
+            payload["note"] = args.note
+        _write_atomic(payload)
         print(f"preempted  抢占上次崩溃残留的 agent 锁（本轮票号 {args.ticket}）")
         return 0
 
@@ -149,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
 
     acquire = sub.add_parser("acquire", help="动真机前拿锁")
     acquire.add_argument("--ticket", required=True, help="本轮票号，如 M3")
+    acquire.add_argument(
+        "--note",
+        default=None,
+        help="可选备注（操作者 / 意图），写进锁文件（护栏 8）",
+    )
     acquire.set_defaults(func=cmd_acquire)
 
     release = sub.add_parser("release", help="释放锁")

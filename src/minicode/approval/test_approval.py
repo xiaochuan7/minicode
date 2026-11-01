@@ -172,23 +172,38 @@ class DangerCatalogTest(unittest.TestCase):
                 self.assertEqual(match.title, CATEGORY_TITLES[category])
 
     def test_the_catalog_covers_the_eleven_categories_of_the_ticket(self):
-        """工单 AC1 点名十一类 —— 清单里不许少。"""
-        self.assertEqual(len(CATEGORY_TITLES), 11)
-        self.assertEqual(
-            set(CATEGORY_TITLES),
+        """工单 AC1 点名十一类 —— 清单里不许少。
+
+        ⚠️ W2（运行护栏）给目录**补了三类**（write_file / submit_form /
+        close_unsaved，只由影响面判定产出、没有关键词规则）——
+        所以这里断言的是「十一类**都还在**」（子集），外加 W2 三类在场；
+        不是恰好 11 个。少一类（不论哪一类）都会红。
+        """
+        eleven = {
+            DangerCategory.DELETE,
+            DangerCategory.PAYMENT,
+            DangerCategory.SEND_MESSAGE,
+            DangerCategory.REGISTER,
+            DangerCategory.SYSTEM_SETTINGS,
+            DangerCategory.COMMAND_LINE,
+            DangerCategory.INSTALL_SOFTWARE,
+            DangerCategory.REGISTRY,
+            DangerCategory.ELEVATION,
+            DangerCategory.CLIPBOARD_READ,
+            DangerCategory.SENSITIVE_SCREENSHOT,
+        }
+        self.assertTrue(
+            eleven <= set(CATEGORY_TITLES),
+            f"工单点名的十一类不许少：缺 {eleven - set(CATEGORY_TITLES)}",
+        )
+        # W2 护栏补的三类（见 minicode.guard.irreversible）。
+        self.assertTrue(
             {
-                DangerCategory.DELETE,
-                DangerCategory.PAYMENT,
-                DangerCategory.SEND_MESSAGE,
-                DangerCategory.REGISTER,
-                DangerCategory.SYSTEM_SETTINGS,
-                DangerCategory.COMMAND_LINE,
-                DangerCategory.INSTALL_SOFTWARE,
-                DangerCategory.REGISTRY,
-                DangerCategory.ELEVATION,
-                DangerCategory.CLIPBOARD_READ,
-                DangerCategory.SENSITIVE_SCREENSHOT,
-            },
+                DangerCategory.WRITE_FILE,
+                DangerCategory.SUBMIT_FORM,
+                DangerCategory.CLOSE_UNSAVED,
+            }
+            <= set(CATEGORY_TITLES)
         )
 
     def test_the_sensitive_screenshot_category_is_triggered_by_the_window(self):
@@ -864,9 +879,17 @@ class M24SecondConfirmationTest(unittest.TestCase):
     #: 「截含敏感窗口的屏」是**由状态触发**的，不在关键词表里。
 
     def test_the_eleven_categories_are_all_still_there(self):
-        """AC5：十一类**逐类点名** —— 清单不许少一类。"""
+        """AC5：十一类**逐类点名** —— 清单不许少一类。
+
+        ⚠️ W2 补了三类（write_file / submit_form / close_unsaved），
+        所以这里是「十一类 ⊆ 目录」的子集断言，不是恰好相等。
+        """
         self.assertEqual(len(self.ELEVEN), 11)
-        self.assertEqual({category.value for category in DangerCategory}, set(self.ELEVEN))
+        categories = {category.value for category in DangerCategory}
+        self.assertTrue(
+            set(self.ELEVEN) <= categories,
+            f"十一类不许少：缺 {set(self.ELEVEN) - categories}",
+        )
         for name in self.ELEVEN:
             with self.subTest(category=name):
                 category = DangerCategory(name)

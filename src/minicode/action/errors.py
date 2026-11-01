@@ -135,6 +135,28 @@ class ErrorCode(StrEnum):
     #: 该动作种类本单不实现（放大 / 读控件树 / 执行代码 / 请求人工）。
     ACTION_NOT_IMPLEMENTED = "action_not_implemented"
 
+    # -- 运行护栏（W2：四级授权 + 十条护栏）--
+    #:
+    #: ⚠️ **只加不改，协议版本不升**（同 M11 / M16 / M20 的加码规则）。
+    #: 这一组全部归「执行失败」：定位、审批、注入各就各位，只是被**护栏**拦下
+    #: —— 零动作下发，原因可审计。
+    #: **授权级别不够**（L0 只读模式收到要下发输入的动作）。
+    AUTH_LEVEL_DENIED = "auth_level_denied"
+    #: **窗口黑名单命中**（任务管理器 / 注册表 / 终端等）→ 拒绝，原因在错误信息里。
+    WINDOW_BLACKLISTED = "window_blacklisted"
+    #: **L1 白名单不命中**：前台窗口不在允许集合内。
+    WINDOW_WHITELIST_MISMATCH = "window_whitelist_mismatch"
+    #: **不可逆动作在 L1 被拒**（L1 白名单模式没有审批人，不可逆一律拒绝）。
+    IRREVERSIBLE_DENIED = "irreversible_denied"
+    #: **预算用尽**（步数 / 时长 / 模型调用次数超限）→ 停止并上报。
+    BUDGET_EXCEEDED = "budget_exceeded"
+    #: **连续失败熔断**：同一目标连续失败达到阈值（默认 2 次）。
+    FUSE_BLOWN = "fuse_blown"
+    #: **急停触发**（热键按下）：立刻停止、释放已按键。
+    EMERGENCY_STOPPED = "emergency_stopped"
+    #: **空闲让位**：检测到用户正在动键鼠，暂停让位给人。
+    USER_ACTIVE_PAUSED = "user_active_paused"
+
     # -- 动作程序（工单 M10）--
     #: 动作程序在**执行前**被拒：它要做的事超出受控执行环境允许的范围
     #: （任意系统调用 / 任意文件写入 / 不许暴露的接口名）。
@@ -236,6 +258,15 @@ FAILURE_TYPE_BY_CODE: Mapping[ErrorCode, FailureType] = {
     # -- 决策失败：决策层的产出被拒 → 禁止切视觉 -------------------------
     ErrorCode.DECIDE_FAILED: FailureType.DECISION,
     ErrorCode.PROGRAM_REJECTED: FailureType.DECISION,
+    # -- 运行护栏（W2）：被护栏拦下 = 动作执行不了 → 禁止切视觉 -----------
+    ErrorCode.AUTH_LEVEL_DENIED: FailureType.EXECUTION,
+    ErrorCode.WINDOW_BLACKLISTED: FailureType.EXECUTION,
+    ErrorCode.WINDOW_WHITELIST_MISMATCH: FailureType.EXECUTION,
+    ErrorCode.IRREVERSIBLE_DENIED: FailureType.EXECUTION,
+    ErrorCode.BUDGET_EXCEEDED: FailureType.EXECUTION,
+    ErrorCode.FUSE_BLOWN: FailureType.EXECUTION,
+    ErrorCode.EMERGENCY_STOPPED: FailureType.EXECUTION,
+    ErrorCode.USER_ACTIVE_PAUSED: FailureType.EXECUTION,
 }
 
 

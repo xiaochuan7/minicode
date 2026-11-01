@@ -50,16 +50,22 @@ def _read() -> str | None:
         return None
 
 
-def acquire(ticket: str) -> bool:
+def acquire(ticket: str, *, note: str | None = None) -> bool:
     """拿锁。返回 ``True`` 表示**本进程是持锁者**（用完必须 :func:`release`）。
 
     人类占用真机时脚本以退出码 3 拒绝 —— 本函数据此**直接退出**
     （拒绝动真机；判定规则见 ``scripts/desktop_lock.py``）。
+
+    :param note: 可选备注（操作者 / 意图），原样写进锁文件 ——
+        半夜看锁不用猜这把锁是谁的、在跑什么（护栏 8）。
     """
     before = _read()
     encoding = locale.getpreferredencoding() or "utf-8"
+    command = [sys.executable, str(LOCK_SCRIPT), "acquire", "--ticket", ticket]
+    if note:
+        command += ["--note", note]
     result = subprocess.run(
-        [sys.executable, str(LOCK_SCRIPT), "acquire", "--ticket", ticket],
+        command,
         capture_output=True,
         text=True,
         encoding=encoding,
