@@ -95,13 +95,18 @@ def judge_display(*needles: str):
     """计算器显示屏判定（automation_id=CalculatorResults）。"""
 
     def judge(run) -> dict:
-        rows = run.query(automation_id="CalculatorResults")
-        display = " ".join(
-            (row.get("value") or row.get("name") or "") for row in rows
-        )
+        display = _calc_display(run)
         return {"ok": all(n in display for n in needles), "display": display}
 
     return judge
+
+
+def _calc_display(run) -> str:
+    """计算器显示屏当前文本（窗口作用域过滤由 run.query 兜底）。"""
+    rows = run.query(automation_id="CalculatorResults")
+    return " ".join(
+        (row.get("value") or row.get("name") or "") for row in rows
+    )
 
 
 def judge_error_code(step_index: int, expected_code: str):
@@ -387,12 +392,30 @@ _t(
 # 界面类（7）
 # ===========================================================================
 
+def _steps_ok(run, *kinds: str) -> bool:
+    """指定类型的步骤全部 ok=True（判分防「动作没生效照样 pass」的佐证）。
+
+    侦察 A 发现的判分洞：期望态==初始态或子串平凡满足时，动作全失败也能
+    pass。这两类任务的 judge 必须同时核对步骤确实执行成功。
+    """
+    targets = set(kinds) or {"click", "type", "key"}
+    relevant = [s for s in run.steps if s.get("do") in targets]
+    return bool(relevant) and all(s.get("ok") for s in relevant)
+
+
 _t(
     "i16", "界面类", "计算器清除：8×7= → 清除 → 显示 0",
     "calc",
     tuple({"do": "click", "target": t} for t in
-          ("八", "乘以", "七", "等于", "清除")),
-    judge_display("0"),
+          ("八", "乘以", "七", "等于"))
+    + ({"do": "query", "automation_id": "CalculatorResults", "save_as": "mid"},
+       {"do": "click", "target": "清除"}),
+    # 判分洞修复（侦察 A）：显示 0 是初始态，光看终态恒真——必须先证到
+    # 「等于之后是 56」（动作真的执行了），再证清除回 0。
+    lambda run: (lambda mid, final: {
+        "ok": "56" in mid and "0" in final,
+        "mid": mid[:100], "display": final[:100]})(
+        _joined_value(run.vars.get("mid") or []), _calc_display(run)),
 )
 
 _t(
@@ -400,7 +423,12 @@ _t(
     "calc",
     tuple({"do": "click", "target": t} for t in
           ("一", "二", "三", "Backspace")),
-    judge_display("12"),
+    # 判分洞修复（侦察 A）：「12」in「123」子串平凡满足——要求 Backspace
+    # 步骤真成功，且「123」不再出现（退格真的发生）。
+    lambda run: (lambda display, clicks_ok: {
+        "ok": clicks_ok and "12" in display and "123" not in display,
+        "display": display[:100], "clicks_ok": clicks_ok})(
+        _calc_display(run), _steps_ok(run, "click")),
 )
 
 _t(
@@ -421,9 +449,14 @@ _t(
         {"do": "wait", "ms": 300},
         {"do": "query", "control_type": "Document", "save_as": "doc"},
     ),
-    lambda run: (lambda value: {"ok": value.strip() == "i19 基础行",
-                                "value": value[:200]})(
-        _joined_value(run.vars.get("doc") or [])),
+    # 判分洞修复（侦察 A）：期望值恰等于 reset 基础内容——type 步被拒时
+    # 内容本来就等于基础行，撤销行为完全没被验证。必须证到输入与撤销
+    # 两个步骤都真实执行成功，终值回到基础行才算过。
+    lambda run: (lambda value, typed, undone: {
+        "ok": typed and undone and value.strip() == "i19 基础行",
+        "value": value[:200], "typed_ok": typed, "undo_ok": undone})(
+        _joined_value(run.vars.get("doc") or []),
+        _steps_ok(run, "type"), _steps_ok(run, "key")),
     reset=_notepad_open_file("i19.txt", "i19 基础行\n"),
 )
 
@@ -576,6 +609,10 @@ def _x24_steps(run) -> dict:
                         "error": f"calc 点击 {name} 失败：{response.error_code}"}
         time.sleep(0.5)
         # 显示屏读数：calc 自己的观察者（run.service 为 None，不能借）。
+        # **矩形过滤**（侦察 A 发现的跨任务污染洞）：查询端口在窗口路查不到
+        # 时会按 PID 桌面根遍历，上一个 calc 残留窗口的 CalculatorResults
+        # 会进同一结果集——c09 残留的「391」能直接满足本判分。只认落点在
+        # 自己 calc 窗口矩形内的元素。
         desktop2 = build_desktop(hwnd=hwnd2)
         observer2 = UiaStateObserver(desktop2.port, desktop2.anchor)
         result2 = observer2.query.find(
@@ -585,6 +622,7 @@ def _x24_steps(run) -> dict:
         display = " ".join(
             (getattr(el, "value", "") or getattr(el, "name", ""))
             for el in result2.elements
+            if _rect_in(hwnd2, getattr(el, "rect", ()))
         )
         run.vars["cross_ok"] = "391" in display
         run.vars["cross_display"] = display

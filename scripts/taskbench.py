@@ -8,9 +8,15 @@
 * **judge** —— 只读**状态**（UIA 控件值 / 文件内容 / 窗口标题 / 磁盘），
   **不读截图**。
 
-指标（全部带样本量）：success@1、success@3、平均步数、平均耗时、
-危险动作触发次数（必须 0）、人工接管次数（L1 口径 = 0）；
-按类别（文件/计算/浏览器/界面/复合/反例）与通道（UIA / 键盘 / 窗口标题）拆分。
+指标（全部带样本量）。attempt 状态**五类**：``pass`` / ``fail`` /
+``error``（步骤或 judge 崩溃——系统在任务中失败）/ ``blocked``（环境前置
+不满足：锁、reset、起实例）/ ``paused``（护栏 6 空闲让位）。口径：
+
+* **success@1** = pass / (pass + fail + error)（attempt 级）——
+  **paused 与 blocked 从分母剔除**（用户动键鼠让位、环境没起都不是被测系统失败）；
+* **success@3** = 一条任务的全部 attempts 里**至少 1 次 pass**（任务级）；
+* 单独报：paused 次数、blocked 次数、人工接管次数、危险动作触发次数（必须 0）；
+* 按类别（文件/计算/浏览器/界面/复合/反例）与通道（步骤级）拆分。
 
 结果落 ``runs/w4/``（gitignored）；汇总表由 ``scripts/make_eval_table.py``
 生成到 ``docs/``（脱敏、可复现）。
@@ -212,6 +218,19 @@ class TaskRun:
                 time.sleep(1.0)
                 # 兜底：自动保存关闭的机器不会有对话框；有就精确名点掉。
                 self._dismiss_save_dialog()
+            # **终态验证**（侦察 A：只发 WM_CLOSE 不验证会留残窗——同 PID
+            # 残留的 calc 显示屏会污染后续任务的判分）。没关掉就重发并如实
+            # 记 note（不影响 verdict，但汇总可见）。
+            deadline = time.monotonic() + 5.0
+            while (USER32.IsWindow(self.hwnd)
+                   and USER32.IsWindowVisible(self.hwnd)
+                   and time.monotonic() < deadline):
+                USER32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
+                time.sleep(0.8)
+                self._dismiss_save_dialog()
+            if USER32.IsWindow(self.hwnd) and USER32.IsWindowVisible(self.hwnd):
+                note = f"WM_CLOSE 后窗口仍存活（残留 hwnd={self.hwnd}）"
+                self.close_note = f"{self.close_note}; {note}" if self.close_note else note
         if self.proc is not None and self.proc.poll() is None:
             try:
                 self.proc.terminate()
@@ -252,6 +271,10 @@ class TaskRun:
     def _dismiss_save_dialog(self) -> None:
         """「保存？」→「不保存」（精确名匹配，绕开保存⊂不保存的包含歧义）。"""
         for _ in range(3):
+            # 窗口已死就不再查询（对死 hwnd 的 UIA 查询会挂住查询池线程，
+            # 实测把同进程后续任务的点击打成 query_timeout 级联）。
+            if not USER32.IsWindow(self.hwnd):
+                return
             try:
                 observer = self.service._observer  # noqa: SLF001 - 评测台脚本
                 candidates = observer.observe("不保存")
@@ -445,7 +468,11 @@ _PROTOCOL = None  # 在 main 里填充（避免顶层导入顺序问题）
 
 
 def run_attempt(spec, out_dir: Path, protocol_version: str) -> dict:
-    """一条任务的一次 attempt：reset → 起实例 → 步骤 → judge → 清理。"""
+    """一条任务的一次 attempt：reset → 起实例 → 步骤 → judge → 清理。
+
+    状态按**阶段**分类：reset / 起实例失败 = ``blocked``（环境前置，不进
+    分母）；步骤或 judge 崩溃 = ``error``（系统在任务中失败，进分母）。
+    """
     run = TaskRun(spec, out_dir, protocol_version)
     run.started = time.monotonic()
     idle_ms = (now_tick() - last_input_tick()) % 0x1_0000_0000
@@ -458,20 +485,33 @@ def run_attempt(spec, out_dir: Path, protocol_version: str) -> dict:
                          f"own_recent_s={own_recent_s:.1f}），本轮未跑")}
     result: dict = {}
     try:
-        spec.reset(run)
+        try:
+            spec.reset(run)
+        except Exception as exc:
+            result = run.summarize()
+            result["attempt_status"] = "blocked"
+            result["error"] = f"reset 失败：{type(exc).__name__}: {exc}"
+            return result
         if spec.app:
-            run.start_app(url=run.vars.get("url"))
-            run.build_service(spec.budget)
-        run.run_steps()
-        verdict = spec.judge(run) or {}
+            try:
+                run.start_app(url=run.vars.get("url"))
+                run.build_service(spec.budget)
+            except Exception as exc:
+                result = run.summarize()
+                result["attempt_status"] = "blocked"
+                result["error"] = f"起实例失败：{type(exc).__name__}: {exc}"
+                return result
+        try:
+            run.run_steps()
+            verdict = spec.judge(run) or {}
+        except Exception as exc:
+            result = run.summarize()
+            result["attempt_status"] = "error"
+            result["error"] = f"执行/判分崩溃：{type(exc).__name__}: {exc}"
+            return result
         run.verdict = verdict
         result = run.summarize()
         result["attempt_status"] = "pass" if verdict.get("ok") else "fail"
-        return result
-    except Exception as exc:
-        result = run.summarize()
-        result["attempt_status"] = "blocked"
-        result["error"] = f"{type(exc).__name__}: {exc}"
         return result
     finally:
         # 服务退役：急停 watchdog 是守护线程，不停会跨任务积累（3 轮 × 30 任务
@@ -489,9 +529,56 @@ def run_attempt(spec, out_dir: Path, protocol_version: str) -> dict:
                 result["close_error"] = str(exc)
 
 
+#: 计入 success@1 分母的 attempt 状态（paused/blocked 剔除——护栏 6 让位
+#: 与环境前置失败都不是被测系统的失败）。
+_SCORABLE = ("pass", "fail", "error")
+_STATUS_KEYS = ("pass", "fail", "paused", "blocked", "error")
+
+
+def task_metrics(results: list[dict]) -> dict:
+    """一条任务的指标（新口径，从 attempt 明细重算——不信任旧汇总字段）。
+
+    * success@1：首个**可判分** attempt（pass/fail/error）是 pass；
+    * success@3：≥1 次 pass；
+    * paused/blocked 单独计数，从分母剔除；无可判分 attempt 的任务
+      （全 paused/blocked）由调用方从分母整体剔除。
+    """
+    statuses = [r.get("attempt_status") for r in results]
+    counts = {key: statuses.count(key) for key in _STATUS_KEYS}
+    scorable = [r for r in results if r.get("attempt_status") in _SCORABLE]
+    first_scorable = scorable[0] if scorable else None
+    return {
+        "status_counts": counts,
+        "scorable_attempts": len(scorable),
+        "success_at_1": bool(
+            first_scorable and first_scorable.get("attempt_status") == "pass"
+        ),
+        "success_at_3": counts["pass"] > 0,
+        "attempt_status": statuses,
+        "avg_steps": (
+            round(sum(r.get("step_count", 0) for r in scorable) / len(scorable), 2)
+            if scorable else None
+        ),
+        "avg_wall_ms": (
+            round(sum(r.get("wall_ms", 0) for r in scorable) / len(scorable), 1)
+            if scorable else None
+        ),
+        "model_calls": [r.get("model_calls", 0) for r in scorable],
+        "danger_actions": [r.get("danger_actions", 0) for r in scorable],
+        "danger_total": sum(r.get("danger_actions", 0) for r in results),
+        "human_takeover_total": sum(
+            r.get("human_takeover", 0) for r in results
+        ),
+        "paused_count": counts["paused"],
+        "blocked_count": counts["blocked"],
+        "error_count": counts["error"],
+        "estop_triggered": any(r.get("estop_triggered") for r in results),
+    }
+
+
 def run_task(spec, out_dir: Path, attempts: int = 3,
              protocol_version: str = "") -> dict:
-    """一条任务的全部 attempts + success@1 / success@3 汇总。"""
+    """一条任务的全部 attempts + success@1 / success@3 汇总（新口径）。"""
     results = []
     for index in range(attempts):
         result = run_attempt(spec, out_dir, protocol_version)
@@ -504,29 +591,13 @@ def run_task(spec, out_dir: Path, attempts: int = 3,
             continue
         # reset 每轮之间留点余地（实例收尾进程退出）。
         time.sleep(1.0)
-    completed = [r for r in results if r.get("attempt_status") in ("pass", "fail")]
-    successes = [r for r in completed if r["attempt_status"] == "pass"]
+    metrics = task_metrics(results)
     summary = {
         "task": spec.id,
         "category": spec.category,
         "description": spec.description,
         "attempts_recorded": len(results),
-        "success_at_1": bool(results and results[0].get("attempt_status") == "pass"),
-        "success_at_3": bool(successes),
-        "attempt_status": [r.get("attempt_status") for r in results],
-        "avg_steps": (
-            round(sum(r.get("step_count", 0) for r in completed) / len(completed), 2)
-            if completed else None
-        ),
-        "avg_wall_ms": (
-            round(sum(r.get("wall_ms", 0) for r in completed) / len(completed), 1)
-            if completed else None
-        ),
-        "model_calls": [r.get("model_calls", 0) for r in completed],
-        "danger_actions": [
-            r.get("danger_actions", 0) for r in completed
-        ],
-        "estop_triggered": any(r.get("estop_triggered") for r in results),
+        **metrics,
         "results": results,
     }
     (out_dir / f"{spec.id}-summary.json").write_text(
@@ -536,26 +607,55 @@ def run_task(spec, out_dir: Path, attempts: int = 3,
 
 
 def aggregate(all_summaries: list[dict]) -> dict:
-    """按类别与通道拆分的汇总（指标全部带样本量）。"""
+    """新口径汇总（从 attempt 明细重算，不信任旧汇总布尔）。
+
+    * success@1 = pass / (pass + fail + error)，attempt 级、按组池化，
+      paused/blocked 从分母剔除；
+    * success@3 = 有 ≥1 次 pass 的任务 / 有 ≥1 次可判分 attempt 的任务；
+    * paused / blocked / 人工接管 / 危险动作单独计数。
+    """
     categories: dict[str, list[dict]] = {}
     for s in all_summaries:
         categories.setdefault(s["category"], []).append(s)
-    by_category = {}
-    for category, items in categories.items():
-        passed1 = sum(1 for s in items if s["success_at_1"])
-        passed3 = sum(1 for s in items if s["success_at_3"])
-        steps = [s["avg_steps"] for s in items if s["avg_steps"] is not None]
-        walls = [s["avg_wall_ms"] for s in items if s["avg_wall_ms"] is not None]
-        by_category[category] = {
-            "n": len(items),
-            "success_at_1": f"{passed1}/{len(items)}",
-            "success_at_3": f"{passed3}/{len(items)}",
+
+    def _pool(items: list[dict]) -> dict:
+        statuses_all: list[str] = []
+        task_rows = []
+        for s in items:
+            statuses = [r.get("attempt_status") for r in s.get("results", [])]
+            statuses_all.extend(statuses)
+            task_rows.append(task_metrics(s.get("results", [])))
+        n = len(items)
+        scorable_tasks = [m for m in task_rows if m["scorable_attempts"] > 0]
+        pass_attempts = statuses_all.count("pass")
+        scorable_attempts = sum(statuses_all.count(k) for k in _SCORABLE)
+        steps = [m["avg_steps"] for m in scorable_tasks if m["avg_steps"] is not None]
+        walls = [m["avg_wall_ms"] for m in scorable_tasks if m["avg_wall_ms"] is not None]
+        return {
+            "n_tasks": n,
+            "n_scorable_tasks": len(scorable_tasks),
+            "attempts": dict((k, statuses_all.count(k)) for k in _STATUS_KEYS),
+            "scorable_attempts": scorable_attempts,
+            "success_at_1": (
+                f"{pass_attempts}/{scorable_attempts}"
+                f" = {pass_attempts / scorable_attempts:.3f}"
+                if scorable_attempts else "无可判分 attempt"
+            ),
+            "success_at_3": (
+                f"{sum(1 for m in scorable_tasks if m['success_at_3'])}/{len(scorable_tasks)}"
+                f" = {sum(1 for m in scorable_tasks if m['success_at_3']) / len(scorable_tasks):.3f}"
+                if scorable_tasks else "无可判分任务"
+            ),
             "avg_steps": round(sum(steps) / len(steps), 2) if steps else None,
             "avg_wall_ms": round(sum(walls) / len(walls), 1) if walls else None,
-            "danger_actions_total": sum(
-                sum(s.get("danger_actions", [])) for s in items
-            ),
+            "danger_actions_total": sum(m["danger_total"] for m in task_rows),
+            "human_takeover_total": sum(m["human_takeover_total"] for m in task_rows),
+            "paused_attempts": statuses_all.count("paused"),
+            "blocked_attempts": statuses_all.count("blocked"),
+            "estop_triggered": any(m["estop_triggered"] for m in task_rows),
         }
+
+    by_category = {cat: _pool(items) for cat, items in categories.items()}
     # 通道拆分：从每条任务的步骤明细里统计各通道的步数与成功数。
     by_channel: dict[str, dict] = {}
     for s in all_summaries:
@@ -567,15 +667,7 @@ def aggregate(all_summaries: list[dict]) -> dict:
                 )
                 bucket["steps"] += 1
                 bucket["ok"] += 1 if step.get("ok") else 0
-    total = {
-        "n_tasks": len(all_summaries),
-        "success_at_1": sum(1 for s in all_summaries if s["success_at_1"]),
-        "success_at_3": sum(1 for s in all_summaries if s["success_at_3"]),
-        "danger_actions_total": sum(
-            sum(s.get("danger_actions", [])) for s in all_summaries
-        ),
-        "estop_triggered": any(s.get("estop_triggered") for s in all_summaries),
-    }
+    total = _pool(all_summaries)
     return {"total": total, "by_category": by_category, "by_channel": by_channel}
 
 
@@ -648,6 +740,7 @@ def main() -> int:
                 f"{tid:6s} {spec.category:4s} "
                 f"s@1={summary['success_at_1']!s:5s} "
                 f"s@3={summary['success_at_3']!s:5s} "
+                f"paused={summary.get('paused_count', 0)} "
                 f"attempts={summary['attempt_status']}",
                 flush=True,
             )
