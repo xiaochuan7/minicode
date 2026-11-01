@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minicode"
-version = "0.1.5"
+version = "0.1.6"
 description = "Windows 桌面 computer-use agent"
 requires-python = ">=3.11"
 # core 路径只依赖标准库：坐标换算、执行层(ctypes)、协议骨架都必须能在零第三方依赖下跑起来。
@@ -15,7 +15,7 @@ minicode = "minicode.__main__:main"
 
 [project.optional-dependencies]
 # 开发工具
-dev = ["ruff>=0.17", "pytest>=9.0"]
+dev = ["ruff>=0.17.3,<0.18", "pytest>=9.0"]
 # 执行层截图（proto/exec/capture.py 需要 mss + numpy）
 exec = ["mss>=10.0", "numpy>=1.26"]
 # 视觉通道：crop / 降采样 / 图像编码

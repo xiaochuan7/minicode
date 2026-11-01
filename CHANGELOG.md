@@ -4,15 +4,54 @@
 
 ## 未发布
 
-### 正确性修复（W4 真机评测台踩出）
+### 新增（W5 可靠性四件套）
 
+- **模型调用重试缝**：`RetryingModelCaller`——指数退避 + 抖动；可重试 = 传输错误 /
+  429 / 5xx / 空文本，不可重试 = 其余 4xx / 配置错（快速失败）；每次调用记录 attempts。
+  decision / uia / ground / e2e 四处 CLI 接线。
+- **幂等键**：`ActionRequest.request_id`（协议只加不改）——同键重放返回首次响应
+  （进程内 LRU，512 条），不二次执行。
+- **断点续跑**：DecisionHarness 每轮追加 `checkpoint.jsonl`（摘要 / 笔记 / 步记录），
+  `--resume` 回放文本账本 + 重抓帧续跑，轮次上限按总轮数计。
+- **定位失败自愈**：RetryingSeam 三钩子（均可选注入，默认行为不变）——找不到目标 →
+  重述一次；界面没变 → 等待 + 变化检测；点不动 → 换通道兜底。
+
+### 正确性修复（W7 P2 七条 + W4 真机评测台踩出）
+
+- **UIA 查询池饱和与熔断**：挂死的 COM 调用会永久占住 worker，旧实现既不挡池满也不熔断
+  ——8 线程占满后通道永久退化为「每次白等一个超时预算」。现在占满立即失败、连续 3 次
+  超时熔断 30s、成功复位。
+- **`_publish` 释放刚定位的元素**（一代宽限）：校验层再查一次树会把上一次观测的 COM
+  元素全部 release，Invoke 按元素 id 拿到已释放指针，InvokePattern 静默降级。现在旧代
+  退位保活一代（`live_element` 查两代），下下次发布才释放。
+- **浏览器窗口矩形读取静默失败**：`GetWindowRect` 失败返回 `(0,0,0,0)` → 视口比例 0 →
+  元素全零框被静默丢弃，看起来像「页面没元素」。现在显式返回 `None`，视口量不出 → 空快照。
+- **grounding 负出口误判**：`parse_optional_point` 把 payload 里**缺 x/y** 也当「明确负回答」
+  ——现在必须 x/y 显式为 null 才算负出口。
+- **混合方向缩放**：先降后升的路径遇到一维超限一维不足时走错分支，产生非期望尺寸。
+- **落点取整三套口径**：banker's round / 纯 floor / floor(x+0.5) 在半点与负数上分歧
+  ±1px——收敛为 `to_physical_point` = floor(x+0.5) 单一口径（4 处旧期望值按契约修正）。
+- **键盘注入「子串假成功」判定**：before/after 差分改为「after 变化 且 包含注入文本」。
 - **键名表字母键映射错误**：`_VK_NAMES` 把 `a`~`z` 映到 ASCII 小写（0x61~0x7A，
   实为 VK_NUMPAD1~VK_F24 区段）而非 VK 码（0x41~0x5A）——「ctrl+s」实际发出
   **Ctrl+F4（关闭标签）**、「ctrl+v」是 Ctrl+F7，全部字母组合键静默打偏。
   功能键/Enter/Tab 不受影响。配红测试（字母必须映射 0x41+i）。
+- **guard GuardPolicy 字符串级别 fail-open**：`GuardPolicy(level="L1")` 存了字符串，
+  `policy.level is AuthLevel.L1` 恒 False，L1 强制**静默失效**。现在 `__post_init__`
+  收敛枚举、非法值报错。配红测试。
 - **guard L1 空白名单 fail-open 堵成 fail-closed**：旧实现空白名单跳过白名单
   检查（fail-open）；现在想用 L1 必须显式给窗口集合，空集合 = 无可操作窗口。
   配红测试。
+
+### 评测（W4 / W6）
+
+- **任务级评测台**：30 条本机可复现任务（reset / steps / judge 三件套），attempt 五态
+  口径（pass/fail/error/blocked/paused，后两者剔出分母），三有效轮 90 轮×任务对：
+  **s@1 = 248/249 = 99.6%，s@3 = 86/87 = 98.9%，危险动作 0、人工接管 0**；
+  判分器负向对照 3/3。汇总表 `docs/w4-eval-summary.md` 由 attempt 明细重算可复现。
+- **视觉坐标契约配对实验**（ScreenSpot-Pro，60 样本分层，同模型同提示词逐条配对）：
+  臂 A 像素契约 vs 臂 B 0–1000 归一化，配对 Δ + Wilson CI + mid-p McNemar，
+  报告见 `docs/w6-vision-paired.md`，配对 JSON 入库。
 
 ## v0.1.5 — 2026-11-02
 

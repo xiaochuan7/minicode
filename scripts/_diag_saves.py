@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """W4 一次跑清 5 个诊断问题（临时脚本，跑完删）。
 
 Q1 现在桌面上有哪些 notepad/calc 残留；空标题 ApplicationFrameWindow 是谁的。
@@ -30,9 +29,8 @@ from minicode.action.protocol import Action, ActionKind  # noqa: E402
 from minicode.action.records import ListTraceSink  # noqa: E402
 from minicode.guard.lockext import hold_desktop_lock  # noqa: E402
 from minicode.guard.win32 import last_input_tick, now_tick  # noqa: E402
-from minicode.uia.desktop import build_desktop, describe_window  # noqa: E402
+from minicode.uia.desktop import build_desktop  # noqa: E402
 from minicode.uia.observer import UiaStateObserver  # noqa: E402
-from minicode.uia.ports import UiaFindRequest  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -180,7 +178,7 @@ def main() -> int:
             print("  （直接关掉了，无对话框——预期外：文件已保存成功？）")
 
     print("=== 收尾残留检查 ===")
-    for hwnd, cls, _t in visible_windows(("Notepad",)):
+    for hwnd, _cls, _t in visible_windows(("Notepad",)):
         if pid_of(hwnd) in mine_pids or "diag" in wtext(hwnd):
             print(f"  残留: hwnd={hwnd} title={wtext(hwnd)!r}")
     return 0

@@ -38,7 +38,6 @@
 
 from __future__ import annotations
 
-import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace

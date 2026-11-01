@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """W4 干净环境 ctrl+s 决定性实验（临时脚本，跑完删）。"""
 from __future__ import annotations
 
@@ -19,8 +18,8 @@ from w3_probe import find_new_window, visible_windows  # noqa: E402
 
 from minicode.action.protocol import Action, ActionKind  # noqa: E402
 from minicode.action.records import ListTraceSink  # noqa: E402
-from minicode.guard.lockext import hold_desktop_lock  # noqa: E402
 from minicode.exec import input as win_input  # noqa: E402
+from minicode.guard.lockext import hold_desktop_lock  # noqa: E402
 from minicode.uia.desktop import build_desktop  # noqa: E402
 from minicode.uia.observer import UiaStateObserver  # noqa: E402
 from minicode.uia.ports import UiaFindRequest  # noqa: E402
@@ -28,6 +27,7 @@ from minicode.uia.ports import UiaFindRequest  # noqa: E402
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 USER32 = ctypes.windll.user32
+WM_CLOSE = 0x0010
 VK_CONTROL, VK_S, VK_A, VK_DELETE = 0x11, 0x53, 0x41, 0x2E
 
 

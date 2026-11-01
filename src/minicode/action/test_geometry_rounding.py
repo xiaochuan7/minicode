@@ -35,9 +35,7 @@ class UnifiedRoundingTest(unittest.TestCase):
         """结构性收敛：视觉通道与动作缝都必须引用同一份取整函数。"""
         import inspect
         import sys
-        from pathlib import Path
 
-        root = Path(__file__).resolve().parent.parent
         for module_name, relative in (
             ("minicode.ground.channel", "ground/channel.py"),
             ("minicode.action.seam", "action/seam.py"),

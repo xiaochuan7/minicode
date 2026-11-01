@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """W4 键盘通道对照实验（临时脚本，跑完删）。
 
 验证：VK(scan=0) 注入 vs 扫描码注入 vs Unicode 控制字符，在 Win11 记事本上
@@ -24,8 +23,8 @@ from w3_probe import find_new_window, visible_windows  # noqa: E402
 
 from minicode.action.protocol import Action, ActionKind  # noqa: E402
 from minicode.action.records import ListTraceSink  # noqa: E402
-from minicode.guard.lockext import hold_desktop_lock  # noqa: E402
 from minicode.exec import input as win_input  # noqa: E402
+from minicode.guard.lockext import hold_desktop_lock  # noqa: E402
 from minicode.uia.desktop import build_desktop  # noqa: E402
 from minicode.uia.observer import UiaStateObserver  # noqa: E402
 from minicode.uia.ports import UiaFindRequest  # noqa: E402

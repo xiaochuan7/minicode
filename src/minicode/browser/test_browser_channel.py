@@ -447,7 +447,7 @@ class KeyboardDegradationTest(unittest.TestCase):
                 _snapshot(_element(), focused_element_id="s1#1", focused_value="张三"),
             ]
         )
-        result = typing.type_text("张三")
+        typing.type_text("张三")
         self.assertEqual(browser_input.inserted, ["张三"], "值没变 → 走浏览器输入通道")
 
     def test_an_undecidable_delivery_is_reported_as_undecidable(self):

@@ -11,7 +11,7 @@ import time
 import unittest
 
 from minicode.uia.errors import UiaQueryTimeout
-from minicode.uia.windows import _PoolGuard, _with_deadline
+from minicode.uia.windows import _PoolGuard
 
 
 class PoolGuardTest(unittest.TestCase):

@@ -1,10 +1,8 @@
-# -*- coding: utf-8 -*-
 """清理 W4 实验残留 + 查 pid 归属（临时脚本，跑完删）。"""
 from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -112,7 +110,7 @@ def main() -> int:
         if not holds:
             print("!! 拿不到桌面锁")
             return 2
-        for hwnd, cls, title in visible_windows(("Notepad",)):
+        for hwnd, _cls, title in visible_windows(("Notepad",)):
             if "f04.txt" in title or "diag" in title or "x25" in title:
                 print(f"=== 清理实验残留 hwnd={hwnd} title={title!r}")
                 ok = close_discard(hwnd)

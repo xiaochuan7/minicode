@@ -55,8 +55,6 @@ class WindowRectExplicitFailureTest(unittest.TestCase):
 
     def test_snapshot_is_empty_for_a_degenerate_window_rect(self):
         """最小化窗口（-32000）的矩形是退化的 → 空快照，不是坏比例。"""
-        real_rect = cdp.window_rect
-
         def minimized_rect(hwnd):
             return (-32000, -32000, -31800, -31700)
 
