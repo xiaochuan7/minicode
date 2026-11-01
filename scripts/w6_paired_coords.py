@@ -38,12 +38,12 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 
+from minicode.action.image import encode_frame_base64  # noqa: E402
 from minicode.coord.coordinates import (  # noqa: E402
     CoordinateAdapter,
     FrameGeometry,
     ModelScale,
 )
-from minicode.action.image import encode_frame_base64  # noqa: E402
 from minicode.eval.png_read import read_png_frame  # noqa: E402
 from minicode.eval.sspro import (  # noqa: E402
     ArmOutcome,
