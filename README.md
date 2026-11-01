@@ -99,6 +99,30 @@ ScreenSpot-Pro 官方 bbox 命中口径，n=183 分层抽样；全部数字的 W
 
 这些不是免责声明，是下一版要动手的地方。
 
+## 任务级评测：30 条真机任务
+
+30 条本机可复现任务（文件 8 · 计算 4 · 浏览器 3 · 界面 7 · 复合 4 · 反例 4），每条
+reset / steps / judge 三件套，判分**只读状态**（UIA 控件值 / 文件内容 / 磁盘 / 窗口标题，
+不读截图）。attempt 状态五类：`pass / fail / error / blocked / paused`——**paused（护栏 6
+对真实用户键鼠的让位）与 blocked（环境前置失败）从分母剔除**。
+
+| 轮次 | pass | fail | error | paused | blocked | 危险动作 | 人工接管 |
+|:--|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| round1 | 89 | 0 | 0 | 1 | 0 | 0 | 0 |
+| round2 | 69 | 1 | 0 | 19 | 1 | 0 | 0 |
+| round3-redo | 90 | 0 | 0 | 0 | 0 | 0 | 0 |
+| **合计（90 轮×任务对）** | **248/249 = 99.6% s@1** | | | | | **0** | **0** |
+
+- **success@3 = 86/87 = 98.9%**（任务级 ≥1 次 pass，按轮×任务对池化；唯一 fail 是 round2
+  复合类 x23 的第 3 次 attempt）；
+- **危险动作 0、人工接管 0**（L1 口径：不可逆在策略层直接拒绝，到不了审批人）；
+- 判分器**负向对照 3/3**：judge 断言必然不成立 → fail；脏状态（reset 写错/不跑）→ fail；
+  伪造错误状态（计算器 999）→ 拒绝。判分能失败，30/30 才有含金量。
+
+完整口径、类别与通道拆分、每任务 attempt 原样状态、作废与替换注记见
+[docs/w4-eval-summary.md](docs/w4-eval-summary.md)（由 `scripts/make_eval_table.py`
+从 attempt 明细重算，可复现）。
+
 ## 架构
 
 <img src="docs/assets/arch.svg" width="100%" alt="architecture">

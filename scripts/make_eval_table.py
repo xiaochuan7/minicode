@@ -59,6 +59,11 @@ def main() -> int:
                         help="进池的轮次目录名（相对 --runs），逗号分隔")
     parser.add_argument("--extra", action="append", default=[],
                         help="额外轮次 label=目录路径（可多次，如 round3-redo=runs/w4-redo/round1）")
+    parser.add_argument("--override", action="append", default=[],
+                        help="单任务替换 round:task=path（如 round3-redo:i16=runs/w4-redo/round1-i16fix2/round1/i16-summary.json）"
+                             "——用于轮中修复判分缺陷后换入复验数据；表格注记原文披露")
+    parser.add_argument("--override-note", default="",
+                        help="替换原因注记（原文写入表格）")
     parser.add_argument("--negative-control", default="",
                         help="判分器负向对照结果行（原文写入，如「3/3 通过」）")
     parser.add_argument("--void", default="", help="作废轮次注记（原文写入表格）")
@@ -84,6 +89,18 @@ def main() -> int:
         per_round[label.strip()] = (
             _load_round(Path(path)) if path and Path(path).is_dir() else []
         )
+    override_notes: list[str] = []
+    for item in args.override:
+        spec, _, path = item.partition("=")
+        round_label, _, task_id = spec.strip().partition(":")
+        replacement = json.loads(Path(path).read_text(encoding="utf-8"))
+        bucket = per_round.get(round_label.strip())
+        if bucket is None:
+            print(f"警告：override 的轮次不存在，跳过：{round_label}")
+            continue
+        bucket[:] = [s for s in bucket if s.get("task") != task_id.strip()]
+        bucket.append(replacement)
+        override_notes.append(f"{round_label.strip()} 的 {task_id.strip()} 换入 {path}")
 
     pooled: list[dict] = []
     for name in round_names:
@@ -128,6 +145,10 @@ def main() -> int:
         lines.append("")
     if args.void:
         lines.append(f"**作废轮次**：{args.void}")
+        lines.append("")
+    for note in override_notes:
+        lines.append(f"**单任务替换**：{note}"
+                     + (f"——{args.override_note}" if args.override_note else ""))
         lines.append("")
 
     # ---- 轮次覆盖 ---------------------------------------------------------

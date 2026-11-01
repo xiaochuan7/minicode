@@ -1,6 +1,6 @@
 # W4 任务级评测汇总（脱敏）
 
-生成时间：2026-11-01 23:51；生成器：`scripts/make_eval_table.py`（从 attempt 明细重算，可复现）。
+生成时间：2026-11-01 23:59；生成器：`scripts/make_eval_table.py`（从 attempt 明细重算，可复现）。
 
 ## 口径
 
@@ -12,7 +12,9 @@
 
 代码版本注记：round1/round2 跑于 3e03f88（VK 修复后、W7 前）；round3-redo 与负向对照跑于最终 HEAD（判分三洞修复后）
 
-**作废轮次**：round3：桌面被用户占用（真实键鼠输入），paused 级联，作废；重跑为 round3-redo
+**作废轮次**：runs/w4/round3：桌面被用户占用（真实键鼠输入），paused 级联，作废；另 runs/w4-redo/round1-i16fix（首次 i16 复验，判分缺陷未修，作废）
+
+**单任务替换**：round3-redo 的 i16 换入 runs/w4-redo/round1-i16fix2/round1/i16-summary.json——redo 轮中 i16 的 fail 是判分自身缺陷（mid 行文本在 name 而非 value，判分解析错），修复判分后单任务复验 3/3 pass，换入复验数据
 
 ## 轮次覆盖
 
@@ -20,19 +22,19 @@
 |---|---|---|---|---|---|---|---|---|
 | round1 | 30/30 | 89 | 0 | 0 | 1 | 0 | 0 | 0 |
 | round2 | 30/30 | 69 | 1 | 0 | 19 | 1 | 0 | 0 |
-| round3-redo | 18/30 | 51 | 3 | 0 | 0 | 0 | 0 | 0 |
+| round3-redo | 30/30 | 90 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 ## 汇总（含类别与通道拆分）
 
 | 组 | n(轮×任务) | 可判分 | success@1 | success@3 | 平均步数 | 平均耗时(s) | 危险动作 | 人工接管 | paused | blocked |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **整体** | 78 | 75 | 209/213 = 0.981 | 73/75 = 0.973 | 3.59 | 3.1 | 0 | 0 | 20 | 1 |
+| **整体** | 90 | 87 | 248/249 = 0.996 | 86/87 = 0.989 | 3.54 | 3.1 | 0 | 0 | 20 | 1 |
 | 文件类 | 24 | 24 | 72/72 = 1.000 | 24/24 = 1.000 | 3.25 | 2.7 | 0 | 0 | 0 | 0 |
 | 计算类 | 12 | 12 | 36/36 = 1.000 | 12/12 = 1.000 | 6.25 | 2.9 | 0 | 0 | 0 | 0 |
 | 浏览器类 | 9 | 9 | 27/27 = 1.000 | 9/9 = 1.000 | 1.0 | 3.8 | 0 | 0 | 0 | 0 |
-| 界面类 | 17 | 17 | 46/49 = 0.939 | 16/17 = 0.941 | 4.12 | 2.4 | 0 | 0 | 2 | 0 |
-| 复合类 | 8 | 7 | 14/15 = 0.933 | 6/7 = 0.857 | 4.29 | 4.8 | 0 | 0 | 9 | 0 |
-| 反例类 | 8 | 6 | 14/14 = 1.000 | 6/6 = 1.000 | 1.17 | 3.5 | 0 | 0 | 9 | 1 |
+| 界面类 | 21 | 21 | 61/61 = 1.000 | 21/21 = 1.000 | 4.1 | 2.4 | 0 | 0 | 2 | 0 |
+| 复合类 | 12 | 11 | 26/27 = 0.963 | 10/11 = 0.909 | 4.36 | 4.8 | 0 | 0 | 9 | 0 |
+| 反例类 | 12 | 10 | 26/26 = 1.000 | 10/10 = 1.000 | 1.2 | 3.6 | 0 | 0 | 9 | 1 |
 
 注：success@1/success@3 的 `x/y = z.zzz` 中，x/y 为原始计数、z 为比率；「无可判分 attempt」表示该组全部 attempt 都是 paused/blocked。
 
@@ -40,11 +42,11 @@
 
 | 通道 | 步数 | 步骤成功 | 步骤成功率 |
 |---|---|---|---|
-| keyboard | 202 | 202 | 1.000 |
-| raw | 9 | 9 | 1.000 |
-| uia | 383 | 364 | 0.950 |
-| uia-query | 55 | 55 | 1.000 |
-| wait | 115 | 115 | 1.000 |
+| keyboard | 247 | 247 | 1.000 |
+| raw | 15 | 15 | 1.000 |
+| uia | 416 | 385 | 0.925 |
+| uia-query | 64 | 64 | 1.000 |
+| wait | 139 | 139 | 1.000 |
 
 注：本评测台的任务步骤走 UIA / 键盘 / 窗口标题通道；视觉通道不在 W4 任务里（视觉配对实验见 W6 报告）。
 
@@ -67,21 +69,21 @@
 | b13 | 浏览器类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
 | b14 | 浏览器类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
 | b15 | 浏览器类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
-| i16 | 界面类 | pass,pass,pass | pass,pass,pass | fail,fail,fail | ✓ |
+| i16 | 界面类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
 | i17 | 界面类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
 | i18 | 界面类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
-| i19 | 界面类 | pass,pass,pass | pass,pass,pass | 未跑 | ✓ |
-| i20 | 界面类 | pass,pass,pass | pass,pass,pass | 未跑 | ✓ |
-| i21 | 界面类 | pass,pass,pass | pass,pass,pass | 未跑 | ✓ |
-| i22 | 界面类 | pass,pass,pass | pass,paused,paused | 未跑 | ✓ |
-| x23 | 复合类 | pass,pass,pass | paused,paused,fail | 未跑 | ✓ |
-| x24 | 复合类 | pass,pass,pass | paused,pass,pass | 未跑 | ✓ |
-| x25 | 复合类 | pass,pass,pass | pass,paused,paused | 未跑 | ✓ |
-| x26 | 复合类 | pass,pass,paused | paused,paused,paused | 未跑 | ✓ |
-| n27 | 反例类 | pass,pass,pass | paused,paused,paused | 未跑 | ✓ |
-| n28 | 反例类 | pass,pass,pass | pass,paused,paused | 未跑 | ✓ |
-| n29 | 反例类 | pass,pass,pass | paused,paused,paused | 未跑 | ✓ |
-| n30 | 反例类 | pass,pass,pass | blocked,pass,paused | 未跑 | ✓ |
+| i19 | 界面类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
+| i20 | 界面类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
+| i21 | 界面类 | pass,pass,pass | pass,pass,pass | pass,pass,pass | ✓ |
+| i22 | 界面类 | pass,pass,pass | pass,paused,paused | pass,pass,pass | ✓ |
+| x23 | 复合类 | pass,pass,pass | paused,paused,fail | pass,pass,pass | ✓ |
+| x24 | 复合类 | pass,pass,pass | paused,pass,pass | pass,pass,pass | ✓ |
+| x25 | 复合类 | pass,pass,pass | pass,paused,paused | pass,pass,pass | ✓ |
+| x26 | 复合类 | pass,pass,paused | paused,paused,paused | pass,pass,pass | ✓ |
+| n27 | 反例类 | pass,pass,pass | paused,paused,paused | pass,pass,pass | ✓ |
+| n28 | 反例类 | pass,pass,pass | pass,paused,paused | pass,pass,pass | ✓ |
+| n29 | 反例类 | pass,pass,pass | paused,paused,paused | pass,pass,pass | ✓ |
+| n30 | 反例类 | pass,pass,pass | blocked,pass,paused | pass,pass,pass | ✓ |
 
 注：状态串如 `pass,pass,paused` = 该轮 3 次 attempt 的原样状态；「未跑」= 该轮没有这条任务的产物（不估算）。
 

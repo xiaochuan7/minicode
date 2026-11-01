@@ -32,8 +32,14 @@ class FakeRun:
         return self._rows
 
 
-def rows(display: str):
-    return [{"name": display, "value": display, "rect": [0, 0, 10, 10]}]
+def name_rows(display: str):
+    """calc 显示屏通道的真实形状：value 空、文本在 name。"""
+    return [{"name": display, "value": "", "rect": [0, 0, 10, 10]}]
+
+
+def value_rows(text: str):
+    """notepad Document 通道的真实形状：value 承载正文。"""
+    return [{"name": "", "value": text, "rect": [0, 0, 10, 10]}]
 
 
 def check(name: str, judge, run, expect_ok: bool) -> bool:
@@ -54,21 +60,21 @@ def main() -> int:
         "i16 洞场景：动作全失败、显示停在初始 0",
         judge16,
         FakeRun(steps=[{"do": "click", "ok": False}], vars_={},
-                display_rows=rows("显示为 0")),
+                display_rows=name_rows("显示为 0")),
         expect_ok=False)
     all_ok &= check(
         "i16 正常场景：mid=56、final=0",
         judge16,
         FakeRun(steps=[{"do": "click", "ok": True}] * 6,
-                vars_={"mid": rows("显示为 56")},
-                display_rows=rows("显示为 0")),
+                vars_={"mid": name_rows("显示为 56")},
+                display_rows=name_rows("显示为 0")),
         expect_ok=True)
     all_ok &= check(
         "i16 失败场景：清除没生效（final 仍是 56）",
         judge16,
         FakeRun(steps=[{"do": "click", "ok": True}] * 6,
-                vars_={"mid": rows("显示为 56")},
-                display_rows=rows("显示为 56")),
+                vars_={"mid": name_rows("显示为 56")},
+                display_rows=name_rows("显示为 56")),
         expect_ok=False)
 
     # -- i17：退格（「12」不得来自「123」的平凡子串） ------------------------
@@ -78,13 +84,13 @@ def main() -> int:
         judge17,
         FakeRun(steps=[{"do": "click", "ok": True}] * 3
                 + [{"do": "click", "ok": False}],
-                vars_={}, display_rows=rows("显示为 123")),
+                vars_={}, display_rows=name_rows("显示为 123")),
         expect_ok=False)
     all_ok &= check(
         "i17 正常场景：退格后显示 12",
         judge17,
         FakeRun(steps=[{"do": "click", "ok": True}] * 4,
-                vars_={}, display_rows=rows("显示为 12")),
+                vars_={}, display_rows=name_rows("显示为 12")),
         expect_ok=True)
 
     # -- i19：撤销（输入与撤销两步都必须真实成功） ---------------------------
@@ -95,7 +101,7 @@ def main() -> int:
         FakeRun(steps=[{"do": "type", "ok": False},
                        {"do": "key", "ok": True},
                        {"do": "query", "ok": True}],
-                vars_={"doc": rows("i19 基础行")},
+                vars_={"doc": value_rows("i19 基础行")},
                 display_rows=[]),
         expect_ok=False)
     all_ok &= check(
@@ -104,7 +110,7 @@ def main() -> int:
         FakeRun(steps=[{"do": "type", "ok": True},
                        {"do": "key", "ok": True},
                        {"do": "query", "ok": True}],
-                vars_={"doc": rows("i19 基础行")},
+                vars_={"doc": value_rows("i19 基础行")},
                 display_rows=[]),
         expect_ok=True)
     all_ok &= check(
@@ -113,7 +119,7 @@ def main() -> int:
         FakeRun(steps=[{"do": "type", "ok": True},
                        {"do": "key", "ok": False},
                        {"do": "query", "ok": True}],
-                vars_={"doc": rows("i19 基础行i19 会被撤销的内容")},
+                vars_={"doc": value_rows("i19 基础行i19 会被撤销的内容")},
                 display_rows=[]),
         expect_ok=False)
 

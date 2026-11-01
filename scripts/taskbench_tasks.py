@@ -103,7 +103,11 @@ def judge_display(*needles: str):
 
 def _calc_display(run) -> str:
     """计算器显示屏当前文本（窗口作用域过滤由 run.query 兜底）。"""
-    rows = run.query(automation_id="CalculatorResults")
+    return _display_text(run.query(automation_id="CalculatorResults"))
+
+
+def _display_text(rows: list[dict]) -> str:
+    """value-or-name 合并（automation_id find 通道的文本常在 name）。"""
     return " ".join(
         (row.get("value") or row.get("name") or "") for row in rows
     )
@@ -408,14 +412,19 @@ _t(
     "calc",
     tuple({"do": "click", "target": t} for t in
           ("八", "乘以", "七", "等于"))
-    + ({"do": "query", "automation_id": "CalculatorResults", "save_as": "mid"},
+    # ⚠️ 「等于」后计算器要重算并重建显示元素——立刻查 UIA 会拿到瞬态空树
+    # （redo 实测 mid 三连空）。等 800ms 再读（与 judge 的读取时序对齐）。
+    + ({"do": "wait", "ms": 800},
+       {"do": "query", "automation_id": "CalculatorResults", "save_as": "mid"},
        {"do": "click", "target": "清除"}),
     # 判分洞修复（侦察 A）：显示 0 是初始态，光看终态恒真——必须先证到
     # 「等于之后是 56」（动作真的执行了），再证清除回 0。
+    # ⚠️ mid 行的文本可能在 name 而非 value（automation_id find 通道实测
+    # value 空）——与 _calc_display 同口径 value-or-name。
     lambda run: (lambda mid, final: {
         "ok": "56" in mid and "0" in final,
         "mid": mid[:100], "display": final[:100]})(
-        _joined_value(run.vars.get("mid") or []), _calc_display(run)),
+        _display_text(run.vars.get("mid") or []), _calc_display(run)),
 )
 
 _t(
