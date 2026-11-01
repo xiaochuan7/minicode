@@ -31,6 +31,7 @@ from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.effort import Effort
 from minicode.model.request_log import JsonlRequestLog
+from minicode.model.retry import RetryingModelCaller
 
 from .bench import BenchReport, collect_targets, measure, summarize
 from .gate import GateMode
@@ -119,8 +120,9 @@ def _run(args) -> int:
     from minicode.uia.windows import WindowsUiaQueryPort, describe_window
 
     config = load_config()
-    client = ModelClient(
-        config, JsonlRequestLog(Path(args.out) / "model-requests.jsonl")
+    # **重试缝**（W5）：传输错误 / 429·5xx / 空文本按指数退避重试。
+    client = RetryingModelCaller(
+        ModelClient(config, JsonlRequestLog(Path(args.out) / "model-requests.jsonl"))
     )
     width, height = dpi.physical_screen_size()
     model_input = _parse_size(args.model_input)

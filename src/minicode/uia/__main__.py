@@ -226,12 +226,16 @@ def _disambiguation_ends(args):
     from minicode.model.client import ModelClient
     from minicode.model.config import load_config
     from minicode.model.request_log import JsonlRequestLog
+    from minicode.model.retry import RetryingModelCaller
     from minicode.redact.config import load_model_context_config
     from minicode.redact.redactor import TreeRedactor
     from minicode.uia.pointer import ModelCandidatePointer
 
     config = load_config()
-    client = ModelClient(config, JsonlRequestLog(Path(args.out) / "model-requests.jsonl"))
+    # **重试缝**（W5）：传输错误 / 429·5xx / 空文本按指数退避重试。
+    client = RetryingModelCaller(
+        ModelClient(config, JsonlRequestLog(Path(args.out) / "model-requests.jsonl"))
+    )
     context = load_model_context_config()
     if not (context.send_tree_to_model and context.redaction_enabled):
         raise SystemExit(

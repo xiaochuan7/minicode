@@ -18,6 +18,19 @@
 
 ⚠️ **可逆性的判定是 fail-closed 的**：只有**明确**在可重试清单里的动作种类
 才重试，其余一律不重试（宁可少重试，也不重复执行一个不可逆动作）。
+
+## 自愈三钩子（W5，全部**可选注入**，缺省 = 行为与之前完全一致）
+
+1. **找不到 → 重新生成描述**（``redescriber``）：``target_not_found`` 时问一次
+   描述生成端（决策层接模型），拿到**新的**目标描述就替换重试；
+   每次 ``run`` 至多重述一次（防循环）。
+2. **界面没变 → 等待 + 变化检测**（``change_probe``）：每次重试退避后，
+   探针说「没变」就轮询等它变（上限 ``wait_for_change_s``）——
+   等不到也照常重试，但**等过多久如实记录**。
+3. **点不动 → 换通道**（``alternate_seam``）：重试预算用尽且错误码是
+   执行类（``landing_mismatch`` / ``execute_failed``）时，用备用缝
+   （例如视觉通道那条）**再试一次**；仍失败就如实返回原结果。
+   ⚠️ 只在**可逆动作**上发生（不可逆的到不了这里）。
 """
 
 from __future__ import annotations
@@ -40,6 +53,7 @@ __all__ = [
     "IRREVERSIBLE_KEYWORDS_SOURCE",
     "RETRYABLE_KINDS",
     "NOT_RETRYABLE_CODES",
+    "ALTERNATE_CHANNEL_CODES",
     "Reversibility",
     "classify_reversibility",
     "RetryDecision",
@@ -81,6 +95,13 @@ NOT_RETRYABLE_CODES = frozenset(
         ErrorCode.EXPECTATION_FAILED,
         ErrorCode.INVALID_TARGET,
     }
+)
+
+#: **执行类失败**（自愈 3「换通道」只认这几个码）：定位到了但**点不动**——
+#: 落点被复验打回 / 注入后没生效。定位类失败（找不到目标）不在此列，
+#: 它走的是「重新生成描述」那条钩子。
+ALTERNATE_CHANNEL_CODES = frozenset(
+    {ErrorCode.LANDING_MISMATCH, ErrorCode.EXECUTE_FAILED}
 )
 
 
@@ -165,7 +186,8 @@ class AttemptRecord:
     * ``delay_ms`` —— 这次尝试**之前**等了多久（首次 = 0）；
     * ``point`` —— **这一次**的落点（物理表面空间）——
       重试那一次的落点与上一次**不同**，正是「重新感知」的证据；
-    * ``reason`` —— 失败后为什么重试（成功时为空）。
+    * ``reason`` —— 失败后为什么重试（成功时为空）；
+    * ``channel`` —— 走的哪条缝（``"seam"`` = 主缝，``"alternate"`` = 换通道那次）。
     """
 
     attempt: int
@@ -174,6 +196,7 @@ class AttemptRecord:
     point: tuple[int, int] | None
     error_code: str | None
     reason: str = ""
+    channel: str = "seam"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -183,6 +206,7 @@ class AttemptRecord:
             "point": list(self.point) if self.point else None,
             "error_code": self.error_code,
             "reason": self.reason,
+            "channel": self.channel,
         }
 
 
@@ -253,12 +277,31 @@ class RetryingSeam:
         *,
         policy: RetryPolicy | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        change_probe: Callable[[], bool] | None = None,
+        redescriber: Callable[[str, str], str | None] | None = None,
+        alternate_seam: Any | None = None,
+        wait_for_change_s: float = 2.0,
+        change_poll_s: float = 0.2,
     ):
         self._seam = seam
         self.policy = policy or RetryPolicy()
         self._sleep = sleeper
+        # -- 自愈三钩子（W5；全部可选，缺省 = 原行为）------------------------
+        #: 「画面变了吗」探针（真机接 verification.diff 的轮询；缺省不做）。
+        self._change_probe = change_probe
+        #: 「给个别的说法」端：``(原描述, 错误消息) -> 新描述 | None``。
+        self._redescriber = redescriber
+        #: 备用缝（如视觉通道）：执行类失败且重试预算用尽时**再试一次**。
+        self._alternate_seam = alternate_seam
+        self._wait_for_change_s = float(wait_for_change_s)
+        self._change_poll_s = float(change_poll_s)
         #: 每一次**尝试**的记录（供断言与落盘）。
         self.attempts: list[AttemptRecord] = []
+        #: **描述重写**记录（自愈 2 的证据：哪次尝试、从什么改成了什么）。
+        self.description_rewrites: list[dict[str, Any]] = []
+        #: 每次重试前为「等界面变化」等了多少毫秒（自愈 1 的证据）。
+        self.change_waits_ms: list[int] = []
+        self._alternate_used = False
 
     @property
     def executor(self) -> Any:
@@ -316,9 +359,106 @@ class RetryingSeam:
                 )
             )
             if not decision.retry:
+                # -- 自愈 3：点不动 → 换通道（重试预算用尽时兜一次底）---------
+                alternate = self._try_alternate(
+                    request, attempt=attempt, error_code=error_code,
+                    pending_delay=pending_delay,
+                )
+                if alternate is not None:
+                    return alternate
                 return result
+            # -- 自愈 2：找不到 → 重新生成描述（每次 run 至多一次）-------------
+            if (
+                error_code is ErrorCode.TARGET_NOT_FOUND
+                and self._redescriber is not None
+                and not self.description_rewrites
+            ):
+                new_description = self._redescriber(
+                    current.target_description,
+                    result.result.error_message or "",
+                )
+                if (
+                    new_description
+                    and new_description != current.target_description
+                ):
+                    self.description_rewrites.append(
+                        {
+                            "from": current.target_description,
+                            "to": new_description,
+                            "attempt": attempt,
+                        }
+                    )
+                    current = replace(
+                        current,
+                        target_description=new_description,
+                        frame=None,
+                        tree_snapshot=None,
+                    )
             pending_delay = decision.delay_ms
             self._sleep(pending_delay / 1000.0)
+            # -- 自愈 1：界面没变 → 等它变（有探针才做；等不到也照常重试）------
+            if self._change_probe is not None:
+                waited_ms = self._wait_for_change()
+                if waited_ms > 0:
+                    self.change_waits_ms.append(waited_ms)
             # **重新感知**：丢掉上一帧画面与上一份控件树快照，
             # 让这一轮重新定位（→ 新坐标），**不复用旧坐标**。
-            current = replace(request, frame=None, tree_snapshot=None)
+            current = replace(current, frame=None, tree_snapshot=None)
+
+    def _wait_for_change(self) -> int:
+        """探针说「没变」就轮询等它变；返回**等了多少毫秒**（没等 = 0）。
+
+        等到上限还没变也照常返回（重试继续）——重试本来就是重新走一遍缝，
+        界面变没变由**下一次尝试的结果**说话。
+        """
+        if self._change_probe():
+            return 0
+        waited_ms = 0
+        poll_ms = max(1, int(self._change_poll_s * 1000))
+        max_polls = max(1, int(self._wait_for_change_s / max(self._change_poll_s, 0.001)))
+        for _ in range(max_polls):
+            self._sleep(self._change_poll_s)
+            waited_ms += poll_ms
+            if self._change_probe():
+                return waited_ms
+        return waited_ms
+
+    def _try_alternate(
+        self,
+        request: Any,
+        *,
+        attempt: int,
+        error_code: ErrorCode | None,
+        pending_delay: int,
+    ) -> Any | None:
+        """换通道再试一次（**每次 run 至多一次**，只认执行类失败码）。
+
+        返回备用缝的成功结果；备用缝也失败（或不适用）→ ``None``（外层如实
+        返回主缝的失败结果）。
+        """
+        if self._alternate_seam is None or self._alternate_used:
+            return None
+        if error_code not in ALTERNATE_CHANNEL_CODES:
+            return None
+        self._alternate_used = True
+        fresh = replace(request, frame=None, tree_snapshot=None)
+        result = self._alternate_seam.run(fresh)
+        alt_error = (
+            result.result.error_code if result.result.error_code else None
+        )
+        self.attempts.append(
+            AttemptRecord(
+                attempt=attempt + 1,
+                delay_ms=pending_delay,
+                ok=result.ok,
+                point=result.final_point,
+                error_code=alt_error.value if alt_error else None,
+                reason=(
+                    "主通道重试预算用尽 → 换通道再试一次"
+                    if result.ok
+                    else "换通道仍然失败（如实返回主缝结果）"
+                ),
+                channel="alternate",
+            )
+        )
+        return result if result.ok else None

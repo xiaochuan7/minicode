@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,9 @@ __all__ = ["ActionService", "SeamFactory", "request_error_response"]
 #: 为什么要工厂而不是一条缝：缝的追踪记录出口是**构造时定死**的，
 #: 而一次调用要只拿**这一次**的记录 —— 工厂让每次调用有自己的一条缝。
 SeamFactory = Callable[[ListTraceSink], ActionExecutionSeam]
+
+#: 幂等重放缓存的上限（LRU；超过就淘汰最老的键）。
+IDEMPOTENCY_CACHE_MAX = 512
 
 
 def request_error_response(error: RequestError) -> ActionResponse:
@@ -101,17 +105,29 @@ class ActionService:
         self._log = ActionLog(log_directory)
         self._observer = observer
         self._redactor = redactor
+        # **幂等重放缓存**（W5）：request_id → 首次响应。LRU 有界；
+        # **进程内**口径——重启后缓存为空（持久化去重是 ActionLog 审计的事，
+        # 不在这里猜）。
+        self._idempotency: OrderedDict[str, ActionResponse] = OrderedDict()
 
     def execute(self, payload: Any) -> ActionResponse:
         """执行一次动作请求。
 
         请求层被拒（形状不对 / 版本对不上）→ 失败响应，**零动作下发**。
         动作执行失败 → 失败响应，**动作记录照写**（失败也在日志里）。
+        带 ``request_id`` 的请求：同键重复调用**原样重放**首次响应，
+        不再执行第二次（网络重发 / 客户端重试安全——动作只发生一次）。
         """
         try:
             request = ActionRequest.from_mapping(payload)
         except RequestError as error:
             return request_error_response(error)
+
+        if request.request_id is not None:
+            cached = self._idempotency.get(request.request_id)
+            if cached is not None:
+                self._idempotency.move_to_end(request.request_id)
+                return cached
 
         result, record = self._run_seam(
             SeamRequest(
@@ -122,7 +138,7 @@ class ActionService:
         )
 
         action = result.action.to_dict() if result.action is not None else None
-        return ActionResponse(
+        response = ActionResponse(
             protocol_version=PROTOCOL_VERSION,
             ok=result.ok,
             error_code=(
@@ -135,6 +151,11 @@ class ActionService:
             landing_point=result.final_point,
             record=record.to_dict() if record is not None else None,
         )
+        if request.request_id is not None:
+            self._idempotency[request.request_id] = response
+            while len(self._idempotency) > IDEMPOTENCY_CACHE_MAX:
+                self._idempotency.popitem(last=False)
+        return response
 
     def execute_program(self, payload: Any) -> ProgramResponse:
         """执行**一段动作程序**（工单 M19：MCP 的「执行一段动作程序」）。

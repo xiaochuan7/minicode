@@ -8,8 +8,13 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent.parent
-for tid in sys.argv[1:]:
-    path = ROOT / "runs" / "w4" / "round1" / f"{tid}-summary.json"
+args = sys.argv[1:]
+base = ROOT / "runs" / "w4-diag" / "round1"
+if args and args[0].startswith("--dir="):
+    base = ROOT / "runs" / args[0][6:]
+    args = args[1:]
+for tid in args:
+    path = base / f"{tid}-summary.json"
     if not path.exists():
         print(f"== {tid}: no summary")
         continue

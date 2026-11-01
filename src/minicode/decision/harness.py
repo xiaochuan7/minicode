@@ -23,9 +23,11 @@
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from minicode.action.errors import FailureType, failure_type_of
@@ -188,6 +190,30 @@ class StepRecord:
             "decision_ms": self.decision_ms,
         }
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> StepRecord:
+        """从落盘形状重建（断点续跑的回放用；缺项按缺省补齐）。"""
+        return cls(
+            kind=str(data.get("kind", STEP_PLAN)),
+            effort=str(data.get("effort", "")),
+            ok=bool(data.get("ok", False)),
+            input_tokens=data.get("input_tokens"),
+            output_tokens=data.get("output_tokens"),
+            thinking_tokens=data.get("thinking_tokens"),
+            cache_read_input_tokens=data.get("cache_read_input_tokens"),
+            cache_creation_input_tokens=data.get("cache_creation_input_tokens"),
+            image_tokens=data.get("image_tokens"),
+            program=str(data.get("program", "")),
+            stdout=str(data.get("stdout", "")),
+            stderr=str(data.get("stderr", "")),
+            error_code=data.get("error_code"),
+            error_message=data.get("error_message"),
+            calls=tuple(dict(call) for call in data.get("calls", ())),
+            asked_human=bool(data.get("asked_human", False)),
+            completion_claims=int(data.get("completion_claims", 0)),
+            decision_ms=float(data.get("decision_ms", 0.0)),
+        )
+
 
 @dataclass(frozen=True)
 class HarnessReport:
@@ -257,6 +283,7 @@ class DecisionHarness:
         request_log: Any | None = None,
         telemetry: TelemetryAccumulator | None = None,
         stop_policy: StopPolicy | None = None,
+        checkpoint_path: str | Path | None = None,
     ):
         self.caller = caller
         self.api = api
@@ -275,6 +302,13 @@ class DecisionHarness:
         #: **停止条件**（工单 M12）：四类卡死检测器 + 熔断 + 轮次上限。
         #: 缺省 = 不做停止判定（那时只有轮次上限兜着）。
         self.stop_policy = stop_policy
+        #: **检查点文件**（W5 断点续跑，可选）：每轮结束**追加**一行 JSONL
+        #: （轮次摘要 + 步记录 + 该轮新加的笔记）。给路径就记，不给就不记。
+        #: 恢复时 ：meth:`run` 传 ``resume=该路径``——回放文本上下文与步账本，
+        #: **不回放图像**（画面早已变化，恢复时重新抓一帧才是真话）。
+        self.checkpoint_path = (
+            Path(checkpoint_path) if checkpoint_path is not None else None
+        )
         #: **声明给模型的尺寸**（**算一次**，全任务共用一份；见
         #: :meth:`_declared_size`）。``None`` = 还没量到表面尺寸。
         self._model_input_size: tuple[int, int] | None = None
@@ -287,10 +321,15 @@ class DecisionHarness:
     # 主循环
     # ------------------------------------------------------------------
 
-    def run(self, goal: str) -> HarnessReport:
+    def run(self, goal: str, *, resume: str | Path | None = None) -> HarnessReport:
         """跑一个多步任务：模型产出程序 → 执行 → 回灌 → 继续。
 
         **整个过程不需要人工逐步确认** —— 人工只在程序请求人工（ask_user）时才介入。
+
+        ``resume``（W5 断点续跑，可选）：给一个 ``checkpoint_path`` 写出的
+        JSONL 路径 → 回放已完成轮次的**文本上下文与步账本**（不回放图像——
+        画面早已变化，恢复时重新抓一帧才是真话），从下一个轮次继续跑；
+        轮次上限按**总轮次**算（已完成的轮次照样占额度）。
         """
         context = ContextWindow(keep_frames=self.keep_frames)
         steps: list[StepRecord] = []
@@ -301,13 +340,30 @@ class DecisionHarness:
         stop_reason = STOP_ROUND_CAP
         #: 手里这一帧是不是**可能过时**（动过界面但没抓到新帧）。
         frame_may_be_stale = False
+        #: 本轮**新加进上下文的笔记**（进检查点行，恢复时原样回放）。
+        notes_this_round: list[str] = []
+        first_round = 1
+
+        if resume is not None:
+            replayed = self._replay_checkpoint(Path(resume), context)
+            steps = replayed["steps"]
+            growth = replayed["growth"]
+            image_growth = replayed["image_growth"]
+            all_calls = replayed["all_calls"]
+            first_round = replayed["next_round"]
 
         # **当前观察**：第 1 轮之前先抓一帧 —— 否则模型是**盲写**的程序
         # （模型针对当前观察产出程序，盲写就违背了这条）。
         initial = self.api.capture_frame()
-        context.add_round(summary="第 0 轮：初始画面（还没做任何动作）", frame=initial)
+        initial_summary = (
+            f"第 0 轮（断点恢复）：恢复时的当前画面（已完成 {first_round - 1} 轮）"
+            if first_round > 1
+            else "第 0 轮：初始画面（还没做任何动作）"
+        )
+        context.add_round(summary=initial_summary, frame=initial)
 
-        for round_index in range(1, self.max_rounds + 1):
+        for round_index in range(first_round, self.max_rounds + 1):
+            notes_this_round = []
             plan_started = time.perf_counter()
             reply = self.caller.complete(
                 build_plan_prompt(goal, context.render()),
@@ -346,41 +402,46 @@ class DecisionHarness:
             summary = _summarize(round_index, outcome, calls)
             context.add_round(summary=summary, frame=frame)
 
-            steps.append(
-                StepRecord(
-                    kind=STEP_PLAN,
-                    effort=str(DECISION_EFFORT[STEP_PLAN]),
-                    ok=outcome.ok,
-                    input_tokens=reply.input_tokens,
-                    output_tokens=reply.output_tokens,
-                    thinking_tokens=reply.thinking_tokens,
-                    cache_read_input_tokens=reply.cache_read_input_tokens,
-                    cache_creation_input_tokens=reply.cache_creation_input_tokens,
-                    image_tokens=reply.image_tokens,
-                    program=program,
-                    stdout=outcome.stdout,
-                    stderr=outcome.stderr,
-                    error_code=(
-                        outcome.error_code.value if outcome.error_code else None
-                    ),
-                    error_message=outcome.error_message,
-                    calls=calls,
-                    asked_human=self.api.asked_human,
-                    completion_claims=_completion_claims(
-                        reply.text + "\n" + outcome.stdout
-                    ),
-                    decision_ms=decision_ms,
-                )
+            plan_step = StepRecord(
+                kind=STEP_PLAN,
+                effort=str(DECISION_EFFORT[STEP_PLAN]),
+                ok=outcome.ok,
+                input_tokens=reply.input_tokens,
+                output_tokens=reply.output_tokens,
+                thinking_tokens=reply.thinking_tokens,
+                cache_read_input_tokens=reply.cache_read_input_tokens,
+                cache_creation_input_tokens=reply.cache_creation_input_tokens,
+                image_tokens=reply.image_tokens,
+                program=program,
+                stdout=outcome.stdout,
+                stderr=outcome.stderr,
+                error_code=(
+                    outcome.error_code.value if outcome.error_code else None
+                ),
+                error_message=outcome.error_message,
+                calls=calls,
+                asked_human=self.api.asked_human,
+                completion_claims=_completion_claims(
+                    reply.text + "\n" + outcome.stdout
+                ),
+                decision_ms=decision_ms,
             )
+            steps.append(plan_step)
             growth.append((len(steps), steps[-1].total_input_tokens))
             image_growth.append((len(steps), steps[-1].image_tokens))
 
             if self.api.asked_human:
                 stop_reason = STOP_ASKED_HUMAN
+                self._persist_checkpoint(
+                    round_index, summary, notes_this_round, steps[-1], None
+                )
                 break
             if self.api.halted:
                 # **危险动作被拦下**（工单 M12 AC 8 / AC 9）：停下来交给人。
                 stop_reason = STOP_DANGEROUS_ACTION
+                self._persist_checkpoint(
+                    round_index, summary, notes_this_round, steps[-1], None
+                )
                 break
             # -- 停止条件（工单 M12）----------------------------------------
             # 这一轮结束：交给**卡死检测器**判一次。
@@ -399,12 +460,17 @@ class DecisionHarness:
                 self.stop_policy.observe_round()
                 for change in self.stop_policy.take_strategy_changes():
                     context.add_note(change.describe())
+                    notes_this_round.append(change.describe())
                 for note in self.stop_policy.take_skip_verification_notes():
                     #: 「跳过验证」的记录进上下文（模型与人都读得到）。
                     context.add_note(note)
+                    notes_this_round.append(note)
                 reason = self.stop_policy.stop_reason
                 if reason:
                     stop_reason = reason
+                    self._persist_checkpoint(
+                        round_index, summary, notes_this_round, steps[-1], None
+                    )
                     break
             if not outcome.ok:
                 # 反思步：上一轮没跑成 → 高档位复盘，给出下一步。
@@ -417,25 +483,33 @@ class DecisionHarness:
                 )
                 reflect_ms = (time.perf_counter() - reflect_started) * 1000.0
                 self._record_decision(reflect_ms, failure=_decision_failure(outcome))
-                context.add_note(f"反思：{reflect.text.strip()[:600]}")
-                steps.append(
-                    StepRecord(
-                        kind=STEP_REFLECT,
-                        effort=str(DECISION_EFFORT[STEP_REFLECT]),
-                        ok=True,
-                        input_tokens=reflect.input_tokens,
-                        output_tokens=reflect.output_tokens,
-                        thinking_tokens=reflect.thinking_tokens,
-                        cache_read_input_tokens=reflect.cache_read_input_tokens,
-                        cache_creation_input_tokens=reflect.cache_creation_input_tokens,
-                        image_tokens=reflect.image_tokens,
-                        program="",
-                        completion_claims=_completion_claims(reflect.text),
-                        decision_ms=reflect_ms,
-                    )
+                reflect_note = f"反思：{reflect.text.strip()[:600]}"
+                context.add_note(reflect_note)
+                notes_this_round.append(reflect_note)
+                reflect_step = StepRecord(
+                    kind=STEP_REFLECT,
+                    effort=str(DECISION_EFFORT[STEP_REFLECT]),
+                    ok=True,
+                    input_tokens=reflect.input_tokens,
+                    output_tokens=reflect.output_tokens,
+                    thinking_tokens=reflect.thinking_tokens,
+                    cache_read_input_tokens=reflect.cache_read_input_tokens,
+                    cache_creation_input_tokens=reflect.cache_creation_input_tokens,
+                    image_tokens=reflect.image_tokens,
+                    program="",
+                    completion_claims=_completion_claims(reflect.text),
+                    decision_ms=reflect_ms,
                 )
+                steps.append(reflect_step)
                 growth.append((len(steps), steps[-1].total_input_tokens))
                 image_growth.append((len(steps), steps[-1].image_tokens))
+                self._persist_checkpoint(
+                    round_index, summary, notes_this_round, plan_step, reflect_step
+                )
+            else:
+                self._persist_checkpoint(
+                    round_index, summary, notes_this_round, plan_step, None
+                )
 
         handoff = self._build_handoff(stop_reason, all_calls)
         policy = self.stop_policy
@@ -464,6 +538,76 @@ class DecisionHarness:
             ),
             handoff=handoff,
         )
+
+    def _persist_checkpoint(
+        self,
+        round_index: int,
+        summary: str,
+        notes: list[str],
+        plan_step: StepRecord,
+        reflect_step: StepRecord | None,
+    ) -> None:
+        """一轮完成 → **追加**一行检查点（没配 ``checkpoint_path`` 就什么都不做）。
+
+        行里是恢复所需的**全部文本状态**：轮次摘要、该轮新加的笔记、步记录。
+        图像**不进检查点**（恢复时重新抓帧才是真话）。
+        """
+        if self.checkpoint_path is None:
+            return
+        row = {
+            "type": "round",
+            "round_index": round_index,
+            "summary": summary,
+            "notes": list(notes),
+            "step": plan_step.to_dict(),
+            "reflect_step": reflect_step.to_dict() if reflect_step else None,
+        }
+        self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.checkpoint_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def _replay_checkpoint(self, path: Path, context: ContextWindow) -> dict:
+        """回放检查点：重建文本上下文与步账本，返回续跑要用的状态。
+
+        只读；缺文件/空文件 → 从第 1 轮正常开跑（**不猜**、不报错）。
+        """
+        steps: list[StepRecord] = []
+        growth: list[tuple[int, int | None]] = []
+        image_growth: list[tuple[int, int | None]] = []
+        all_calls: list[dict[str, Any]] = []
+        next_round = 1
+        if not path.exists():
+            return {"steps": steps, "growth": growth,
+                    "image_growth": image_growth,
+                    "all_calls": all_calls, "next_round": next_round}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # 截断/损坏的尾行如实跳过（追加式日志的常态）
+            if row.get("type") != "round":
+                continue
+            summary = str(row.get("summary", ""))
+            context.add_round(summary=summary, frame=None)
+            for note in row.get("notes", ()):
+                context.add_note(str(note))
+            plan_step = StepRecord.from_dict(row.get("step") or {})
+            steps.append(plan_step)
+            growth.append((len(steps), plan_step.total_input_tokens))
+            image_growth.append((len(steps), plan_step.image_tokens))
+            all_calls.extend(plan_step.calls)
+            reflect_data = row.get("reflect_step")
+            if reflect_data:
+                reflect_step = StepRecord.from_dict(reflect_data)
+                steps.append(reflect_step)
+                growth.append((len(steps), reflect_step.total_input_tokens))
+                image_growth.append((len(steps), reflect_step.image_tokens))
+            next_round = int(row.get("round_index", next_round)) + 1
+        return {"steps": steps, "growth": growth, "image_growth": image_growth,
+                "all_calls": all_calls, "next_round": next_round}
 
     def _build_handoff(
         self, stop_reason: str, api_calls: Sequence[dict[str, Any]]

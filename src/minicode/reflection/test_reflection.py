@@ -59,6 +59,7 @@ from minicode.reflection.handoff import HANDOFF_MARKER, build_handoff
 from minicode.reflection.retry import (
     RETRY_BACKOFF_MS,
     RetryingSeam,
+    RetryPolicy,
     classify_reversibility,
 )
 from minicode.reflection.stop import (
@@ -825,6 +826,223 @@ class ScopeBoundaryTest(unittest.TestCase):
             STOP_DANGEROUS_ACTION,
         ):
             self.assertIn(reason, STOP_REASONS)
+
+
+# ---------------------------------------------------------------------------
+# W5 自愈三钩子
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedSeam:
+    """按脚本回结果的假缝（记录每次收到的目标描述，供重述断言）。"""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.requests: list[str] = []
+
+    def run(self, request):
+        self.requests.append(request.target_description)
+        outcome = self._results.pop(0)
+        return outcome
+
+
+def _failure(code: str, message: str = ""):
+    from minicode.action.seam import SeamResult
+
+    return SeamResult(
+        action=Action(ActionKind.CLICK, {}, "点击"),
+        final_point=None,
+        intent="点击",
+        result=ActionResult(
+            ok=False, error_code=ErrorCode(code), error_message=message
+        ),
+    )
+
+
+def _success():
+    from minicode.action.seam import SeamResult
+
+    return SeamResult(
+        action=Action(ActionKind.CLICK, {}, "点击"),
+        final_point=(10, 20),
+        intent="点击",
+        result=ActionResult(ok=True, landing_point=(10, 20)),
+    )
+
+
+class SelfHealRedescribeTest(unittest.TestCase):
+    """自愈 2：target_not_found → 重新生成描述再试（每次 run 至多一次）。"""
+
+    def test_not_found_triggers_one_description_rewrite(self):
+        from minicode.action.seam import SeamRequest
+
+        seam = _ScriptedSeam(
+            [_failure("target_not_found"), _failure("target_not_found"), _success()]
+        )
+        rewrites: list[tuple[str, str]] = []
+
+        def redescriber(description: str, error: str) -> str | None:
+            rewrites.append((description, error))
+            return f"{description}（按钮）"
+
+        retrying = RetryingSeam(
+            seam,
+            policy=RetryPolicy(backoff_ms=(0, 0, 0)),
+            sleeper=lambda _s: None,
+            redescriber=redescriber,
+        )
+        result = retrying.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK)
+        )
+        self.assertTrue(result.ok)
+        # 描述只重写一次：第一次尝试用原描述，之后全用新描述。
+        self.assertEqual(seam.requests, ["开始", "开始（按钮）", "开始（按钮）"])
+        self.assertEqual(len(retrying.description_rewrites), 1)
+        self.assertEqual(len(rewrites), 1)
+        self.assertEqual(
+            retrying.description_rewrites[0]["to"], "开始（按钮）"
+        )
+
+    def test_redescriber_returning_none_or_same_description_keeps_the_original(self):
+        from minicode.action.seam import SeamRequest
+
+        seam = _ScriptedSeam(
+            [_failure("target_not_found"), _success()]
+        )
+        retrying = RetryingSeam(
+            seam,
+            policy=RetryPolicy(backoff_ms=(0, 0, 0)),
+            sleeper=lambda _s: None,
+            redescriber=lambda _d, _e: "开始",  # 返回同一个描述 = 没有新说法
+        )
+        result = retrying.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK)
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(seam.requests, ["开始", "开始"])
+        self.assertEqual(retrying.description_rewrites, [])
+
+
+class SelfHealChangeWaitTest(unittest.TestCase):
+    """自愈 1：重试前探针说「没变」就轮询等它变（上限内）。"""
+
+    def test_waits_for_change_before_retrying_and_records_the_wait(self):
+        from minicode.action.seam import SeamRequest
+
+        seam = _ScriptedSeam([_failure("execute_failed"), _success()])
+        probes: list[bool] = [False, True]  # 第一次查「没变」，轮询一次后「变了」
+
+        def probe() -> bool:
+            return probes.pop(0) if probes else True
+
+        sleeps: list[float] = []
+        retrying = RetryingSeam(
+            seam,
+            policy=RetryPolicy(backoff_ms=(0, 0, 0)),
+            sleeper=sleeps.append,
+            change_probe=probe,
+            wait_for_change_s=2.0,
+            change_poll_s=0.2,
+        )
+        result = retrying.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK)
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(retrying.change_waits_ms, [200])
+        # 睡眠序列 = 退避(0) + 一次轮询(0.2)。
+        self.assertEqual(sleeps, [0.0, 0.2])
+
+    def test_no_probe_keeps_the_plain_backoff_behavior(self):
+        from minicode.action.seam import SeamRequest
+
+        seam = _ScriptedSeam([_failure("execute_failed"), _success()])
+        sleeps: list[float] = []
+        retrying = RetryingSeam(
+            seam,
+            policy=RetryPolicy(backoff_ms=(0, 0, 0)),
+            sleeper=sleeps.append,
+        )
+        result = retrying.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK)
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(retrying.change_waits_ms, [])
+        self.assertEqual(sleeps, [0.0])
+
+
+class SelfHealAlternateChannelTest(unittest.TestCase):
+    """自愈 3：重试预算用尽且执行类失败 → 备用缝再试一次（每次 run 至多一次）。"""
+
+    def test_exhaustion_with_execution_failure_tries_the_alternate_once(self):
+        from minicode.action.seam import SeamRequest
+
+        main = _ScriptedSeam(
+            [
+                _failure("landing_mismatch"),
+                _failure("landing_mismatch"),
+                _failure("landing_mismatch"),
+                _failure("landing_mismatch"),
+            ]
+        )
+        alternate = _ScriptedSeam([_success()])
+        retrying = RetryingSeam(
+            main,
+            policy=RetryPolicy(backoff_ms=(0, 0, 0)),
+            sleeper=lambda _s: None,
+            alternate_seam=alternate,
+        )
+        result = retrying.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK)
+        )
+        self.assertTrue(result.ok)
+        # 主缝试满 1+3 次，备用缝一次。
+        self.assertEqual(len(main.requests), 4)
+        self.assertEqual(len(alternate.requests), 1)
+        channels = [a.channel for a in retrying.attempts]
+        self.assertEqual(channels, ["seam", "seam", "seam", "seam", "alternate"])
+
+    def test_alternate_failure_returns_the_main_result_honestly(self):
+        from minicode.action.seam import SeamRequest
+
+        main = _ScriptedSeam(
+            [_failure("execute_failed")] * 4
+        )
+        alternate = _ScriptedSeam([_failure("execute_failed")])
+        retrying = RetryingSeam(
+            main,
+            policy=RetryPolicy(backoff_ms=(0, 0, 0)),
+            sleeper=lambda _s: None,
+            alternate_seam=alternate,
+        )
+        result = retrying.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK)
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.result.error_code, ErrorCode.EXECUTE_FAILED
+        )
+        self.assertEqual(
+            [a.channel for a in retrying.attempts][-1], "alternate"
+        )
+
+    def test_locate_failures_never_reach_the_alternate(self):
+        """定位类失败走「重述描述」那条钩子，**不**消耗换通道的兜底。"""
+        from minicode.action.seam import SeamRequest
+
+        main = _ScriptedSeam([_failure("target_not_found")] * 4)
+        alternate = _ScriptedSeam([_success()])
+        retrying = RetryingSeam(
+            main,
+            policy=RetryPolicy(backoff_ms=(0, 0, 0)),
+            sleeper=lambda _s: None,
+            alternate_seam=alternate,
+        )
+        result = retrying.run(
+            SeamRequest(target_description="开始", action_kind=ActionKind.CLICK)
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(alternate.requests, [])
+        self.assertNotIn("alternate", [a.channel for a in retrying.attempts])
 
 
 if __name__ == "__main__":  # pragma: no cover

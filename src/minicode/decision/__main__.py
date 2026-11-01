@@ -32,6 +32,7 @@ from minicode.approval.console import console_gate
 from minicode.model.client import ModelClient
 from minicode.model.config import load_config
 from minicode.model.request_log import InMemoryRequestLog
+from minicode.model.retry import RetryingModelCaller
 from minicode.redact.config import load_model_context_config
 from minicode.redact.log import sanitize_record
 from minicode.redact.redactor import TreeRedactor
@@ -70,6 +71,15 @@ def _parse_args(argv):
     parser.add_argument("--out", default="runs/decision", help="落盘目录")
     parser.add_argument("--rounds", type=int, default=3, help="最多跑几轮")
     parser.add_argument("--keep-frames", type=int, default=3, help="上下文保留几张完整图")
+    parser.add_argument(
+        "--resume",
+        default="",
+        help=(
+            "W5 断点续跑：给上次运行的 checkpoint.jsonl 路径 → "
+            "回放文本账本、从下一个轮次继续（图像不回放，恢复时重抓）。"
+            "不配则不记检查点"
+        ),
+    )
     parser.add_argument(
         "--capture-size",
         required=True,
@@ -156,7 +166,9 @@ def main(argv=None) -> int:
 
     config = load_config()
     request_log = InMemoryRequestLog()
-    client = ModelClient(config, request_log)
+    # **重试缝**（W5）：传输错误 / 429·5xx / 空文本按指数退避重试；
+    # 4xx 与配置问题如实抛（不重试成别的参数）。默认 3 次尝试。
+    client = RetryingModelCaller(ModelClient(config, request_log))
 
     context_config = load_model_context_config()
     if not (context_config.send_tree_to_model and context_config.redaction_enabled):
@@ -258,9 +270,16 @@ def main(argv=None) -> int:
         request_log=request_log,
         telemetry=telemetry,
         stop_policy=stop_policy,
+        # **检查点**（W5）：--resume 给了就用它（同一文件既读又续写）；
+        # 没给也默认记一份（out 目录下），崩了随时能续。
+        checkpoint_path=(
+            Path(args.resume) if args.resume else out_dir / "checkpoint.jsonl"
+        ),
     )
 
-    report = harness.run(args.goal)
+    report = harness.run(
+        args.goal, resume=Path(args.resume) if args.resume else None
+    )
     # 动作层的埋点（定位段 / 执行+校验段 / 定位失败 / 执行失败）从追踪记录里取。
     for trace in trace_sink.traces:
         telemetry.add_trace(trace)

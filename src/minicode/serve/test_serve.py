@@ -536,3 +536,83 @@ def _version() -> str:
     from minicode.action.protocol import PROTOCOL_VERSION
 
     return PROTOCOL_VERSION
+
+
+class IdempotencyTest(unittest.TestCase):
+    """W5：``request_id`` 幂等键——同键重复请求**原样重放**首次响应，不二次执行。
+
+    落盘的动作记录条数是「执行了几次」的证据（每执行一次恰好一条，缝的契约）。
+    """
+
+    @staticmethod
+    def _payload(request_id: str | None) -> dict:
+        payload = {"protocol": _version(), "action": "click", "target": FAKE_TARGET}
+        if request_id is not None:
+            payload["request_id"] = request_id
+        return payload
+
+    def _executed_count(self, directory: Path) -> int:
+        from minicode.action.records import ActionLog
+
+        return len(ActionLog(directory).records())
+
+    def test_the_same_request_id_replays_the_first_response_without_reexecuting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = _service(Path(tmp))
+            first = service.execute(self._payload("replay-1"))
+            second = service.execute(self._payload("replay-1"))
+            self.assertEqual(first.to_dict(), second.to_dict())
+            self.assertEqual(self._executed_count(Path(tmp)), 1)
+
+    def test_a_different_request_id_executes_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = _service(Path(tmp))
+            service.execute(self._payload("id-a"))
+            service.execute(self._payload("id-b"))
+            self.assertEqual(self._executed_count(Path(tmp)), 2)
+
+    def test_without_request_id_every_call_executes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = _service(Path(tmp))
+            service.execute(self._payload(None))
+            service.execute(self._payload(None))
+            self.assertEqual(self._executed_count(Path(tmp)), 2)
+
+    def test_request_layer_rejections_are_not_cached(self):
+        # 形状非法（缺 target）的请求**没有执行**也不进缓存；同一键随后
+        # 给出合法请求时正常执行并被缓存。
+        with tempfile.TemporaryDirectory() as tmp:
+            service = _service(Path(tmp))
+            bad = {"protocol": _version(), "action": "click", "request_id": "id-x"}
+            rejected = service.execute(bad)
+            self.assertFalse(rejected.ok)
+            self.assertEqual(rejected.error_code, ErrorCode.INVALID_REQUEST.value)
+            good = service.execute(self._payload("id-x"))
+            self.assertTrue(good.ok)
+            self.assertEqual(self._executed_count(Path(tmp)), 1)
+
+    def test_the_replay_cache_is_bounded_lru(self):
+        from minicode.serve.service import IDEMPOTENCY_CACHE_MAX
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = _service(Path(tmp))
+            for index in range(IDEMPOTENCY_CACHE_MAX):
+                service.execute(self._payload(f"id-{index}"))
+            self.assertEqual(
+                self._executed_count(Path(tmp)), IDEMPOTENCY_CACHE_MAX
+            )
+            # 第 MAX+1 个键把最老的 id-0 **挤出**缓存（len 超限才淘汰）。
+            service.execute(self._payload("id-extra"))
+            self.assertEqual(
+                self._executed_count(Path(tmp)), IDEMPOTENCY_CACHE_MAX + 1
+            )
+            # 被挤出的 id-0 重发 → **真的再执行一次**（记录数 +1）。
+            service.execute(self._payload("id-0"))
+            self.assertEqual(
+                self._executed_count(Path(tmp)), IDEMPOTENCY_CACHE_MAX + 2
+            )
+            # 仍在缓存里的 id-511 → 重放，不再执行。
+            service.execute(self._payload(f"id-{IDEMPOTENCY_CACHE_MAX - 1}"))
+            self.assertEqual(
+                self._executed_count(Path(tmp)), IDEMPOTENCY_CACHE_MAX + 2
+            )

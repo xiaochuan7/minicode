@@ -18,6 +18,8 @@
 ``action``           **必填**：动作种类（:class:`~minicode.action.protocol.ActionKind` 的取值）
 ``target``           **必填**：目标描述（自然语言，如「开始」）
 ``params``           可选：动作参数（键值表）
+``request_id``       可选：**幂等键**（W5）。同一个键的重复请求**原样重放**首次的响应，
+                     不再执行第二次（网络重发 / 断点续跑安全）
 ==================  ==========================================================
 
 ⚠️ **目标描述是唯一的定位途径**：坐标**不由调用方给**（给了也不认）——
@@ -136,6 +138,9 @@ class ActionRequest:
     target: str
     #: 动作参数（键值表）。
     params: Mapping[str, Any] = field(default_factory=dict)
+    #: **幂等键**（W5，可选）：同一键的重复请求重放首次响应、不二次执行。
+    #: ``None`` = 每次都执行（v0.1.5 及之前的语义，不升协议版本）。
+    request_id: str | None = None
 
     @classmethod
     def from_mapping(cls, payload: Any) -> ActionRequest:
@@ -181,11 +186,20 @@ class ActionRequest:
                 ErrorCode.INVALID_REQUEST,
                 f"params 不是一张键值表（收到 {type(params).__name__}）",
             )
+        request_id = payload.get("request_id")
+        if request_id is not None and (
+            not isinstance(request_id, str) or not request_id.strip()
+        ):
+            raise RequestError(
+                ErrorCode.INVALID_REQUEST,
+                "request_id 若给出必须是非空字符串（幂等键）",
+            )
         return cls(
             protocol_version=version,
             action=action,
             target=target,
             params=dict(params),
+            request_id=request_id,
         )
 
 

@@ -369,5 +369,106 @@ class ModelFrameSizeTest(unittest.TestCase):
         self.assertEqual(report.kept_frames, 1)
 
 
+class CheckpointResumeTest(unittest.TestCase):
+    """W5 断点续跑：每轮追加一行检查点；恢复时回放文本账本、重抓一帧、续轮次。"""
+
+    @staticmethod
+    def _rows(path) -> list[dict]:
+        import json
+
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_checkpoint_rows_are_appended_per_round(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.jsonl"
+            harness, _api, _caller, _seam = _harness(["pass\n", "pass\n"], max_rounds=2)
+            harness.checkpoint_path = path
+            report = harness.run("目标")
+            self.assertEqual(report.rounds, 2)
+            rows = self._rows(path)
+            self.assertEqual([r["round_index"] for r in rows], [1, 2])
+            self.assertEqual([r["step"]["kind"] for r in rows], ["plan", "plan"])
+            self.assertIn("第1轮", rows[0]["summary"])
+
+    def test_resume_replays_text_ledger_and_continues_from_the_next_round(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.jsonl"
+            harness, _api, _caller, _seam = _harness(["pass\n", "pass\n"], max_rounds=2)
+            harness.checkpoint_path = path
+            harness.run("目标")
+
+            harness2, _api2, caller2, seam2 = _harness(
+                ["pass\n", "pass\n"], max_rounds=4
+            )
+            harness2.checkpoint_path = path  # 续写同一路径
+            report2 = harness2.run("目标", resume=path)
+            # 回放 2 轮 + 新跑 2 轮（3、4）＝ 总 4 个 plan 步。
+            self.assertEqual(report2.rounds, 4)
+            self.assertEqual(
+                [s.kind for s in report2.steps], ["plan"] * 4
+            )
+            # **新模型调用只有 2 次**（第 3、4 轮）——回放不吃模型。
+            self.assertEqual(len(caller2.calls), 2)
+            # 恢复时**重新抓帧**（不回放旧图）。
+            self.assertGreaterEqual(seam2.captures, 1)
+            # 轮次上限按**总轮次**算（已完成的照样占额度）：跑到第 4 轮为止。
+            self.assertEqual(
+                [r["round_index"] for r in self._rows(path)], [1, 2, 3, 4]
+            )
+
+    def test_failed_round_persists_reflect_step_and_resume_replays_it(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.jsonl"
+            harness, _api, _caller, _seam = _harness(
+                ["raise ValueError('boom')\n", "反思文本", "pass\n", "pass\n"],
+                max_rounds=2,
+            )
+            harness.checkpoint_path = path
+            harness.run("目标")
+            rows = self._rows(path)
+            self.assertIsNotNone(rows[0]["reflect_step"], "失败轮的反思步要进检查点")
+
+            harness2, _api2, caller2, _seam2 = _harness(
+                ["pass\n", "pass\n"], max_rounds=4
+            )
+            harness2.checkpoint_path = path
+            report2 = harness2.run("目标", resume=path)
+            self.assertEqual(
+                [s.kind for s in report2.steps],
+                ["plan", "reflect", "plan", "plan", "plan"],
+            )
+            self.assertEqual(len(caller2.calls), 2)
+
+    def test_a_truncated_tail_line_does_not_break_resume(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.jsonl"
+            harness, _api, _caller, _seam = _harness(["pass\n", "pass\n"], max_rounds=2)
+            harness.checkpoint_path = path
+            harness.run("目标")
+            # 模拟崩溃截断：追加半行垃圾。
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write('{"type": "round", "round_index": 3, "summ')
+            harness2, _api2, _caller2, _seam2 = _harness(["pass\n"], max_rounds=3)
+            harness2.checkpoint_path = path
+            report2 = harness2.run("目标", resume=path)
+            self.assertEqual(report2.rounds, 3)  # 回放 1、2，垃圾行跳过，新跑 3
+
+
 if __name__ == "__main__":
     unittest.main()
