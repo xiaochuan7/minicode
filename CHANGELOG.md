@@ -2,6 +2,18 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
+## 未发布
+
+### 正确性修复（W4 真机评测台踩出）
+
+- **键名表字母键映射错误**：`_VK_NAMES` 把 `a`~`z` 映到 ASCII 小写（0x61~0x7A，
+  实为 VK_NUMPAD1~VK_F24 区段）而非 VK 码（0x41~0x5A）——「ctrl+s」实际发出
+  **Ctrl+F4（关闭标签）**、「ctrl+v」是 Ctrl+F7，全部字母组合键静默打偏。
+  功能键/Enter/Tab 不受影响。配红测试（字母必须映射 0x41+i）。
+- **guard L1 空白名单 fail-open 堵成 fail-closed**：旧实现空白名单跳过白名单
+  检查（fail-open）；现在想用 L1 必须显式给窗口集合，空集合 = 无可操作窗口。
+  配红测试。
+
 ## v0.1.5 — 2026-11-02
 
 本条目对应 v0.1.4 之后的发布收口：两个**破坏性变更**（见 MIGRATION）、四个 P1 正确性修复、

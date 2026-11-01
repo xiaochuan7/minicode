@@ -317,7 +317,9 @@ _VK_NAMES: dict[str, int] = {
     "left": 0x25,
     "right": 0x27,
 }
-_VK_NAMES.update({chr(ord("a") + i): ord("a") + i for i in range(26)})
+# 字母键 → **VK 码**（VK_A=0x41 连续）——不是 ASCII 小写（0x61~0x7A 那段是
+# VK_NUMPAD1~VK_F24，「ctrl+s」会静默变成 Ctrl+F4 关标签！W4 真机踩出）。
+_VK_NAMES.update({chr(ord("a") + i): 0x41 + i for i in range(26)})
 _VK_NAMES.update({str(i): 0x30 + i for i in range(10)})
 # 功能键 F1~F12（VK_F1=0x70 连续）；W4 评测台的 F5（插入时间/日期）需要。
 _VK_NAMES.update({f"f{i}": 0x70 + i - 1 for i in range(1, 13)})

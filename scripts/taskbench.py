@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import ctypes.wintypes
 import json
 import subprocess
 import sys
@@ -40,6 +41,7 @@ from w3_probe import find_new_window, visible_windows  # noqa: E402
 
 from minicode.action.protocol import Action, ActionKind  # noqa: E402
 from minicode.action.records import ListTraceSink  # noqa: E402
+from minicode.exec.input import press_scancode, scancode_of  # noqa: E402
 from minicode.guard.lockext import hold_desktop_lock  # noqa: E402
 from minicode.guard.policy import GuardBudget, GuardPolicy, load_policy  # noqa: E402
 from minicode.guard.win32 import last_input_tick, now_tick  # noqa: E402
@@ -50,6 +52,36 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 WM_CLOSE = 0x0010
 USER32 = ctypes.windll.user32
+_VK_CTRL, _VK_S, _VK_A, _VK_BACKSPACE = 0x11, 0x53, 0x41, 0x08
+
+#: **harness 自己的输入时刻**（monotonic）——空闲让位的自归因（批次实测教训：
+#: 清理点击也是真实 SendInput，会把下一次 attempt 的空闲检查打到 <1.5s，
+#: 触发连环假 paused）。护栏语义不变：只有「空闲短 **且** 不是我们自己刚输入」
+#: 才让位。
+_OWN_LAST_INPUT_MONO = 0.0
+
+
+def _note_own_input() -> None:
+    global _OWN_LAST_INPUT_MONO
+    _OWN_LAST_INPUT_MONO = time.monotonic()
+
+
+def _window_text(hwnd: int) -> str:
+    buf = ctypes.create_unicode_buffer(512)
+    USER32.GetWindowTextW(hwnd, buf, 512)
+    return buf.value
+
+
+def _window_class(hwnd: int) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    USER32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def _scan_save() -> None:
+    """扫描码 Ctrl+S（真机对照实验确认的保存路径；VK hotkey 干净环境同样有效）。"""
+    press_scancode(scancode_of(_VK_S), (_VK_CTRL,))
+    _note_own_input()
 
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 #: 评测台临时目录（产物只写这里，跑完自己清理）。
@@ -94,6 +126,7 @@ class TaskRun:
         self.window_title = ""
         self.window_class = ""
         self.service = None
+        self.close_note = ""
         self.vars: dict = {}
         self.steps: list[dict] = []
         self.started = 0.0
@@ -122,6 +155,31 @@ class TaskRun:
                 f"差分窗口类 {self.window_class!r} 不在预期 {app['classes']}"
             )
         time.sleep(1.0)
+        # **前台断言**（批次教训：SendInput 落点是「前台窗口」，spawn 后必须
+        # 确认前台就是自己的实例——Windows 前台锁可能拒绝抢焦点）。
+        if USER32.GetForegroundWindow() != self.hwnd:
+            USER32.ShowWindow(self.hwnd, 9)  # SW_RESTORE
+            USER32.SetForegroundWindow(self.hwnd)
+            time.sleep(0.4)
+        if USER32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError(
+                f"自己的窗口没拿到前台（fg={USER32.GetForegroundWindow()}），"
+                "拒绝盲注（步骤输入会落到别的窗口）"
+            )
+        # **标签守卫**（diag 实验：spawn 会把 TabState 里的旧会话恢复成标签，
+        # 焦点可能停在恢复标签上——标题不是本任务的文件就拒绝开跑）。
+        # 冷启动时文件加载要几秒（标题先是「记事本」），轮询等它出现。
+        file_path = self.vars.get("file_path")
+        if file_path:
+            frag = Path(file_path).name
+            deadline = time.monotonic() + 8.0
+            while frag not in _window_text(self.hwnd):
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f"活动标签不是本任务（标题 {_window_text(self.hwnd)!r} "
+                        f"不含 {frag!r}）——会话恢复劫持或文件加载失败，拒绝盲注"
+                    )
+                time.sleep(0.3)
 
     def build_service(self, budget: GuardBudget) -> None:
         spec_policy = getattr(self.spec, "override_policy", None)
@@ -147,18 +205,49 @@ class TaskRun:
 
     def close_app(self) -> None:
         if self.hwnd:
-            buf = ctypes.create_unicode_buffer(256)
-            USER32.GetClassNameW(self.hwnd, buf, 256)
-            if buf.value in _APPS[self.spec.app]["classes"] \
+            if _window_class(self.hwnd) in _APPS[self.spec.app]["classes"] \
                     and USER32.IsWindowVisible(self.hwnd):
+                self._make_tab_clean()
                 USER32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
                 time.sleep(1.0)
+                # 兜底：自动保存关闭的机器不会有对话框；有就精确名点掉。
                 self._dismiss_save_dialog()
         if self.proc is not None and self.proc.poll() is None:
             try:
                 self.proc.terminate()
             except OSError:
                 pass
+
+    def _make_tab_clean(self) -> None:
+        """关窗前把标签弄干净（批次教训：脏关闭 → TabState 备份 → 下次 spawn
+        会话恢复劫持焦点 → ctrl+s 打到无文件标签弹 Save-As → 模态卡死）。
+
+        文件任务：Ctrl+S 落盘 + 标题去 `*` 验证；calc/edge 无脏状态直接过。
+        任何一步不满足都**只记 note 不硬撑**（fail-honest，残余状态如实上报）。
+        """
+        self.close_note = ""
+        app = _APPS[self.spec.app]
+        if self.spec.app not in ("notepad", "calc"):
+            return
+        file_path = self.vars.get("file_path")
+        if self.spec.app == "notepad":
+            frag = Path(file_path).name if file_path else ""
+            title = _window_text(self.hwnd)
+            if frag and frag not in title:
+                self.close_note = (
+                    f"关窗前标签漂移（标题 {title!r} 不含 {frag!r}），未保存"
+                )
+                return
+            _scan_save()
+            time.sleep(0.8)
+            title = _window_text(self.hwnd)
+            if title.startswith("*"):
+                self.close_note = f"Ctrl+S 后标题仍带 *（{title!r}）"
+                return
+            return
+        # calc：无脏状态；若标题异常也只记 note。
+        if _window_class(self.hwnd) not in app["classes"]:
+            self.close_note = f"calc 窗口类漂移：{_window_class(self.hwnd)!r}"
 
     def _dismiss_save_dialog(self) -> None:
         """「保存？」→「不保存」（精确名匹配，绕开保存⊂不保存的包含歧义）。"""
@@ -177,6 +266,7 @@ class TaskRun:
                     Action(kind=ActionKind.CLICK, params={"x": cx, "y": cy},
                            intent="不保存")
                 )
+                _note_own_input()
                 time.sleep(0.6)
                 if not USER32.IsWindow(self.hwnd):
                     return
@@ -188,45 +278,94 @@ class TaskRun:
               automation_id: str = "") -> list[dict]:
         observer = self.service._observer  # noqa: SLF001 - 评测台脚本
         if name:
-            return [
+            rows = [
                 {"name": c.name, "value": "", "rect": list(c.rect),
                  "control_type": c.control_type}
                 for c in observer.observe(name)
             ]
-        result = observer.query.find(
-            UiaFindRequest(anchor=observer.anchor, name=None,
-                           control_type=control_type or None,
-                           automation_id=automation_id or None)
-        )
-        return [_element_row(e) for e in result.elements]
+        else:
+            result = observer.query.find(
+                UiaFindRequest(anchor=observer.anchor, name=None,
+                               control_type=control_type or None,
+                               automation_id=automation_id or None)
+            )
+            rows = [_element_row(e) for e in result.elements]
+        # **窗口作用域过滤**：查询端口在窗口路查不到时会按 PID 桌面根遍历
+        # （XAML island 的树不在 hwnd 下），同进程其他窗口/恢复标签的元素会
+        # 一并返回（批次实测：f06 读回串进了 f04/f05 的文本）。评测台只认
+        # 落点在自己窗口矩形内的元素。
+        return [row for row in rows if self._rect_in_my_window(row.get("rect"))]
+
+    def _rect_in_my_window(self, rect) -> bool:
+        if not rect or tuple(rect) == (0, 0, 0, 0) or not self.hwnd:
+            return False
+        left, top, right, bottom = (int(v) for v in rect)
+        cx, cy = (left + right) / 2.0, (top + bottom) / 2.0
+        wr = ctypes.wintypes.RECT()
+        USER32.GetWindowRect(self.hwnd, ctypes.byref(wr))
+        return wr.left <= cx <= wr.right and wr.top <= cy <= wr.bottom
+
+    def _assert_ours(self, step_kind: str) -> str | None:
+        """注入前置守卫：前台必须是自己的窗口，文件任务的活动标签必须含本文件名。
+
+        返回 None = 放行；返回字符串 = 拒绝原因（记进步骤明细，fail-loud）。
+        """
+        if not self.hwnd:
+            return None
+        if USER32.GetForegroundWindow() != self.hwnd:
+            return f"前台不是自己的窗口，拒绝{step_kind}"
+        file_path = self.vars.get("file_path")
+        if file_path:
+            frag = Path(file_path).name
+            if frag not in _window_text(self.hwnd):
+                return (
+                    f"活动标签漂移（标题 {_window_text(self.hwnd)!r} 不含 {frag!r}），"
+                    f"拒绝{step_kind}"
+                )
+        return None
 
     def do_step(self, step: dict) -> dict:
         kind = step["do"]
         if kind == "click":
+            deny = self._assert_ours("点击")
+            if deny:
+                return {"ok": False, "error_code": "focus_lost", "error": deny,
+                        "channel": "uia"}
             response = self.service.execute(
                 {"protocol": _PROTOCOL, "action": "click",
                  "target": step["target"]}
             )
+            _note_own_input()
             return {"ok": response.ok, "error_code": response.error_code,
                     "channel": "uia", "landing": response.landing_point}
         if kind == "type":
-            guarded = self.service._seam_factory(ListTraceSink())  # noqa: SLF001
+            deny = self._assert_ours("输入")
+            if deny:
+                return {"ok": False, "error_code": "focus_lost", "error": deny,
+                        "channel": "keyboard"}
+            guarded = self.service._seam_factory(ListTraceSink())  # noqa: SLF001 - 评测台脚本
             outcome = guarded.executor.execute(
                 Action(kind=ActionKind.TYPE, params={"text": step["text"]},
                        intent=step.get("intent", "输入文本"))
             )
+            _note_own_input()
             self.service.guard_session.ledger.record_step(model_calls=0)
             return {"ok": outcome.ok,
                     "error_code": (outcome.error_code.value
                                    if outcome.error_code else None),
                     "channel": "keyboard", "notes": list(outcome.notes)}
         if kind == "key":
-            guarded = self.service._seam_factory(ListTraceSink())  # noqa: SLF001
+            deny = self._assert_ours("按键")
+            if deny:
+                return {"ok": False, "error_code": "focus_lost", "error": deny,
+                        "channel": "keyboard"}
+            guarded = self.service._seam_factory(ListTraceSink())  # noqa: SLF001 - 评测台脚本
             outcome = guarded.executor.execute(
                 Action(kind=ActionKind.KEY,
                        params={"combo": tuple(step["combo"])},
                        intent=step.get("intent", "按键"))
             )
+            _note_own_input()
             self.service.guard_session.ledger.record_step(model_calls=0)
             return {"ok": outcome.ok,
                     "error_code": (outcome.error_code.value
@@ -278,6 +417,7 @@ class TaskRun:
             "wall_ms": self.wall_ms,
             "step_count": len(self.steps),
             "verdict": self.verdict,
+            "close_note": self.close_note,
             "guard_denials": len(session.denials) if session else 0,
             "estop_triggered": (
                 session.estop.triggered if session and session.estop else False
@@ -309,9 +449,13 @@ def run_attempt(spec, out_dir: Path, protocol_version: str) -> dict:
     run = TaskRun(spec, out_dir, protocol_version)
     run.started = time.monotonic()
     idle_ms = (now_tick() - last_input_tick()) % 0x1_0000_0000
-    if idle_ms < 1500:
+    own_recent_s = time.monotonic() - _OWN_LAST_INPUT_MONO
+    if idle_ms < 1500 and own_recent_s > 3.0:
+        # 空闲让位（护栏 6）**带自归因**：harness 自己的清理/注入也是真实
+        # SendInput；只有「空闲短 且 不是我们 3 秒内输入的」才让位。
         return {"task": spec.id, "attempt_status": "paused",
-                "note": "用户正在动键鼠（护栏 6），本轮未跑"}
+                "note": (f"用户正在动键鼠（护栏 6，idle_ms={idle_ms:.0f}，"
+                         f"own_recent_s={own_recent_s:.1f}），本轮未跑")}
     result: dict = {}
     try:
         spec.reset(run)
@@ -330,6 +474,14 @@ def run_attempt(spec, out_dir: Path, protocol_version: str) -> dict:
         result["error"] = f"{type(exc).__name__}: {exc}"
         return result
     finally:
+        # 服务退役：急停 watchdog 是守护线程，不停会跨任务积累（3 轮 × 30 任务
+        # 就是 ~270 个轮询线程）——每次 attempt 结束显式停。
+        estop = getattr(getattr(run.service, "guard_session", None), "estop", None)
+        if estop is not None:
+            try:
+                estop.stop()
+            except Exception:
+                pass
         if spec.app:
             try:
                 run.close_app()
@@ -346,6 +498,9 @@ def run_task(spec, out_dir: Path, attempts: int = 3,
         result["attempt"] = index + 1
         results.append(result)
         if result.get("attempt_status") == "paused":
+            # 让位后**必须重采样**：三次 attempt 之间没有 sleep 的话会在同一个
+            # 输入窗口里裸奔（实测三次 idle_ms 恒等 203）——等 1.5s 再试。
+            time.sleep(1.5)
             continue
         # reset 每轮之间留点余地（实例收尾进程退出）。
         time.sleep(1.0)
@@ -463,6 +618,11 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     TASK_TMP.mkdir(parents=True, exist_ok=True)
+
+    # **开场静默 2s**：进程启动瞬间的残余输入窗口（实测 idle_ms≈200）会系统性
+    # 打掉每个任务的第一个 attempt（success@1 被人为压低）。瞬态衰减后照常
+    # 起跑；真实用户活动仍会触发护栏 6 让位。
+    time.sleep(2.0)
 
     all_summaries: list[dict] = []
     for round_no in range(1, args.rounds + 1):

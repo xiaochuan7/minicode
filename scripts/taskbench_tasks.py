@@ -5,9 +5,12 @@
 judge 的口径（铁律）：**只读状态** —— UIA 控件值 / 文件内容 / 磁盘 / 窗口标题，
 **不读截图**。反例类验证「该失败时会失败」。
 
-notepad 任务分两种：**文件任务**（runner 带 `file_path` 参数起实例——
-打开即聚焦本任务的标签，避免 Win11 会话恢复把旧标签顶成活动标签）
-与 **无标题任务**（不保存，结束走「不保存」清理）。
+notepad 任务**一律文件承载**（runner 带 `file_path` 参数起实例——打开即聚焦
+本任务的标签，关窗前 Ctrl+S 弄干净再关）：diag 对照实验证实，无文件 spawn
+会把 TabState 里的旧会话恢复成标签并可能劫持焦点，输入会落进恢复标签、
+Ctrl+S 会对无文件标签弹 Save-As 模态框卡死后续全部任务。
+Unicode 注入的控制字符（\\r\\n）在 Win11 记事本上**不产生换行**（diag 实测，
+UIA 读回 lines=1），换行一律走 Enter 键。
 """
 
 from __future__ import annotations
@@ -138,6 +141,29 @@ def _notepad_open_file(file_name: str, content: str):
     return reset
 
 
+def _title_of(hwnd: int) -> str:
+    """窗口标题（物理缓冲区读法）。"""
+    import ctypes
+
+    buf = ctypes.create_unicode_buffer(512)
+    ctypes.windll.user32.GetWindowTextW(hwnd, buf, 512)
+    return buf.value
+
+
+def _rect_in(hwnd: int, rect) -> bool:
+    """元素矩形中心是否落在这个窗口里（跨窗口/恢复标签的读回过滤）。"""
+    import ctypes
+    import ctypes.wintypes
+
+    if not rect or tuple(rect) == (0, 0, 0, 0):
+        return False
+    left, top, right, bottom = (int(v) for v in rect)
+    wr = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(wr))
+    cx, cy = (left + right) / 2.0, (top + bottom) / 2.0
+    return wr.left <= cx <= wr.right and wr.top <= cy <= wr.bottom
+
+
 def _notepad_close_discard(hwnd: int, desktop) -> None:
     """关闭一个改过的无标题记事本：WM_CLOSE → 精确名「不保存」→ rect 点击。"""
     import ctypes
@@ -201,11 +227,10 @@ _t(
 
 f02_line = "f02 追加的这一行"
 _t(
-    "f02", "文件类", "文件末尾追加一行（Ctrl+End→输入→Ctrl+S）→ 磁盘含新行",
+    "f02", "文件类", "打开已有文件 → 追加一行（输入→Ctrl+S）→ 磁盘含新行",
     "notepad",
     (
-        {"do": "key", "combo": ["ctrl", "end"], "intent": "光标到末尾"},
-        {"do": "type", "text": f02_line + "\r\n"},
+        {"do": "type", "text": f02_line},
         {"do": "key", "combo": ["ctrl", "s"], "intent": "保存"},
         {"do": "wait", "ms": 800},
     ),
@@ -242,7 +267,7 @@ _t(
 )
 
 _t(
-    "f05", "文件类", "无标题记事本输入一行 → UIA 读回（不保存）",
+    "f05", "文件类", "打开文件 → 输入一行 → UIA 读回包含该行",
     "notepad",
     (
         {"do": "type", "text": "f05 的这一行"},
@@ -250,20 +275,27 @@ _t(
         {"do": "query", "control_type": "Document", "save_as": "doc"},
     ),
     judge_value("f05 的这一行"),
+    reset=_notepad_open_file("f05.txt", ""),
 )
 
 _t(
-    "f06", "文件类", "输入三行 → UIA 读回行数 = 3",
+    "f06", "文件类", "输入三行（Enter 换行）→ UIA 读回行数 = 3",
     "notepad",
     (
-        {"do": "type", "text": "f06 L1\r\nf06 L2\r\nf06 L3"},
+        {"do": "type", "text": "f06 L1"},
+        {"do": "key", "combo": ["enter"], "intent": "换行"},
+        {"do": "type", "text": "f06 L2"},
+        {"do": "key", "combo": ["enter"], "intent": "换行"},
+        {"do": "type", "text": "f06 L3"},
         {"do": "wait", "ms": 300},
         {"do": "query", "control_type": "Document", "save_as": "doc"},
     ),
-    lambda run: (lambda value: {"ok": value.count("\n") >= 2,
-                                "lines": value.count("\n") + 1,
-                                "value": value[:200]})(
+    lambda run: (lambda value: {
+        "ok": (value.count("\n") + value.count("\r")) >= 2,
+        "lines": value.count("\n") + value.count("\r") + 1,
+        "value": value[:200]})(  # UIA 把换行报成 \r（diag 实测），两种都数
         _joined_value(run.vars.get("doc") or [])),
+    reset=_notepad_open_file("f06.txt", ""),
 )
 
 _t(
@@ -275,6 +307,7 @@ _t(
         {"do": "query", "control_type": "Document", "save_as": "doc"},
     ),
     judge_value("🎉"),
+    reset=_notepad_open_file("f07.txt", ""),
 )
 
 _t(
@@ -282,6 +315,7 @@ _t(
     "notepad",
     ({"do": "type", "text": "f08 修改标记"},),
     judge_title("*"),
+    reset=_notepad_open_file("f08.txt", ""),
 )
 
 # ===========================================================================
@@ -378,7 +412,7 @@ _t(
 )
 
 _t(
-    "i19", "界面类", "撤销：输入 → Ctrl+Z → UIA 读回为空",
+    "i19", "界面类", "撤销：输入 → Ctrl+Z → UIA 读回回到基础内容",
     "notepad",
     (
         {"do": "type", "text": "i19 会被撤销的内容"},
@@ -387,8 +421,10 @@ _t(
         {"do": "wait", "ms": 300},
         {"do": "query", "control_type": "Document", "save_as": "doc"},
     ),
-    lambda run: (lambda value: {"ok": value.strip() == "", "value": value[:200]})(
+    lambda run: (lambda value: {"ok": value.strip() == "i19 基础行",
+                                "value": value[:200]})(
         _joined_value(run.vars.get("doc") or [])),
+    reset=_notepad_open_file("i19.txt", "i19 基础行\n"),
 )
 
 _t(
@@ -400,6 +436,7 @@ _t(
         {"do": "query", "control_type": "Document", "save_as": "doc"},
     ),
     judge_value("2026"),
+    reset=_notepad_open_file("i20.txt", ""),
 )
 
 _t(
@@ -425,6 +462,7 @@ _t(
     lambda run: (lambda value: {"ok": "i22\t" in value,
                                 "value": value[:200]})(
         _joined_value(run.vars.get("doc") or [])),
+    reset=_notepad_open_file("i22.txt", ""),
 )
 
 # ===========================================================================
@@ -459,58 +497,109 @@ def _x24_steps(run) -> dict:
     from w3_probe import find_new_window, visible_windows  # noqa: PLC0415
 
     protocol = run.protocol_version
-    # -- 段 1：notepad（自己的实例）输入 17 并读回 --------------------------
+    # -- 段 1：notepad（自己的实例，**文件承载**）读回 17 -------------------
+    # （diag 实验：无文件 spawn 会把 TabState 旧会话恢复成标签并可能劫持焦点；
+    #   文件承载 + 标题守卫才敢注入。本段只读不写。）
     cfg = _APPS["notepad"]
+    src1 = TASK_TMP / "x24-notepad.txt"
+    src1.parent.mkdir(parents=True, exist_ok=True)
+    src1.write_text("17", encoding="utf-8")
     before = {w[0] for w in visible_windows(cfg["classes"])}
-    proc1 = subprocess.Popen(cfg["command"])
+    proc1 = subprocess.Popen([cfg["command"][0], str(src1)])
     found = find_new_window(before, class_filter=cfg["classes"])
     if found is None:
         proc1.terminate()
         return {"ok": False, "error": "notepad 没等到窗口"}
     hwnd1, _cls1, _title1 = found
     time.sleep(1.2)
+    if ctypes.windll.user32.GetForegroundWindow() != hwnd1:
+        _notepad_close_discard(hwnd1, build_desktop(hwnd=hwnd1))
+        return {"ok": False, "error": "notepad 没拿到前台"}
+    title1 = _title_of(hwnd1)
+    if "x24-notepad.txt" not in title1:
+        _notepad_close_discard(hwnd1, build_desktop(hwnd=hwnd1))
+        return {"ok": False, "error": f"活动标签不是本任务（标题 {title1!r}）"}
     desktop1 = build_desktop(hwnd=hwnd1)
-    seam1 = desktop1.new_seam(ListTraceSink())
-    seam1.executor.execute(Action(kind=ActionKind.TYPE, params={"text": "17"}))
-    time.sleep(0.8)
     observer1 = UiaStateObserver(desktop1.port, desktop1.anchor)
     rows1 = observer1.query.find(
         UiaFindRequest(anchor=desktop1.anchor, control_type="Document")
     )
-    value = "".join(getattr(el, "value", "") for el in rows1.elements).strip()
+    value = "".join(
+        getattr(el, "value", "") for el in rows1.elements
+        if _rect_in(hwnd1, getattr(el, "rect", ()))
+    ).strip()
     _notepad_close_discard(hwnd1, desktop1)
     if value != "17":
         return {"ok": False, "error": f"notepad 读回 {value!r} != '17'"}
 
     # -- 段 2：calc 键盘输入 17 ×23 = ----------------------------------------
+    # ⚠️ x24 的 app=None → run.service 是 None（外层没有实例）；calc 必须配
+    # **自己的**带护栏服务（评测台纪律：每实例一份接线，跨窗口借用必炸）。
     cfg2 = _APPS["calc"]
     before2 = {w[0] for w in visible_windows(cfg2["classes"])}
     proc2 = subprocess.Popen(cfg2["command"])
-    found2 = find_new_window(before2, class_filter=cfg2["classes"])
-    if found2 is None:
-        proc2.terminate()
-        return {"ok": False, "error": "calc 没等到窗口", "notepad_value": value}
-    hwnd2, _cls2, _title2 = found2
-    time.sleep(1.2)
-    desktop2 = build_desktop(hwnd=hwnd2)
-    seam2 = desktop2.new_seam(ListTraceSink())
-    seam2.executor.execute(Action(kind=ActionKind.TYPE, params={"text": value}))
-    time.sleep(0.5)
-    for name in ("乘以", "二", "三", "等于"):
-        response = run.service.execute(
-            {"protocol": protocol, "action": "click", "target": name}
+    hwnd2 = 0
+    svc2 = None
+    try:
+        found2 = find_new_window(before2, class_filter=cfg2["classes"])
+        if found2 is None:
+            proc2.terminate()
+            return {"ok": False, "error": "calc 没等到窗口", "notepad_value": value}
+        hwnd2, _cls2, _title2 = found2
+        time.sleep(1.2)
+        from minicode.guard.policy import load_policy  # noqa: PLC0415
+        from minicode.serve.real import build_real_service  # noqa: PLC0415
+
+        svc2 = build_real_service(
+            run.out_dir, hwnd=hwnd2,
+            guard_policy=load_policy(level="L1", whitelist=cfg2["whitelist"]),
+            session_directory=run.out_dir / "guard",
         )
-        if not response.ok:
+        # 键盘输入被乘数（走 calc 自己的护栏通道，与 do_step 的 type 同口径）。
+        guarded2 = svc2._seam_factory(ListTraceSink())  # noqa: SLF001 - 评测台脚本
+        outcome = guarded2.executor.execute(
+            Action(kind=ActionKind.TYPE, params={"text": value},
+                   intent="calc 输入被乘数")
+        )
+        svc2.guard_session.ledger.record_step(model_calls=0)
+        if not outcome.ok:
+            return {"ok": False,
+                    "error": f"calc 输入失败：{outcome.error_code}",
+                    "notepad_value": value}
+        time.sleep(0.3)
+        for name in ("乘以", "二", "三", "等于"):
+            response = svc2.execute(
+                {"protocol": protocol, "action": "click", "target": name}
+            )
+            if not response.ok:
+                return {"ok": False,
+                        "error": f"calc 点击 {name} 失败：{response.error_code}"}
+        time.sleep(0.5)
+        # 显示屏读数：calc 自己的观察者（run.service 为 None，不能借）。
+        desktop2 = build_desktop(hwnd=hwnd2)
+        observer2 = UiaStateObserver(desktop2.port, desktop2.anchor)
+        result2 = observer2.query.find(
+            UiaFindRequest(anchor=desktop2.anchor,
+                           automation_id="CalculatorResults")
+        )
+        display = " ".join(
+            (getattr(el, "value", "") or getattr(el, "name", ""))
+            for el in result2.elements
+        )
+        run.vars["cross_ok"] = "391" in display
+        run.vars["cross_display"] = display
+        run.vars["cross_notepad_value"] = value
+        return {"ok": "391" in display, "display": display}
+    finally:
+        estop2 = getattr(getattr(svc2, "guard_session", None), "estop", None)
+        if estop2 is not None:
+            try:
+                estop2.stop()
+            except Exception:
+                pass
+        # 收尾三道闸的最后一道：只关**自己差分找到的**窗口句柄。
+        if hwnd2 and ctypes.windll.user32.IsWindow(hwnd2):
             ctypes.windll.user32.PostMessageW(hwnd2, WM_CLOSE, 0, 0)
-            return {"ok": False, "error": f"calc 点击 {name} 失败：{response.error_code}"}
-    time.sleep(0.5)
-    rows2 = run.query(automation_id="CalculatorResults")
-    display = " ".join((r.get("value") or r.get("name") or "") for r in rows2)
-    ctypes.windll.user32.PostMessageW(hwnd2, WM_CLOSE, 0, 0)
-    run.vars["cross_ok"] = "391" in display
-    run.vars["cross_display"] = display
-    run.vars["cross_notepad_value"] = value
-    return {"ok": "391" in display, "display": display}
 
 
 _t(
@@ -576,13 +665,13 @@ x26_mid = "x26 中间插入"
 x26_end = "x26 末尾追加"
 _t(
     "x26", "复合类",
-    "两处修改（首部插入 + 末尾追加）→ Ctrl+S → 磁盘同时含两处（两步依赖）",
+    "两步修改（整体重写为两行）→ Ctrl+S → 磁盘同时含两处（两步依赖）",
     "notepad",
     (
-        {"do": "key", "combo": ["ctrl", "home"], "intent": "光标到最前"},
+        {"do": "key", "combo": ["ctrl", "a"], "intent": "全选"},
         {"do": "type", "text": x26_mid},
-        {"do": "key", "combo": ["ctrl", "end"], "intent": "光标到末尾"},
-        {"do": "type", "text": "\r\n" + x26_end},
+        {"do": "key", "combo": ["enter"], "intent": "换行"},
+        {"do": "type", "text": x26_end},
         {"do": "key", "combo": ["ctrl", "s"], "intent": "保存"},
         {"do": "wait", "ms": 800},
     ),

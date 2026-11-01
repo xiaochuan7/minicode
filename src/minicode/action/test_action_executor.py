@@ -558,3 +558,21 @@ class KeyNameTableTest(unittest.TestCase):
         for i in range(1, 13):
             with self.subTest(key=f"f{i}"):
                 self.assertIn(f"f{i}", _VK_NAMES)
+
+    def test_letter_keys_resolve_to_vk_codes_not_ascii_lowercase(self):
+        """字母键必须映射到 **VK 码**（0x41~0x5A），不是 ASCII 小写（0x61~0x7A）。
+
+        W4 真机踩出的 bug：旧表把 'a'~'z' 映到 ``ord('a')+i``（0x61~0x7A），
+        那一段是 VK_NUMPAD1~VK_F24 —— 「ctrl+s」实际发的是 Ctrl+F4（关标签！）、
+        「ctrl+v」是 Ctrl+F7，全部组合键静默打偏。0x41='A' 才是 VK_A。
+        """
+        from minicode.action.windows import _VK_NAMES
+
+        self.assertEqual(_VK_NAMES["a"], 0x41)
+        self.assertEqual(_VK_NAMES["s"], 0x53)
+        self.assertEqual(_VK_NAMES["v"], 0x56)
+        self.assertEqual(_VK_NAMES["z"], 0x5A)
+        for i in range(26):
+            letter = chr(ord("a") + i)
+            with self.subTest(letter=letter):
+                self.assertEqual(_VK_NAMES[letter], 0x41 + i)
