@@ -32,6 +32,17 @@ def _ci(ci: list) -> str:
     return f"[{_pct(ci[0])}, {_pct(ci[1])}]" if ci and ci[0] is not None else "—"
 
 
+def _error_kinds(outcomes: dict) -> dict[str, int]:
+    """错误类型计数（按异常类名归并）。"""
+    kinds: dict[str, int] = {}
+    for arm in ("pixel", "norm_0_1000"):
+        for o in outcomes[arm]:
+            error = (o.get("error") or "").strip()
+            if error:
+                kinds[error.split(":")[0]] = kinds.get(error.split(":")[0], 0) + 1
+    return kinds
+
+
 def _strata_table(outcomes: dict) -> list[str]:
     """按 platform × ui_type 的分层数（次要分析）。"""
     buckets: dict[tuple, dict] = defaultdict(lambda: {"n": 0, "pixel": 0, "norm": 0})
@@ -108,9 +119,9 @@ def main() -> int:
         "| 臂 | 命中 | 命中率 | Wilson 95% CI |",
         "|---|---|---|---|",
         f"| pixel（现状） | {hits['pixel']}/{n} | {_pct(hits['pixel'] / n if n else 0)} "
-        f"| {_ci([x * 100 for x in stats['wilson_left']])} |",
+        f"| {_ci(stats['wilson_left'])} |",
         f"| 0-1000 归一化 | {hits['norm_0_1000']}/{n} | {_pct(hits['norm_0_1000'] / n if n else 0)} "
-        f"| {_ci([x * 100 for x in stats['wilson_right']])} |",
+        f"| {_ci(stats['wilson_right'])} |",
         "",
         f"* **2×2 配对表**（n={n}）：双中 {table['both_hit']} · 仅 pixel 中 "
         f"{table['left_only']} · 仅 0-1000 中 {table['right_only']} · 双不中 "
@@ -136,9 +147,21 @@ def main() -> int:
         "## 诚实注记",
         "",
         f"* 调用错误：pixel 臂 {errors['pixel']} 条、0-1000 臂 {errors['norm_0_1000']}"
-        " 条（计入未命中方向，明细在配对 JSON 的 outcomes 里）。",
+        " 条（计入未命中方向，明细在配对 JSON 的 outcomes 里）。"
+        + (
+            "错误构成："
+            + "；".join(
+                f"{kind.split(':')[0]}×{count}"
+                for kind, count in sorted(_error_kinds(outcomes).items())
+            )
+            if any(errors.values())
+            else ""
+        ),
+        "* 结论强度：|Δ| 未达本样本量的 MDE，且保守对照（exact / χ²+Yates）未过 "
+        "0.05——这是**方向性证据**（与 mid-p 主报同向），不是定论；要定论需加大样本。",
         "* **单级对比**：只比整屏粗定位那一级；两级路径里 crop 精定位的坐标语言是"
-        "另一个实验，未混入。",
+        "另一个实验，未混入。配对 JSON 里 `strata.coarse_hit/coarse_miss` 为空是"
+        "预期行为（本实验没有粗定位臂可分层）。",
         "* 两臂各按其**声明的契约**解释回答；未做逐尺寸标定探针（生产行为的标定是"
         "另一条线，此前已有记录）。",
         "* 原始样本与逐条回答落在 `runs/w6/`（gitignored，仓库外图片不出库）；"
