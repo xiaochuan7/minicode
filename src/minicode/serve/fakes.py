@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 from minicode.action.fakes import (
@@ -19,7 +18,7 @@ from minicode.action.fakes import (
     FakeWindowController,
     VirtualClock,
 )
-from minicode.action.geometry import VirtualDesktop, rect_center
+from minicode.action.geometry import VirtualDesktop, rect_center, to_physical_point
 from minicode.action.ports import ControlCandidate
 from minicode.action.records import ListTraceSink
 from minicode.action.seam import ActionExecutionSeam
@@ -47,16 +46,12 @@ _FAKE_RECT = (1016, 1528, 1083, 1600)
 
 #: 假桌面上那次点击的落点（物理像素）。
 #:
-#: ⚠️ **框 → 落点的换算只有一份**（`action/geometry.py::rect_center`）——
-#: 这里不自己算第二遍。取整用 ``math.floor``，与假桌面实际走的那条路径**逐字一致**
-#: （M0 老路径：截图像素空间取中心再 `floor`，见 `action/seam.py`）。
-#: ⚠️ 用 `floor` 而不是 `int()`：后者是**向零截断**（负坐标不同 ——
-#: 副屏在左时虚拟桌面原点为负）。
-#:
-#: ⚠️ **假桌面与真机的取整口径差 1 px**：真机走 UIA 通道，落点取**就近**取整
-#: （`center_point`）—— 同一块控件，假桌面给 1049、真机给 1050。
-_FAKE_LANDING = rect_center(_FAKE_RECT)
-FAKE_LANDING = (math.floor(_FAKE_LANDING[0]), math.floor(_FAKE_LANDING[1]))
+#: ⚠️ **框 → 落点的换算只有一份**（`action/geometry.py::rect_center` →
+#: `to_physical_point`）——这里不自己算第二遍。
+#: 取整收敛（v0.1.6）：假桌面与真机共用同一落地取整口径 floor(x+0.5)，
+#: 半点同向（1049.5 → 1050）——此前「假桌面 floor / 真机就近」差 1px 的
+#: 双口径已被取缔，本常量随之从 1049 改为 1050（契约修正）。
+FAKE_LANDING = to_physical_point(*rect_center(_FAKE_RECT))
 
 
 def fake_candidate() -> ControlCandidate:

@@ -26,6 +26,16 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+# 锁的提示语含中文；stdout 接到 cp1252 一类窄码页管道时（CI / 部分重定向），
+# 默认编码会把整个锁流程打成 UnicodeEncodeError 崩溃——人机互斥状态位必须
+# 在任何控制台下都能工作，不可编码的字符降级替换。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - 已关流的极端场景
+            pass
+
 LOCK_PATH = Path(__file__).resolve().parent.parent / ".scratch" / "desktop.lock"
 
 #: agent 持有的锁超过这个时长就当作上次崩溃残留，允许抢占。

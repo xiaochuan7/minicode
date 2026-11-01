@@ -196,7 +196,7 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(len(report.steps), 1)
         step = report.steps[0]
         self.assertEqual(step.action_kind, "click")
-        self.assertEqual(step.point, (1049, 1564))
+        self.assertEqual(step.point, (1050, 1564))
         self.assertTrue(step.ok)
         self.assertEqual(step.timestamp, records[0]["timestamp"])
 
