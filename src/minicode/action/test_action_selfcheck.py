@@ -129,7 +129,8 @@ class MinimalLoopTest(unittest.TestCase):
             records = ActionLog(tmp).records()
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["action"], "click")
-            self.assertEqual(records[0]["point"], {"x": 1049, "y": 1564, "space": "physical-surface"})
+            # 统一取整口径（W7 P2 #7）：中心 1049.5 → 1050。
+            self.assertEqual(records[0]["point"], {"x": 1050, "y": 1564, "space": "physical-surface"})
 
     def test_failed_startup_check_produces_no_action_record(self):
         with tempfile.TemporaryDirectory() as tmp:

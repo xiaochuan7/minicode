@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 import time
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from ctypes import wintypes
@@ -500,23 +502,99 @@ def _root_walk_by_pid(pids: set[int] | int) -> list:
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="uia-query")
 
+#: 连续超时多少次后**熔断**（护栏：挂死窗口陆续占满 worker 之后，
+#: 与其每次再白等一个超时预算，不如立刻报通道级失败——W7 P2 #9）。
+BREAKER_THRESHOLD = 3
+#: 熔断的冷却时长（秒）：冷却期内查询**立刻**失败，不进池排队。
+BREAKER_COOLDOWN_S = 30.0
+
+
+class _PoolGuard:
+    """UIA 查询池的**饱和与熔断**守卫。
+
+    两个失效模式都要挡（W7 P2 #9）：
+
+    * **饱和**：COM 调用进去就取消不掉，挂死的查询陆续占满 8 个 worker
+      → 之后的每次查询都在队列里白等一个完整超时预算。
+      → 池满**立刻**报通道级失败（错误信息说明池满）；
+    * **连续超时**：一连串查询都超时（窗口挂死 / COM 卡住）→ 熔断打开，
+      冷却期内**立刻**失败，不再每次付超时预算。成功一次就复位
+      （恢复了就该继续干活）。
+    """
+
+    def __init__(
+        self,
+        *,
+        max_workers: int = 8,
+        threshold: int = BREAKER_THRESHOLD,
+        cooldown_s: float = BREAKER_COOLDOWN_S,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._lock = threading.Lock()
+        self._max_workers = int(max_workers)
+        self._threshold = int(threshold)
+        self._cooldown_s = float(cooldown_s)
+        self._clock = clock
+        self.in_flight = 0
+        self.consecutive_timeouts = 0
+        self.opened_until = 0.0
+
+    def acquire(self) -> None:
+        """占一个 worker 名额；池满 / 熔断中 → **立刻**抛通道级超时。"""
+        now = self._clock()
+        with self._lock:
+            if self.opened_until > now:
+                raise UiaQueryTimeout(
+                    f"UIA 查询池熔断中（连续 {self.consecutive_timeouts} 次超时），"
+                    f"冷却剩 {self.opened_until - now:.1f}s（通道级失败）"
+                )
+            if self.in_flight >= self._max_workers:
+                raise UiaQueryTimeout(
+                    f"UIA 查询池已满（{self._max_workers} 个 worker 全部在途"
+                    "——更早的 COM 调用挂死占住了线程）（通道级失败）"
+                )
+            self.in_flight += 1
+
+    def release(self, *, ok: bool) -> None:
+        """归还名额；成功复位熔断，超时累计到阈值就打开冷却。"""
+        with self._lock:
+            self.in_flight = max(0, self.in_flight - 1)
+            if ok:
+                self.consecutive_timeouts = 0
+                self.opened_until = 0.0
+                return
+            self.consecutive_timeouts += 1
+            if self.consecutive_timeouts >= self._threshold:
+                self.opened_until = self._clock() + self._cooldown_s
+
+
+_POOL_GUARD = _PoolGuard()
+
 
 def _with_deadline(work, timeout_s: float):
     """在超时预算内跑一次 COM 调用；超时按**通道级失败**报。
 
     ⚠️ COM 调用一旦进去就**取消不掉**：超时时那个工作线程会继续占着
     （这是 UIA 访问层的固有性质，不是本项目的选择）。
+    ⚠️ **池满 / 熔断中立刻失败**（W7 P2 #9）：不再排队白等一个超时预算。
     """
 
     def _call():
         return work()
 
-    future = _EXECUTOR.submit(_call)
+    _POOL_GUARD.acquire()
+    ok = False
     try:
-        return future.result(timeout=timeout_s)
-    except FutureTimeout as exc:
-        future.cancel()
-        raise UiaQueryTimeout(f"查询超过 {timeout_s} 秒（通道级失败）") from exc
+        future = _EXECUTOR.submit(_call)
+        try:
+            result = future.result(timeout=timeout_s)
+            ok = True
+            return result
+        except FutureTimeout as exc:
+            future.cancel()
+            raise UiaQueryTimeout(f"查询超过 {timeout_s} 秒（通道级失败）") from exc
+    finally:
+        _POOL_GUARD.release(ok=ok)
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ __all__ = [
     "is_valid_rect",
     "rect_center",
     "center_point",
+    "to_physical_point",
     "VirtualDesktop",
 ]
 
@@ -71,7 +72,19 @@ def center_point(rect: tuple[int, int, int, int]) -> tuple[int, int]:
     取**就近**取整：与真实中心的偏差 ≤ 0.5 物理像素（验收线是 ≤2）。
     """
     x, y = rect_center(rect)
-    return (int(math.floor(x + 0.5)), int(math.floor(y + 0.5)))
+    return to_physical_point(x, y)
+
+
+def to_physical_point(px: float, py: float) -> tuple[int, int]:
+    """浮点物理坐标 → 整数落点 —— **全项目唯一的落点取整口径**。
+
+    ``floor(x + 0.5)``（半点向上）：偶数宽控件的中心必然是 x.5，
+    旧实现三套口径并存（视觉通道 ``int(round())`` 是银行家舍入、
+    动作缝 ``math.floor`` 纯向下、这里 ``floor(x+0.5)``）——
+    同一个半点跨通道 ±1 px 系统性分歧，负坐标副屏上 ``floor`` 还会
+    反向偏移（W7 P2 #7）。三条通道一律走这个函数。
+    """
+    return (int(math.floor(px + 0.5)), int(math.floor(py + 0.5)))
 
 
 @dataclass(frozen=True)

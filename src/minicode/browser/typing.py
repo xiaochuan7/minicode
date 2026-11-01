@@ -68,6 +68,9 @@ class BrowserTyping:
 
     def type_text(self, text: str) -> ActionResult:
         """把 ``text`` 输入到浏览器里。返回动作结果（退化会记在 ``notes`` 里）。"""
+        # **注入前的焦点值**（W7 P2 #6 的差分基准）：字段本来就含目标文本时，
+        # 「注入后含目标文本」不能证明键盘事件送达 —— 必须看**值变了没有**。
+        before = self._focused_value()
         action = Action(
             kind=ActionKind.TYPE,
             params={"text": text},
@@ -76,7 +79,7 @@ class BrowserTyping:
         result = self.executor.execute(action)
         if not result.ok:
             return result
-        received, decided = self._browser_received(text)
+        received, decided = self._browser_received(text, before)
         if not decided:
             # 判不了 ≠ 不成立：不瞎退，如实记一笔。
             return replace(result, notes=result.notes + (UNDECIDABLE_NOTE,))
@@ -97,13 +100,22 @@ class BrowserTyping:
             )
         return replace(result, notes=result.notes + (note,))
 
-    def _browser_received(self, text: str) -> tuple[bool, bool]:
+    def _focused_value(self) -> str:
+        """**当前**焦点元素的值（读不到就空串——差分基准的缺省）。"""
+        snapshot = self.structure.snapshot()
+        return snapshot.focused_value or ""
+
+    def _browser_received(self, text: str, before: str) -> tuple[bool, bool]:
         """浏览器**收没收到**这段键盘事件。
 
         返回 ``(收没收到, 判没判得了)``：页面里没有聚焦元素时**判不了**。
 
         ⚠️ **要重新感知若干次**：注入是异步到达的，页面上的值可能慢几十毫秒
         才更新 —— 只查一次会把「还没到」误判成「收不到」，然后**重复输入一遍**。
+
+        ⚠️ **差分判定**（W7 P2 #6）：``received`` = 值**变了** **且** 含目标文本。
+        只看「含目标文本」的话，字段本来就含这段文字时，键盘事件**根本没送达**
+        也判成功（子串包含的假成功）。
         """
         decided = False
         for attempt in range(self._attempts):
@@ -114,6 +126,7 @@ class BrowserTyping:
                 # 没有聚焦元素 → **判不了**（不是「收不到」）。
                 return False, False
             decided = True
-            if text in (snapshot.focused_value or ""):
+            after = snapshot.focused_value or ""
+            if after != before and text in after:
                 return True, True
         return False, decided

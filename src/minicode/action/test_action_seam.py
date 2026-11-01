@@ -84,10 +84,16 @@ class SeamBasicsTest(unittest.TestCase):
         self.assertTrue(left <= x < right and top <= y < bottom)
 
     def test_landing_point_is_the_candidate_box_centre(self):
+        """落点 = 候选框中心，按**统一取整口径**（W7 P2 #7：floor(x+0.5)）。
+
+        候选框宽 67（1016~1083）→ 中心 1049.5 → 1050。
+        旧实现纯 floor 给 1049，与桌面通道的 center_point 差 1 px。
+        """
         seam, _, _, _ = _build_seam()
         result = seam.run(SeamRequest(target_description="开始"))
-        left, top, right, bottom = _candidate().rect
-        self.assertEqual(result.final_point, ((left + right) // 2, (top + bottom) // 2))
+        from minicode.action.geometry import center_point
+
+        self.assertEqual(result.final_point, center_point(_candidate().rect))
 
     def test_importing_the_seam_does_not_pull_in_the_real_desktop_modules(self):
         seam, _, _, _ = _build_seam()
@@ -105,7 +111,8 @@ class SeamBasicsTest(unittest.TestCase):
             )
         )
         self.assertTrue(result.ok)
-        self.assertEqual(result.final_point, (1049, 1564))
+        # 统一取整口径（W7 P2 #7）：中心 1049.5 → 1050。
+        self.assertEqual(result.final_point, (1050, 1564))
 
     def test_target_that_matches_nothing_is_a_locate_failure(self):
         seam, injector, _, _ = _build_seam()
@@ -499,7 +506,8 @@ class ActionRecordTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _, record = self._run_once(tmp)
             payload = record.to_dict()
-            self.assertEqual(payload["result"]["cursor_readback"], [1049, 1564])
+            # 统一取整口径（W7 P2 #7）：中心 1049.5 → 1050。
+            self.assertEqual(payload["result"]["cursor_readback"], [1050, 1564])
             self.assertEqual(payload["result"]["cursor_delta_px"], 0)
 
     def test_a_rejection_records_the_candidate_set(self):

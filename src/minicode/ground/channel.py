@@ -53,6 +53,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from minicode.action.errors import ErrorCode
+from minicode.action.geometry import to_physical_point
 from minicode.action.image import encode_frame_base64
 from minicode.action.ports import (
     CapturedFrame,
@@ -298,12 +299,30 @@ def _image_source(frame: CapturedFrame) -> str:
 
 
 def _resize_exact(frame: CapturedFrame, size: tuple[int, int]) -> CapturedFrame:
-    """把一帧**改成指定尺寸**（放大或缩小）—— **声明尺寸必须等于实际发出的尺寸**。"""
-    if (frame.width, frame.height) == (int(size[0]), int(size[1])):
+    """把一帧**改成指定尺寸**（放大或缩小）—— **声明尺寸必须等于实际发出的尺寸**。
+
+    ⚠️ **混合方向**（一轴放大一轴缩小——T3 放大后被服务端上限钳住一条轴时
+    真实可达）不能交给 ``downscale_frame``：它只支持缩小，混合方向会抛未捕获
+    ``ValueError`` 穿透整个 locate（W7 P2 #5）。这里分两步走：
+    先把要缩的那条轴缩到目标（另一轴保持），再整体放大到声明尺寸——
+    两个原语各自只做单方向的事，复合出精确尺寸。
+    """
+    width, height = int(size[0]), int(size[1])
+    if (frame.width, frame.height) == (width, height):
         return frame
-    if size[0] >= frame.width and size[1] >= frame.height:
-        return upscale_frame(frame, int(size[0]), int(size[1]))
-    return downscale_frame(frame, int(size[0]), int(size[1]))
+    growing_w = width >= frame.width
+    growing_h = height >= frame.height
+    if growing_w and growing_h:
+        return upscale_frame(frame, width, height)
+    if not growing_w and not growing_h:
+        return downscale_frame(frame, width, height)
+    # 混合方向：先缩「要缩的那条轴」（另一轴保持原值——这一步两个轴都不放大），
+    # 再放大到声明尺寸（这一步两个轴都不缩小）。
+    if growing_w:
+        stepped = downscale_frame(frame, frame.width, height)
+    else:
+        stepped = downscale_frame(frame, width, frame.height)
+    return upscale_frame(stepped, width, height)
 
 
 @dataclass(frozen=True)
@@ -775,7 +794,7 @@ class TwoStageGrounder:
                 )
             )
             return self._result(
-                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
+                landing_point=to_physical_point(coarse[0], coarse[1]),
                 coarse=coarse,
                 plan=None,
                 decision=decision,
@@ -822,7 +841,7 @@ class TwoStageGrounder:
             )
         if not refine.ok:
             return self._result(
-                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
+                landing_point=to_physical_point(coarse[0], coarse[1]),
                 coarse=coarse,
                 plan=plan,
                 decision=decision,
@@ -850,7 +869,7 @@ class TwoStageGrounder:
             **refine.fields,
         }
         return self._result(
-            landing_point=(int(round(refined[0])), int(round(refined[1]))),
+            landing_point=to_physical_point(refined[0], refined[1]),
             coarse=coarse,
             plan=plan,
             decision=decision,
@@ -1144,7 +1163,7 @@ class TwoStageGrounder:
         if raw.negative:
             # 再搜也说「没有」→ **回落到粗定位**（最后一档）。
             return self._result(
-                landing_point=(int(round(coarse[0])), int(round(coarse[1]))),
+                landing_point=to_physical_point(coarse[0], coarse[1]),
                 coarse=coarse,
                 plan=None,
                 decision=decision,
@@ -1169,7 +1188,7 @@ class TwoStageGrounder:
             raw_y=center[1],
         )
         return self._result(
-            landing_point=(int(round(point[0])), int(round(point[1]))),
+            landing_point=to_physical_point(point[0], point[1]),
             coarse=coarse,
             plan=None,
             decision=decision,
@@ -1501,7 +1520,7 @@ class TwoStageGrounder:
             )
         )
         return VisualLocateResult(
-            landing_point=(int(round(center[0])), int(round(center[1]))),
+            landing_point=to_physical_point(center[0], center[1]),
             # 候选框中心就是**整屏**上的一个点（物理表面空间）。
             coarse_point=center,
             crop_plan=None,
@@ -1672,7 +1691,7 @@ class TwoStageGrounder:
         except CoordinateError as exc:
             return self._failure(f"整屏第二遍结果不可用：{exc}", echoes, model_calls, decision)
         return self._result(
-            landing_point=(int(round(point[0])), int(round(point[1]))),
+            landing_point=to_physical_point(point[0], point[1]),
             coarse=None,
             plan=None,
             decision=decision,

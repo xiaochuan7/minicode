@@ -425,12 +425,30 @@ class KeyboardDegradationTest(unittest.TestCase):
         self.assertTrue(any("输入通道退化" in note for note in result.notes))
 
     def test_no_fallback_when_the_browser_received_the_keys(self):
+        """差分契约：注入前空、注入后含目标文本 = 送达（W7 P2 #6 修后口径）。"""
         typing, _injector, browser_input = self._typing(
-            [_snapshot(_element(), focused_element_id="s1#1", focused_value="张三")]
+            [
+                _snapshot(_element(), focused_element_id="s1#1", focused_value=""),
+                _snapshot(_element(), focused_element_id="s1#1", focused_value="张三"),
+            ]
         )
         result = typing.type_text("张三")
         self.assertTrue(result.ok)
         self.assertEqual(browser_input.inserted, [])
+
+    def test_a_field_that_already_contains_the_text_does_not_count_as_delivered(self):
+        """W7 P2 #6：字段本来就含目标文本时，值没变 = **没送达** → 必须退化。
+
+        旧实现只看「含目标文本」这个子串 → 键盘事件根本没到也判成功。
+        """
+        typing, _injector, browser_input = self._typing(
+            [
+                _snapshot(_element(), focused_element_id="s1#1", focused_value="张三"),
+                _snapshot(_element(), focused_element_id="s1#1", focused_value="张三"),
+            ]
+        )
+        result = typing.type_text("张三")
+        self.assertEqual(browser_input.inserted, ["张三"], "值没变 → 走浏览器输入通道")
 
     def test_an_undecidable_delivery_is_reported_as_undecidable(self):
         typing, _injector, browser_input = self._typing([_snapshot(_element())])

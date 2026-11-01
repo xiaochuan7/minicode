@@ -228,7 +228,10 @@ def find_browser_window(title_contains: str) -> int:
 
     user32.EnumWindows(_callback, 0)
     for hwnd in found:
-        left, top, _right, _bottom = window_rect(hwnd)
+        rect = window_rect(hwnd)
+        if rect is None:
+            continue  # 读不出矩形的窗口不可信，不当成候选
+        left, top, _right, _bottom = rect
         #: 最小化的窗口 = ``(-32000, -32000)``；离屏的残留窗口同理。
         if left > -30000 and top > -30000:
             return hwnd
@@ -265,14 +268,20 @@ def find_browser_window_by_pid(pids: set[int]) -> int:
     return found[0] if found else 0
 
 
-def window_rect(hwnd: int) -> tuple[int, int, int, int]:
-    """窗口的**物理**矩形 ``(left, top, right, bottom)``。
+def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """窗口的**物理**矩形 ``(left, top, right, bottom)``；Win32 失败 → ``None``。
 
     ⚠️ 调用方**必须先**让进程 PMv2 感知（:func:`minicode.exec.dpi.enable_dpi_awareness`）——
     否则拿回来的是逻辑坐标（本机会差 1.5 倍）。
+
+    ⚠️ **失败必须显式**（W7 P2 #8）：旧实现丢掉 ``GetWindowRect`` 的返回值，
+    失败时静默产出 ``(0,0,0,0)`` → 比例算出 0 → 元素全被丢 → 被**误读成**
+    「页面没这个元素」（覆盖失败）——还恰好是唯一允许切视觉的类别，
+    一次 Win32 失败触发一次昂贵的视觉兜底。``None`` = 调用方自己判。
     """
     rect = _RECT()
-    _user32().GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect))
+    if not _user32().GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect)):
+        return None
     return (rect.left, rect.top, rect.right, rect.bottom)
 
 
@@ -322,9 +331,18 @@ class ChromiumPage:
     # -- 页面结构端口 -----------------------------------------------------
 
     def snapshot(self) -> PageSnapshot:
-        """取一次页面结构快照（可访问性树）。"""
-        nodes = self._parse_tree()
+        """取一次页面结构快照（可访问性树）。
+
+        ⚠️ **视口量不出来 → 如实返回空快照**（端口契约：拿不到就空，
+        由上层判成覆盖失败）——不许拿一个 scale=0 的坏视口把元素坐标
+        全部算成零框再「丢掉」（W7 P2 #8：那会把一次 Win32 失败伪装成
+        「页面没这个元素」）。
+        """
         viewport = self.viewport()
+        if viewport is None:
+            self._generation += 1
+            return PageSnapshot(generation=self._generation)
+        nodes = self._parse_tree()
         elements: list[BrowserElement] = []
         self._css_rects = {}
         self._css_text_rects = {}
@@ -377,6 +395,8 @@ class ChromiumPage:
             node_id for node_id, name in names.items() if name and child_name in name
         ]
         viewport = self.viewport()
+        if viewport is None:
+            return None  # 视口量不出来 → 容器定位如实给 None（W7 P2 #8）
         for start in starts:
             for ancestor in chains[start][1:]:
                 for child_id in candidates:
@@ -391,8 +411,13 @@ class ChromiumPage:
                         return container, child
         return None
 
-    def viewport(self) -> PageViewport:
-        """视口在物理表面空间的位置与比例（比例是**量出来的**）。"""
+    def viewport(self) -> PageViewport | None:
+        """视口在物理表面空间的位置与比例（比例是**量出来的**）。
+
+        窗口矩形读不到（Win32 失败）或**退化**（0 尺寸 / 最小化的
+        ``(-32000,…)``）→ ``None``——调用方按「量不出来」处理，
+        **不许**拿坏矩形继续算比例（W7 P2 #8）。
+        """
         metrics = self.page.evaluate(
             """() => ({
                 outerWidth: window.outerWidth,
@@ -401,7 +426,14 @@ class ChromiumPage:
                 innerHeight: window.innerHeight,
             })"""
         )
-        rect = window_rect(self.hwnd) if self.hwnd else (0, 0, 0, 0)
+        rect = window_rect(self.hwnd) if self.hwnd else None
+        if rect is None:
+            self.last_error = "GetWindowRect 失败：窗口矩形量不出来"
+            return None
+        left, top, right, bottom = rect
+        if right <= left or bottom <= top or left <= -30000 or top <= -30000:
+            self.last_error = f"窗口矩形退化：{rect}"
+            return None
         return viewport_from_window(
             rect,
             (int(metrics["outerWidth"]), int(metrics["outerHeight"])),

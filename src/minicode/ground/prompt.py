@@ -613,7 +613,17 @@ def parse_optional_point(text: str) -> tuple[float, float] | None:
     payload = answer_line_payload(text)
     if payload is None:
         payload = json_payload(text)
-    if isinstance(payload, dict) and payload.get("x") is None and payload.get("y") is None:
+    # **负出口只认「模型明确说没找到」**：x 与 y 两个键**都在**且值为 null。
+    # 旧实现用 ``.get("x") is None`` —— 任何缺 x/y 键的形状（如
+    # ``{"bbox": [...]}``）都被误判成「模型说没找到」，把「读不出来」
+    # 说成了「没有这个元素」（W7 P2 #3：负出口率被污染、回落语义被误触发）。
+    if (
+        isinstance(payload, dict)
+        and "x" in payload
+        and "y" in payload
+        and payload["x"] is None
+        and payload["y"] is None
+    ):
         return None
     pair = _as_pair(payload)
     if pair is not None:

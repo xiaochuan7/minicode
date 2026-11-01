@@ -60,7 +60,7 @@ from minicode.verification.layer import Verifier, VerifyRequest
 from .capture import CapturePort
 from .errors import ErrorCode, failure_type_of
 from .executor import ActionExecutor, DoubleClickParams, TimingPolicy
-from .geometry import VirtualDesktop
+from .geometry import VirtualDesktop, to_physical_point
 from .ports import (
     CHANNEL_BROWSER,
     CHANNEL_UIA,
@@ -516,7 +516,10 @@ class ActionExecutionSeam:
                 (capture_rect[1] + capture_rect[3]) / 2.0,
             )
             px, py = surface.capture_to_physical(*landing_capture)
-            final_point = (math.floor(px), math.floor(py))
+            # 落点取整的**统一口径**（W7 P2 #7）：floor(x+0.5)，与视觉通道、
+            # 桌面通道同一份函数 —— 旧实现这里纯 floor，半点与负坐标上
+            # 跟其他通道 ±1 px 系统性分歧。
+            final_point = to_physical_point(px, py)
         locate_ms = (self._clock() - locate_started) * 1000.0
 
         try:
