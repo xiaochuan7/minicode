@@ -617,6 +617,12 @@ class WindowsUiaQueryPort:
         self.timeout_s = float(timeout_s)
         self._sequence = 0
         self._live: dict[str, object] = {}
+        #: **上一代观测**（一代宽限，W7 P2 #7）：校验层会再查一次树，把刚
+        #: 定位的元素发布成新代——旧实现在这里就把上一代 COM 元素全部
+        #: release，Invoke 按元素 id 拿到的是已释放指针，InvokePattern 静默
+        #: 降级成重定位。上一代保活一代（下一次发布才释放），``live_element``
+        #: 查两代。
+        self._previous: dict[str, object] = {}
         #: 最近一次定点查询的耗时（毫秒）。
         self.last_query_ms = 0.0
         #: **窗口标题缓存**（按根窗口句柄）—— 一次查询里的元素多半在同一个窗口上，
@@ -658,8 +664,15 @@ class WindowsUiaQueryPort:
         return _with_deadline(lambda: self._has_nodes(anchor), self.timeout_s)
 
     def live_element(self, element_id: str):
-        """按元素 id 取**最近一次观测**的 COM 元素（Invoke 用）。"""
-        return self._live.get(element_id)
+        """按元素 id 取**最近两代观测**的 COM 元素（Invoke 用）。
+
+        先查当前代；查不到再查上一代（一代宽限——校验层的查询不杀刚
+        定位的元素）。两代之前的元素已释放，不会无界积压。
+        """
+        element = self._live.get(element_id)
+        if element is None:
+            element = self._previous.get(element_id)
+        return element
 
     # -- 内部 -------------------------------------------------------------
 
@@ -814,13 +827,19 @@ class WindowsUiaQueryPort:
         return matched, unmatched
 
     def _publish(self, elements: list, anchor_title: str = "") -> tuple[UiaElement, ...]:
-        """把 COM 元素转成读数，并**重新生成**元素 id。"""
-        for old in self._live.values():
+        """把 COM 元素转成读数，并**重新生成**元素 id。
+
+        旧代**退位不释放**（进 ``_previous``，``live_element`` 仍可取）；
+        上上代在这里释放——宽限恰好一代。
+        """
+        stale = self._previous
+        self._previous = self._live
+        self._live = {}
+        for old in stale.values():
             try:
                 old.release()
             except Exception:  # pragma: no cover - COM 释放失败不影响本次读数
                 pass
-        self._live = {}
         self._sequence += 1
         prefix = f"obs{self._sequence}"
         out: list[UiaElement] = []
