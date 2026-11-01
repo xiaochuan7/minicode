@@ -63,6 +63,7 @@ class GuardSession:
         recorder: SessionRecorder | None,
         window_info_fn: Callable[[], ForegroundWindowInfo | None] | None,
         dry_run: bool = False,
+        own_input_tick_fn: Callable[[], int | None] | None = None,
     ):
         self.policy = policy
         self.ledger = ledger
@@ -72,8 +73,32 @@ class GuardSession:
         self.recorder = recorder
         self.window_info_fn = window_info_fn
         self.dry_run = dry_run
+        #: **自己的输入时刻**查询（护栏注入器的 ``last_injection_tick``）——
+        #: ``SendInput`` 也会推进 ``GetLastInputInfo``，空闲让位必须把
+        #: 「自己的注入」与「用户动了键鼠」分开（W3 真机实测踩到）。
+        self.own_input_tick_fn = own_input_tick_fn
         #: 拒绝记录（护栏给出的每一条，进运行摘要与 guard.jsonl）。
         self.denials: list[dict] = []
+
+    def user_is_active(self) -> bool:
+        """用户正在动键鼠吗（**排除自己的注入**之后的口径）。
+
+        * 系统口径没检测到活动 → 不活跃；
+        * 检测到活动、但**最后一次输入就是自己的注入**（系统输入时刻
+          落在自己的注入时刻附近）→ 归因给自己 → 仍算不活跃；
+        * 其余（自己的注入之后用户又动了）→ 活跃 → 让位。
+        """
+        if self.idle_watcher is None:
+            return False
+        if not self.idle_watcher.user_recently_active(self.policy.idle_active_ms):
+            return False
+        own_tick = self.own_input_tick_fn() if self.own_input_tick_fn else None
+        if own_tick is None:
+            return True
+        now_tick = self.idle_watcher.now_tick_fn()
+        # 系统的「最后输入」≈ 自己的注入（含 100ms 时钟/调度余量）→ 是自己。
+        grace = self.policy.idle_active_ms + 100
+        return not (0 <= (now_tick - own_tick) % 0x1_0000_0000 <= grace)
 
     # ------------------------------------------------------------------
     # 记账
@@ -160,6 +185,16 @@ class GuardedSeam:
     def anchor(self):
         return self._inner.anchor
 
+    @property
+    def executor(self):
+        """动作执行器（键盘输入这类不经缝请求的动作种类，真机驱动在
+        护栏注入器之上用它 —— 急停照常生效）。"""
+        return self._inner.executor
+
+    @property
+    def injector(self):
+        return self._inner.injector
+
     def run(self, request: SeamRequest) -> SeamResult:
         session = self.session
         policy = session.policy
@@ -190,12 +225,9 @@ class GuardedSeam:
                                   request.target_description, "fuse")
             return _denied(request, ErrorCode.FUSE_BLOWN, message)
 
-        # -- 护栏 6：空闲让位 -----------------------------------------------
-        if (
-            session.idle_watcher is not None
-            and policy.idle_pause_enabled
-            and session.idle_watcher.user_recently_active(policy.idle_active_ms)
-        ):
+        # -- 护栏 6：空闲让位（排除自己的注入之后，用户真的动了键鼠）---------
+        if session.idle_watcher is not None and policy.idle_pause_enabled \
+                and session.user_is_active():
             message = (
                 f"用户最近 {policy.idle_active_ms}ms 内动过键鼠，暂停让位"
                 "（护栏 6：user_active_paused）"
@@ -286,6 +318,11 @@ def make_guarded_factory(
         seam = inner_factory(MultiTraceSink(*sinks))
         if level_gate is not None:
             seam.approval_gate = level_gate
+            # ⚠️ **执行器持有的是另一份引用**（seam 构造时传给它的同一个闸门）
+            # —— 只换缝上的闸门，执行器那一份还是旧的（W3 真机首跑实测踩到：
+            # 剪贴板审批绕过级联门直接弹到了控制台）。两处必须是同一个对象。
+            if getattr(seam, "executor", None) is not None:
+                seam.executor.approval_gate = level_gate
         return GuardedSeam(seam, session=session, tap=tap)
 
     return factory

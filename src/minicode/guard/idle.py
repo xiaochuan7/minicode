@@ -47,6 +47,11 @@ class IdleWatcher:
         self._tick_fn = tick_fn
         self._now_tick_fn = now_tick_fn
 
+    @property
+    def now_tick_fn(self) -> Callable[[], int]:
+        """当前时刻查询（Tick 口径；空闲归因用）。"""
+        return self._now_tick_fn
+
     def idle_ms(self) -> int:
         """当前空闲时长（毫秒）：现在 − 最后一次输入。"""
         return _tick_delta(self._now_tick_fn(), self._tick_fn())

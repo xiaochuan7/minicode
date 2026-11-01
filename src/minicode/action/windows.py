@@ -443,7 +443,19 @@ class WindowsInputInjector:
 
     def type_unicode(self, text: str) -> None:
         win_input = self._win_input()
-        win_input.type_unicode(text)
+        # **注入节奏**：默认 12 ms/字符。实测（W3 真机首跑，Win11 Notepad +
+        # 微软拼音在场）：持续快速注入**概率性**丢/错字符（「真机首跑」→
+        # 「机机首跑」，约 1/3 概率，位置不定）；放慢到 50 ms 后 3/3 干净。
+        # 节奏由环境变量调（不给签名加参数，调用方零改动）：
+        # ``MINICODE_TYPE_PER_CHAR_DELAY``（秒，0.02 ~ 0.2 合理）。
+        import os
+
+        raw = os.environ.get("MINICODE_TYPE_PER_CHAR_DELAY", "")
+        try:
+            per_char_delay = float(raw) if raw else 0.012
+        except ValueError:
+            per_char_delay = 0.012
+        win_input.type_unicode(text, per_char_delay=per_char_delay)
 
     def read_clipboard(self) -> str | None:
         win_input = self._win_input()

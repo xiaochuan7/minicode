@@ -118,12 +118,16 @@ class Desktop:
 def build_desktop(
     *,
     window_class: str = "Shell_TrayWnd",
+    hwnd: int | None = None,
     pointer: CandidatePointer | None = None,
     redactor: object | None = None,
 ) -> Desktop:
     """接一条真机 UIA 通道。
 
     :param window_class: 窗口类名（``FindWindowW`` 找）。
+    :param hwnd: 显式窗口句柄（给出时**优先于** ``window_class`` ——
+        W3 真机纪律「只操作自己新开的实例」：调用方按自己进程的 PID
+        找到自己的窗口，把句柄传进来，不去撞别人同名的窗口）。
     :param pointer: 消歧指认端（``None`` = 不做消歧，候选不唯一就明确报错）。
     :param redactor: 脱敏器（做消歧时**必须**给 —— 脱敏没上线不许把控件树送模型）。
     """
@@ -144,7 +148,9 @@ def build_desktop(
     from minicode.privacy.guard import windows_guard
     from minicode.uia.windows import WindowsElementInvoker
 
-    hwnd = find_window_by_class(window_class)
+    if hwnd is None:
+        hwnd = find_window_by_class(window_class)
+    hwnd = int(hwnd)
     anchor = describe_window(hwnd)
     port = WindowsUiaQueryPort()
     table = CapabilityTable(

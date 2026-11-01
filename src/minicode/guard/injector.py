@@ -38,15 +38,24 @@ class GuardedInjector:
         estop: EstopWatchdog | None = None,
         dry_run: bool = False,
         printer: Any = print,
+        tick_fn: Any = None,
     ):
         self._inner = inner
         self._estop = estop
         self._dry_run = dry_run
         self._printer = printer
+        self._tick_fn = tick_fn
         #: 注入序列（与 :class:`minicode.action.fakes.FakeInputInjector` 同口径：
         #: ``(method, args)`` 元组列表 —— 断言「零动作下发」就数它）。
         self.journal: list[tuple[str, tuple[Any, ...]]] = []
         self._pressed_buttons: list[str] = []
+        #: **本注入器最后一次真实注入的时刻**（``GetTickCount`` 口径）。
+        #:
+        #: ⚠️ ``SendInput`` 注入的输入**也会推进** ``GetLastInputInfo`` ——
+        #: 空闲让位（护栏 6）必须能把「自己的输入」与「用户动了键鼠」分开，
+        #: 否则 agent 自己走两步就把自己停了（W3 真机首跑实测踩到）。
+        #: 判定口径见 :meth:`minicode.guard.seam.GuardSession.user_is_active`。
+        self.last_injection_tick: int | None = None
 
     # ------------------------------------------------------------------
     # 护栏
@@ -79,6 +88,16 @@ class GuardedInjector:
             raise EstopTriggered("急停热键已触发：停止一切输入注入")
         return True
 
+    def _mark_injected(self) -> None:
+        """注入**完成**后记时刻（空闲归因用）。
+
+        ⚠️ 时刻必须记在注入**之后**：``type_unicode`` 一段文本要灌 1 秒以上，
+        ``GetLastInputInfo`` 停在**最后一个**注入事件上 —— 时刻若记在开头，
+        归因窗口会被注入时长撑爆（W3 真机首跑实测踩到：dismiss 步被误暂停）。
+        """
+        if self._tick_fn is not None:
+            self.last_injection_tick = int(self._tick_fn())
+
     # ------------------------------------------------------------------
     # InputInjector 端口（输入类操作全走 _check_before_input）
     # ------------------------------------------------------------------
@@ -93,30 +112,36 @@ class GuardedInjector:
     def move(self, x: int, y: int) -> None:
         if self._check_before_input("move", x, y):
             self._inner.move(x, y)
+            self._mark_injected()
 
     def button_down(self, button: str = "left") -> None:
         if self._check_before_input("button_down", button):
             self._inner.button_down(button)
             if button not in self._pressed_buttons:
                 self._pressed_buttons.append(button)
+            self._mark_injected()
 
     def button_up(self, button: str = "left") -> None:
         if self._check_before_input("button_up", button):
             self._inner.button_up(button)
             if button in self._pressed_buttons:
                 self._pressed_buttons.remove(button)
+            self._mark_injected()
 
     def scroll_delta(self, x: int, y: int, delta: int) -> None:
         if self._check_before_input("scroll_delta", x, y, delta):
             self._inner.scroll_delta(x, y, delta)
+            self._mark_injected()
 
     def press_combo(self, combo: tuple[str, ...]) -> None:
         if self._check_before_input("press_combo", combo):
             self._inner.press_combo(combo)
+            self._mark_injected()
 
     def type_unicode(self, text: str) -> None:
         if self._check_before_input("type_unicode", text):
             self._inner.type_unicode(text)
+            self._mark_injected()
 
     def read_cursor(self) -> tuple[int, int] | None:
         """只读：急停后照样放行（松键需要知道现状，且它不输入）。"""
@@ -129,6 +154,7 @@ class GuardedInjector:
     def write_clipboard(self, text: str | None) -> None:
         if self._check_before_input("write_clipboard", text):
             self._inner.write_clipboard(text)
+            self._mark_injected()
 
     def has_non_text_clipboard_content(self) -> bool:
         """只读：不拦。"""

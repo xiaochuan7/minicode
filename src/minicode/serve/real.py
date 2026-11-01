@@ -31,6 +31,7 @@ def build_real_service(
     log_directory: str | Path,
     *,
     window_class: str = "Shell_TrayWnd",
+    hwnd: int | None = None,
     guard_policy: object | None = None,
     dry_run: bool = False,
     session_directory: str | Path | None = None,
@@ -38,6 +39,8 @@ def build_real_service(
     """真机上的动作服务。
 
     :param window_class: 目标窗口的类名（``FindWindowW`` 找）。
+    :param hwnd: 显式窗口句柄（优先于 ``window_class``；W3 纪律
+        「只操作自己新开的实例」用 —— 调用方按 PID 找到自己的窗口传进来）。
     :param guard_policy: 护栏策略
         (:class:`minicode.guard.policy.GuardPolicy`)。``None`` = 无护栏
         （行为与 v0.1.4 一致）。
@@ -53,7 +56,7 @@ def build_real_service(
     from minicode.uia.desktop import build_desktop
     from minicode.uia.observer import UiaStateObserver
 
-    desktop = build_desktop(window_class=window_class)
+    desktop = build_desktop(window_class=window_class, hwnd=hwnd)
 
     if guard_policy is None:
         # 无护栏路径：与 v0.1.4 逐字节一致（不做任何包装）。
@@ -110,6 +113,13 @@ def build_real_service(
         if guard_policy.idle_pause_enabled
         else None
     )
+    # 注入器先建（空闲归因要读它的「自己的输入时刻」）。
+    guarded_injector = GuardedInjector(
+        desktop.injector,
+        estop=estop,
+        dry_run=dry_run or guard_policy.level is AuthLevel.L0,
+        tick_fn=now_tick,
+    )
     session = GuardSession(
         policy=guard_policy,
         ledger=ledger,
@@ -120,15 +130,13 @@ def build_real_service(
         window_info_fn=foreground_window_info,
         # L0 = 只读：注入器换 dry-run 形态（管线照跑，零注入）。
         dry_run=dry_run or guard_policy.level is AuthLevel.L0,
+        own_input_tick_fn=lambda: guarded_injector.last_injection_tick,
     )
 
     if estop is not None:
         estop.start()
 
     # 注入器包急停感知层（L0 / dry-run 在这一层生效）。
-    guarded_injector = GuardedInjector(
-        desktop.injector, estop=estop, dry_run=session.dry_run
-    )
     desktop = replace(desktop, injector=guarded_injector)
 
     # 审批闸门包授权级门（不可逆动作按级别处置；真实控件名照常进判定）。
