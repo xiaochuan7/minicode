@@ -45,6 +45,26 @@ class AuthLevelTest(unittest.TestCase):
         self.assertTrue(policy.estop_enabled)
         self.assertEqual(policy.estop_vkeys, ESTOP_VKEYS)
 
+    def test_a_string_level_is_coerced_to_the_enum_not_stored_as_a_str(self):
+        """W4 评测台 n30 踩出的 fail-open：字符串级别必须收敛成枚举。
+
+        旧实现把 ``level="L1"`` 原样存进字段 → ``policy.level is AuthLevel.L1``
+        恒为假 → **整条 L1 强制（白名单/不可逆判定）静默失效**。
+        """
+        for raw, expected in (
+            ("L0", AuthLevel.L0),
+            ("L1", AuthLevel.L1),
+            ("L2", AuthLevel.L2),
+            ("L3", AuthLevel.L3),
+        ):
+            with self.subTest(raw=raw):
+                policy = GuardPolicy(level=raw)
+                self.assertIs(policy.level, expected)
+
+    def test_an_invalid_level_string_fails_loudly_at_construction(self):
+        with self.assertRaises(ValueError):
+            GuardPolicy(level="L4")
+
     def test_load_policy_reads_budget_overrides_from_environment(self):
         import os
 

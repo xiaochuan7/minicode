@@ -60,6 +60,15 @@ class GuardPolicy:
     #: 不是策略参数能放开的（要放开就得改这里，改这里就得过审）。
     unattended_max_minutes: int = 20
 
+    def __post_init__(self) -> None:
+        # **级别字符串 → 枚举**（W4 评测台 n30 踩出的 fail-open）：
+        # 直接用 ``GuardPolicy(level="L1")`` 构造时，字符串会被原样存进字段，
+        # ``policy.level is AuthLevel.L1`` 恒为假 → **整条 L1 强制静默失效**、
+        # 白名单/不可逆判定全部被跳过。这里在构造时收敛成枚举，
+        # 非法取值当场报错（fail-loud，不留一个「看起来配了其实没生效」的策略）。
+        if isinstance(self.level, str):
+            object.__setattr__(self, "level", AuthLevel(self.level))
+
     def to_dict(self) -> dict:
         """落盘形状（运行摘要里要带策略快照，事后可审计）。"""
         return {

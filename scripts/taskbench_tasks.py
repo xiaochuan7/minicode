@@ -613,13 +613,32 @@ _t(
 
 
 def _x25_reopen_and_read(run) -> dict:
-    """复合任务第 5 步：把刚保存的文件用**第二个实例**再打开，UIA 读回一致。"""
+    """复合任务第 5 步：把刚保存的文件用**第二个实例**再打开，UIA 读回一致。
+
+    ⚠️ Win11 记事本是**单实例接管**：第一实例还开着时 spawn 同一文件**不会**
+    出新窗口（30s 超时，W4 正式跑 9/9 实录）——所以这里先把**已保存干净的**
+    第一实例关掉，再开第二实例读回。
+    """
+    import ctypes
     import subprocess
     import time
 
     file_path = run.vars.get("file_path")
     if not file_path:
         return {"ok": False, "error": "file_path 缺失"}
+    # -- 先关第一实例（步骤 3 已 Ctrl+S，标题应无 *；有 * 就如实报）--------
+    from taskbench import _window_text  # noqa: PLC0415
+
+    first_hwnd = run.hwnd
+    if first_hwnd and ctypes.windll.user32.IsWindow(first_hwnd):
+        title = _window_text(first_hwnd)
+        if title.startswith("*"):
+            return {"ok": False, "error": f"第一实例未保存（标题 {title!r}）"}
+        ctypes.windll.user32.PostMessageW(first_hwnd, WM_CLOSE, 0, 0)
+        time.sleep(1.2)
+        if ctypes.windll.user32.IsWindow(first_hwnd):
+            return {"ok": False, "error": "第一实例关不掉（不该有对话框）"}
+    # -- 开第二实例读回 -----------------------------------------------------
     cfg = _APPS["notepad"]
     before = {w[0] for w in visible_windows(cfg["classes"])}
     proc = subprocess.Popen([cfg["command"][0], file_path])
@@ -634,9 +653,10 @@ def _x25_reopen_and_read(run) -> dict:
     rows = observer.query.find(
         UiaFindRequest(anchor=desktop.anchor, control_type="Document")
     )
-    value = "".join(getattr(el, "value", "") for el in rows.elements)
-    import ctypes
-
+    value = "".join(
+        getattr(el, "value", "") for el in rows.elements
+        if _rect_in(hwnd, getattr(el, "rect", ()))
+    )
     ctypes.windll.user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
     time.sleep(0.6)
     run.vars["x25_ok"] = "x25 持久化内容" in value
