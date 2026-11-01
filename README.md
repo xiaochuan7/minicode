@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-3DA639)](LICENSE)
-[![Release](https://img.shields.io/badge/Release-v0.1.4-2C63C7)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/Release-v0.1.5-2C63C7)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows/)
 [![CI](https://github.com/xiaochuan7/minicode/actions/workflows/ci.yml/badge.svg)](https://github.com/xiaochuan7/minicode/actions/workflows/ci.yml)
 

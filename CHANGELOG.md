@@ -2,7 +2,25 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
-## 未发布（分支 nightly/2026-11-01，未打 tag、未改版本号）
+## v0.1.5 — 2026-11-02
+
+本条目对应 v0.1.4 之后的发布收口：两个**破坏性变更**（见 MIGRATION）、四个 P1 正确性修复、
+传输层性能、CI 上线与对外表述修正。
+
+### MIGRATION（破坏性变更，升级前必读）
+
+1. **本地 HTTP serve 写接口必须带 token，并校验 `Host` / `Content-Type`**。
+   升级后，调用 `minicode serve` 写接口（动作类）的客户端必须：
+   - 请求头带 `X-Minicode-Token`，值与服务端环境变量 `MINICODE_SERVE_TOKEN` 一致
+     （服务端未配置该变量时，写接口一律 403 —— fail-closed，不会「无 token 照常工作」）；
+   - `Content-Type: application/json`（此前 `text/plain` 的简单请求不再被接受）；
+   - 目标 Host 必须是回环地址（DNS rebinding 域名将被拒）。
+   影响面：任何把 serve 当「本地无鉴权 RPC」用的脚本。GET 类只读接口不受影响。
+2. **MCP 键盘输入错误码 `approval_denied` → `injection_blocked`，非交互前端默认拒绝键盘输入**。
+   升级后，HTTP / MCP 这类非交互前端的 `type_text` / `press_key` 一律直接拒绝
+   （错误码 `injection_blocked`），不再进入审批流程；交互式 CLI 行为不变。
+   影响面：依赖旧错误码分支的前端需要改判 `injection_blocked`；期望「弹审批再放行」的
+   调用方需要改用交互式前端。
 
 ### 安全修复
 
