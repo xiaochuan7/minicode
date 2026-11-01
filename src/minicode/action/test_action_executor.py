@@ -544,3 +544,17 @@ class WaitTest(unittest.TestCase):
         )
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, ErrorCode.EXECUTE_FAILED)
+
+
+class KeyNameTableTest(unittest.TestCase):
+    """按键名表：功能键 F1~F12 必须在册（W4 评测台的 F5 需要它们）。"""
+
+    def test_function_keys_f1_through_f12_resolve_to_vk_codes(self):
+        from minicode.action.windows import _VK_NAMES
+
+        self.assertEqual(_VK_NAMES["f1"], 0x70)
+        self.assertEqual(_VK_NAMES["f5"], 0x74)
+        self.assertEqual(_VK_NAMES["f12"], 0x7B)
+        for i in range(1, 13):
+            with self.subTest(key=f"f{i}"):
+                self.assertIn(f"f{i}", _VK_NAMES)

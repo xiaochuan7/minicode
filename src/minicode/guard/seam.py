@@ -252,7 +252,10 @@ class GuardedSeam:
                 session.record_denial(ErrorCode.WINDOW_BLACKLISTED, message,
                                       request.target_description, "blacklist")
                 return _denied(request, ErrorCode.WINDOW_BLACKLISTED, message)
-        if policy.level is AuthLevel.L1 and policy.window_whitelist:
+        # -- L1 白名单（**空白名单也拒绝** —— fail-closed：想用 L1 就必须显式
+        #    给窗口集合；空集合 = 没有可操作窗口，与 GuardPolicy 的 docstring
+        #    一致。W4 复查发现旧实现空白名单会跳过检查 = fail-open，已堵）----
+        if policy.level is AuthLevel.L1:
             if info is None:
                 message = (
                     "读不到前台窗口（window_info 为 None）：L1 白名单无法核实"

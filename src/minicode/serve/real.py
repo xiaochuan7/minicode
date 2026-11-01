@@ -162,10 +162,13 @@ def build_real_service(
             redactor=TreeRedactor(load_model_context_config()),
         ),
         session,
+        level_gate,
     )
 
 
-def _attach_session(service: ActionService, session) -> ActionService:
-    """把护栏会话挂到服务上（护栏 9：CLI 执行完要打印运行摘要）。"""
+def _attach_session(service: ActionService, session, level_gate=None) -> ActionService:
+    """把护栏会话挂到服务上（护栏 9：CLI 执行完要打印运行摘要；
+    级联门一并挂上 —— 评测台要数「危险动作触发次数」）。"""
     service.guard_session = session  # type: ignore[attr-defined]
+    service.guard_level_gate = level_gate  # type: ignore[attr-defined]
     return service

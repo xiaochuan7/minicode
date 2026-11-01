@@ -242,6 +242,17 @@ class GuardedSeamDenialTest(unittest.TestCase):
         )
         self.assertEqual(injector.events, [])
 
+    def test_l1_with_an_empty_whitelist_denies_everything_fail_closed(self):
+        # W4 复查发现的 fail-open 缺口：旧实现空白名单会**跳过**白名单检查
+        # （等于 L1 退化成 L2）。契约：空白名单 = 没有可操作窗口，一律拒绝。
+        session = _session(policy=GuardPolicy(level=AuthLevel.L1))
+        seam, injector, _ = _guarded(session)
+        result = seam.run(_click_request())
+        self.assertEqual(
+            result.result.error_code, ErrorCode.WINDOW_WHITELIST_MISMATCH
+        )
+        self.assertEqual(injector.events, [])
+
 
 class IrreversibleByLevelTest(unittest.TestCase):
     """护栏 3 走审批门：L1 拒、L2 交人工（fail-closed）、L3 放行记录。
@@ -259,7 +270,11 @@ class IrreversibleByLevelTest(unittest.TestCase):
     )
 
     def _run(self, level: AuthLevel, target: str = "保存", save_tree: bool = True, **kwargs):
-        session = _session(policy=GuardPolicy(level=level), **kwargs)
+        # L1 需要**显式白名单**（空白名单 = 没有可操作窗口，fail-closed）；
+        # 假桌面窗口是「任务栏」，给同名词让白名单核实通过。
+        policy = GuardPolicy(level=level) if level is not AuthLevel.L1 else \
+            GuardPolicy(level=level, window_whitelist=("任务栏",))
+        session = _session(policy=policy, **kwargs)
         targets = (self._SAVE_BUTTON,) if save_tree else None
         seam, injector, level_gate = _guarded(session, targets=targets)
         result = seam.run(_click_request(target))

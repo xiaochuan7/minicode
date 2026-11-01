@@ -319,6 +319,8 @@ _VK_NAMES: dict[str, int] = {
 }
 _VK_NAMES.update({chr(ord("a") + i): ord("a") + i for i in range(26)})
 _VK_NAMES.update({str(i): 0x30 + i for i in range(10)})
+# 功能键 F1~F12（VK_F1=0x70 连续）；W4 评测台的 F5（插入时间/日期）需要。
+_VK_NAMES.update({f"f{i}": 0x70 + i - 1 for i in range(1, 13)})
 
 _BUTTON_FLAGS = {
     ("left", True): "MOUSEEVENTF_LEFTDOWN",
