@@ -7,7 +7,7 @@
 
 **任务形态**（4 页 × 2 条）：
 
-* canvas 文字按钮（继续/删除/取消）—— 画布里的文字目标；
+* canvas 文字按钮（甲/乙/丙）—— 画布里的文字目标；
 * canvas 无字图形按钮（▶ / ■ / ↻）—— 无 automation_id 的图标按钮；
 * canvas 无字色块（六色调色板）—— 无字图标；
 * canvas 图形场景（红圆 / 黄三角）—— 图片里的目标。
@@ -95,8 +95,11 @@ function draw() {{
 canvas.addEventListener('click', (event) => {{
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left, y = event.clientY - rect.top;
+  // 命中判定带 8px 容差（真实控件的可点面积比视觉大一圈；
+  // 物理像素→CSS 像素的取整差 ~1px 也在这里吸收）。
+  const PAD = 8;
   for (const region of REGIONS) {{
-    if (x >= region.x1 && x <= region.x2 && y >= region.y1 && y <= region.y2) {{
+    if (x >= region.x1 - PAD && x <= region.x2 + PAD && y >= region.y1 - PAD && y <= region.y2 + PAD) {{
       document.title = '{hit_prefix}' + region.name;
       document.getElementById('status').textContent = '状态：已点击 ' + region.name;
       draw(); highlight(region);
@@ -187,13 +190,16 @@ def _shape(name: str, color: str, kind: str, x: int, y: int) -> tuple[dict, str]
 _PAGES: dict[str, dict] = {
     "canvas-text-buttons": {
         "regions": lambda: [
-            _text_button("继续", "继续", 120, 120),
-            _text_button("删除", "删除", 360, 120),
-            _text_button("取消", "取消", 600, 120),
+            _text_button("甲", "甲", 120, 120),
+            _text_button("乙", "乙", 360, 120),
+            _text_button("丙", "丙", 600, 120),
         ],
         "tasks": [
-            ("w01", "画布里写着「删除」的深蓝色按钮", "删除"),
-            ("w02", "画布里写着「取消」的深蓝色按钮", "取消"),
+            # ⚠️ 标签用中性字（甲/乙/丙）—— 「删除」这类词会撞危险动作分类器
+            # （approval/catalog 的不可逆关键词按目标文本匹配 → L1 也要人批，
+            # 非交互环境直接拒绝 —— 冒烟实测踩到）。
+            ("w01", "画布里写着「乙」的深蓝色按钮", "乙"),
+            ("w02", "画布里写着「丙」的深蓝色按钮", "丙"),
         ],
     },
     "canvas-icon-buttons": {
@@ -350,8 +356,10 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
 
 def attach_vision(service, admission_port, grounder) -> None:
     """把视觉通道挂到服务的缝工厂上（缝属性是普通属性，直接赋值 ——
-    与 ``make_guarded_factory`` 换审批闸门同一模式）。"""
-    base_factory = service.seam_factory
+    与 ``make_guarded_factory`` 换审批闸门同一模式）。
+    ⚠️ ``ActionService`` 的工厂属性是 ``_seam_factory``（评测台脚本访问
+    私有属性与 taskbench 的 ``service._observer`` 同一口径）。"""
+    base_factory = service._seam_factory  # noqa: SLF001 - 评测台脚本
 
     def vision_factory(sink):
         seam = base_factory(sink)
@@ -360,7 +368,7 @@ def attach_vision(service, admission_port, grounder) -> None:
         inner.visual_locator = grounder
         return seam
 
-    service.seam_factory = vision_factory
+    service._seam_factory = vision_factory  # noqa: SLF001 - 评测台脚本
 
 
 # ---------------------------------------------------------------------------
@@ -375,19 +383,23 @@ def _window_text(hwnd: int) -> str:
     return buffer.value
 
 
-def _trace_facts(service) -> tuple[str, int]:
-    """从最近一次执行的追踪记录读通道与模型调用数（读不到就如实空）。"""
+def _trace_facts(task_dir: Path) -> tuple[str, int]:
+    """从动作日志（``action-records.jsonl``）的**最后一条**读通道与模型调用数。
+
+    （护栏录制器不保证有内存列表 —— 落盘的 jsonl 是唯一可靠来源。）
+    """
+    path = task_dir / "action-records.jsonl"
+    if not path.exists():
+        return ("", 0)
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not lines:
+        return ("", 0)
     try:
-        session = service.guard_session
-        recorder = getattr(session, "recorder", None)
-        records = list(recorder.records) if recorder is not None else []
-    except Exception:  # noqa: BLE001 —— 追踪读不到不影响判分，如实空
+        record = json.loads(lines[-1])
+    except json.JSONDecodeError:
         return ("", 0)
-    if not records:
-        return ("", 0)
-    last = records[-1]
-    channel = getattr(last, "channel", "") or ""
-    model_calls = int(getattr(last, "model_calls", 0) or 0)
+    channel = str(record.get("channel") or "")
+    model_calls = int(record.get("model_calls") or 0)
     return (channel, model_calls)
 
 
@@ -463,8 +475,8 @@ def run_task(
         result["landing"] = (
             list(response.landing_point) if response.landing_point else None
         )
-        # 通道与模型调用数从**追踪记录**直读（trace.channel / model_calls）。
-        trace_channel, model_calls = _trace_facts(service)
+        # 通道与模型调用数从**动作日志**直读（trace.channel / model_calls）。
+        trace_channel, model_calls = _trace_facts(out_dir / task_id)
         result["channel"] = trace_channel
         result["model_calls"] = model_calls
         if response.error_code == "USER_ACTIVE_PAUSED":
