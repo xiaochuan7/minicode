@@ -74,8 +74,8 @@ from minicode.model.image import SERVER_MAX_INPUT_WIDTH_PX, downscale_frame, ups
 from minicode.model.ports import ModelCaller
 
 from .candidates import CandidateSource, GroundingCandidate, merge_candidate_sources
-from .d3_rerank import RerankAction, RerankOutcome
 from .crop import crop_frame, crop_region, upscale_crop
+from .d3_rerank import RerankOutcome
 from .gate import (
     FallbackCause,
     GateCondition,

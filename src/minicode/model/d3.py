@@ -86,7 +86,7 @@ class D3Reply:
 class D3LogSink(Protocol):
     """d3 调用日志的出口。"""
 
-    def write(self, record: "D3CallRecord") -> None: ...
+    def write(self, record: D3CallRecord) -> None: ...
 
 
 @dataclass(frozen=True)

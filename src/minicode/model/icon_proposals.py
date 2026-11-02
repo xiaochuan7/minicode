@@ -41,6 +41,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from minicode.action.ports import CapturedFrame
 from minicode.ground.candidates import (
@@ -48,6 +49,12 @@ from minicode.ground.candidates import (
     OcrWordLike,
     dedupe_by_iou,
 )
+
+if TYPE_CHECKING:
+    # numpy 只在**函数体内懒加载**（core 零依赖红线：ground 包不许引第三方，
+    # model 包的视觉预处理只有 vision 附加项装了才用得到）；
+    # 类型标注借 TYPE_CHECKING 解析 —— 运行时 annotation 是字符串（见上）。
+    import numpy
 
 __all__ = [
     "ICON_PROPOSAL_SOURCE",
