@@ -113,6 +113,13 @@ VISION_OPTIONAL_CONFIG_KEYS: dict[str, str] = {
     "client_header": "MINICODE_VISION_CLIENT",
 }
 
+#: **d3 决策模型**（V4 候选重排）的键 → 字段名。
+D3_CONFIG_KEYS: dict[str, str] = {
+    "base_url": "MINICODE_D3_BASE_URL",
+    "api_key": "MINICODE_D3_API_KEY",
+    "model": "MINICODE_D3_MODEL",
+}
+
 #: ``user-agent`` 的缺省值（通用 provider 不该被内部网关的头绑死）。
 DEFAULT_USER_AGENT = "minicode/0.1.0"
 
@@ -331,6 +338,73 @@ def load_config(env_file: Path | None = None) -> ModelConfig:
     # 端点在装载时就拼一次（别等到发请求才发现协议/地址对不上）。
     resolve_endpoint(config.base_url, config.protocol)
     return config
+
+
+@dataclass(frozen=True)
+class D3Config:
+    """**d3 决策模型**的配置（V4 候选重排；不生成文本，只要概率）。
+
+    ⚠️ d3 **不走** ``/chat/completions``（实测直接 400）——
+    端点是 :attr:`endpoint` = ``{base_url}/systemone``。
+    """
+
+    base_url: str
+    api_key: str
+    model: str
+    #: 配置来源文件路径（写进日志，便于追溯）。
+    source: str = ""
+
+    @property
+    def endpoint(self) -> str:
+        """systemone 端点（d3 唯一的正确入口）。"""
+        return f"{self.base_url.rstrip('/')}/systemone"
+
+    def describe(self) -> str:
+        """启动日志用的一行描述（**脱敏**）。"""
+        return (
+            f"d3 配置：endpoint={self.endpoint} model={self.model} "
+            f"api_key={_mask_secret(self.api_key)}（来源 {self.source or '缺省'}）"
+        )
+
+
+def load_d3_config(env_file: Path | None = None) -> D3Config:
+    """从仓库 ``.env`` 装载 d3 配置：``MINICODE_D3_*`` 优先，
+    缺哪个字段就逐字段回落视觉组、再回落决策层（同一网关的常见部署）。
+    全缺 → :class:`ModelConfigError`（点名三组键）。
+    """
+    path = Path(env_file) if env_file is not None else find_env_file()
+    if not path.is_file():
+        raise ModelConfigError(f"仓库配置文件不存在：{path}")
+    values = parse_env_file(path)
+
+    resolved: dict[str, str] = {}
+    origins: dict[str, str] = {}
+    for field_name, key in D3_CONFIG_KEYS.items():
+        value = values.get(key, "").strip()
+        if value:
+            resolved[field_name] = value
+            origins[field_name] = key
+            continue
+        # 回落视觉组，再回落决策层。
+        vision_key = VISION_CONFIG_KEYS.get(field_name)
+        generic_key = GENERIC_CONFIG_KEYS.get(field_name)
+        for fallback_key in (vision_key, generic_key):
+            if fallback_key and values.get(fallback_key, "").strip():
+                resolved[field_name] = values[fallback_key].strip()
+                origins[field_name] = f"{fallback_key}（d3 键缺省回落）"
+                break
+    missing = [key for key in D3_CONFIG_KEYS.values() if key not in origins.values()]
+    if missing:
+        raise ModelConfigError(
+            f"仓库配置 {path} 缺少 d3 配置：{'；'.join(missing)}"
+            "（d3 键 → 视觉键 → 决策键的回落链全空）"
+        )
+    return D3Config(
+        base_url=resolved["base_url"],
+        api_key=resolved["api_key"],
+        model=resolved["model"],
+        source=str(path),
+    )
 
 
 def load_vision_config(env_file: Path | None = None) -> ModelConfig:

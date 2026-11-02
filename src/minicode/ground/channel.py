@@ -74,6 +74,7 @@ from minicode.model.image import SERVER_MAX_INPUT_WIDTH_PX, downscale_frame, ups
 from minicode.model.ports import ModelCaller
 
 from .candidates import CandidateSource, GroundingCandidate, merge_candidate_sources
+from .d3_rerank import RerankAction, RerankOutcome
 from .crop import crop_frame, crop_region, upscale_crop
 from .gate import (
     FallbackCause,
@@ -420,6 +421,11 @@ class TwoStageGrounder:
     additional_candidate_source
         **附加候选源**（可空）—— **附加表**（OCR 词框）。
         与主表按 UFO² 的规则合并（IoU > 0.1 的附加项丢弃、**主表全留**）。
+    reranker
+        **d3 候选重排器**（可空，V4）。给了它：编号分支**不再让视觉模型挑号**
+        —— 改为「启发式打分 → 分数接近才问 d3 → 置信度不够**不点**」
+        （fail-closed；落点仍然只取候选框物理中心 —— 0.0px 契约）。
+        **不给（默认）→ 行为与原来完全一致**（视觉模型挑号）。
     numbered_max_tokens
         **编号分支这一次调用的输出预算**（默认 4000）。
         ⚠️ 只给**编号分支**用，不改模型客户端的全局默认。
@@ -472,6 +478,7 @@ class TwoStageGrounder:
         gate_mode: GateMode | str = GateMode.ON_DEMAND,
         candidate_source: CandidateSource | None = None,
         additional_candidate_source: CandidateSource | None = None,
+        reranker: Any | None = None,
         target_names: TargetNames | None = None,
         variants: int = 1,
         coarse_variants: int = 1,
@@ -500,6 +507,8 @@ class TwoStageGrounder:
         self.candidate_source = candidate_source
         #: **附加候选源** —— **附加表**（OCR）。``None`` = 没有附加表。
         self.additional_candidate_source = additional_candidate_source
+        #: **d3 候选重排器**（V4）。``None`` = 没有重排（视觉模型挑号，现状）。
+        self.reranker = reranker
         #: **界面上真实存在的名字清单**（工单 B-4）。``None`` = 不做规范化。
         self.target_names = target_names
         #: **精定位那一级采几次**（K；1 = 现状）。
@@ -604,6 +613,11 @@ class TwoStageGrounder:
                 request, description, frame, candidates, echoes, model_calls
             )
             if numbered.ok:
+                return numbered
+            if numbered.error_message.startswith("rerank:"):
+                # **d3 重排的 fail-closed 是终态**（V4）：低置信 / d3 不可用 =
+                # 「不点，转人工」—— 回落点式路径等于**绕过闸门**接着点，
+                # 所以这里直接返回失败，不进点式路径。
                 return numbered
             # **挑不出编号**（没给编号 / 答 0「清单里没有」/ 编号不在清单里）
             # → **回落点式路径**（有可回落的结果）。
@@ -1473,12 +1487,20 @@ class TwoStageGrounder:
         模型只负责在清单里指认一项，指认对了，落点就落在那个候选框的**物理中心**
         （**零换算**：候选框本来就是物理像素）。
 
+        **接了 d3 重排器**（V4，``reranker`` 非空）时**不走视觉模型挑号**：
+        启发式打分 → 分数接近才问 d3 → 置信度不够**不点**（fail-closed）。
+        落点**仍然只取候选框物理中心**（0.0px 契约不可破）。
+
         * 模型**没给出编号** / **答 0**（「清单里没有对应的」）/ 编号不在清单里
           → **报这次选择失败**（上层**回落**到点式路径）；
         * 这一级**不开门控、也不做 crop 精定位**（它是整屏那一级的替代方案，
           不是它前面的一环）→ ``refine_enabled=False``、``crop_plan=None``。
         """
         screen_frame = self._screen_frame(frame)
+        if self.reranker is not None:
+            return self._numbered_by_reranker(
+                request, description, frame, screen_frame, candidates, echoes, model_calls
+            )
         lines = self._candidate_lines(candidates, frame, screen_frame)
         try:
             numbers = self._ask_chosen_number(
@@ -1530,6 +1552,80 @@ class TwoStageGrounder:
             #: 回空元组等于说「门控判了、而且全部判得出来」，那是**假的**
             #: （聚合出来的「undecidable 数 = 0」会被**白拿**）→
             #: 照实把四条都记成**不可判定**。
+            gate_undecidable=tuple(condition.value for condition in GateCondition),
+            refine_enabled=False,
+            echoes=tuple(echoes),
+            model_calls=model_calls,
+            scale=self.scale.value,
+            landing_source=LANDING_SOURCE_NUMBERED,
+        )
+
+    def _numbered_by_reranker(
+        self,
+        request: VisualLocateRequest,
+        description: str,
+        frame: CapturedFrame,
+        screen_frame: CapturedFrame,
+        candidates: list[GroundingCandidate],
+        echoes: list[GroundingEcho],
+        model_calls: int,
+    ) -> VisualLocateResult:
+        """**d3 重排**的编号选择（V4）：启发式 → 接近才 d3 → 低置信不点。
+
+        * ``direct`` / ``reranked`` → 落点 = 选中候选框的**物理中心**；
+        * ``low_confidence`` / ``d3_unavailable`` → **不点**（fail-closed，
+          显式失败 —— **不是猜**），失败信息带 ``low_confidence`` /
+          ``d3_unavailable``（追踪记录照实落）。
+        """
+        outcome: RerankOutcome = self.reranker.rerank(description, candidates)
+        echoes.append(
+            GroundingEcho(
+                stage=STAGE_NUMBERED,
+                raw_x=None,
+                raw_y=None,
+                sent_width=screen_frame.width,
+                sent_height=screen_frame.height,
+                # ``image_source`` 携带重排结论（回显没有单独的结论字段）：
+                # action + 是否调了 d3 + confidence。
+                image_source=(
+                    f"rerank:{outcome.action}"
+                    f"|called_d3={int(outcome.called_d3)}"
+                    + (
+                        f"|confidence={outcome.confidence:.3f}"
+                        if outcome.confidence is not None
+                        else ""
+                    )
+                ),
+            )
+        )
+        if outcome.chosen_number is None:
+            # ⚠️ 失败信息带 ``rerank:`` 前缀 —— ``locate()`` 靠它识别
+            # 「重排的 fail-closed 是终态」（不回落点式路径）。
+            return self._failure(
+                f"rerank:{outcome.action}：不点（{outcome.reason}）",
+                echoes,
+                model_calls,
+            )
+        chosen = [
+            candidate
+            for candidate in candidates
+            if candidate.number == outcome.chosen_number
+        ]
+        if not chosen:
+            return self._failure(
+                f"rerank:invalid_result：重排结果不可用，"
+                f"编号 {outcome.chosen_number} 不在候选清单里",
+                echoes,
+                model_calls,
+            )
+        candidate = chosen[0]
+        center = candidate.center
+        return VisualLocateResult(
+            landing_point=to_physical_point(center[0], center[1]),
+            coarse_point=center,
+            crop_plan=None,
+            gate_hit=False,
+            gate_reasons=(),
             gate_undecidable=tuple(condition.value for condition in GateCondition),
             refine_enabled=False,
             echoes=tuple(echoes),

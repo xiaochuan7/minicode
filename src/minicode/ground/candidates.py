@@ -50,6 +50,7 @@ __all__ = [
     "UiaControlLike",
     "WordReader",
     "candidate_coverage",
+    "candidate_match_score",
     "dedupe_by_iou",
     "iou",
     "merge_candidate_sources",
@@ -336,6 +337,22 @@ def merge_candidate_sources(
         )
         for index, candidate in enumerate(kept)
     ]
+
+
+def candidate_match_score(description: str, text: str) -> float:
+    """候选文字与目标描述的**匹配度**（V4 重排的缺省启发式打分）。
+
+    与 :class:`OcrCandidateSource` / :class:`UiaCandidateSource` 的排序
+    用的是**同一把尺子**（:func:`_is_target` 的规则 A/B）：匹配 = 1.0，
+    不匹配 = 0.0。空描述 / 空文字 = 0.0。
+    """
+    compact = _compact(text or "")
+    if len(compact) < MIN_MATCH_LENGTH:
+        return 0.0
+    target_compact = _compact(description or "")
+    if len(target_compact) < MIN_MATCH_LENGTH:
+        return 0.0
+    return 1.0 if _is_target(text, target_compact, _spaced(description or "")) else 0.0
 
 
 def candidate_coverage(
