@@ -2,6 +2,55 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
+## v0.1.7 — 2026-11-03
+
+本条目对应 v0.1.6 之后的交付（通宵任务 V1–V7）：**视觉通道可插拔**（V1）、
+**换模型视觉配对实验**（V2）、**候选源补齐**（V3：零模型图标提议 + ScreenParser
+检测模型）、**d3 候选重排与置信度闸门**（V4）、**视觉必需任务集**（V5）、
+**A/B/C 三组量化对比**（V6）。
+无破坏性变更：`MINICODE_VISION_*` / `MINICODE_D3_*` 全部缺省回落到既有
+`MINICODE_*` 行为（只配一组键时逐字节同从前）；请求日志新增字段全部可空。
+
+### 新增
+
+- **视觉通道可插拔（V1）**：`MINICODE_VISION_{PROVIDER,BASE_URL,API_KEY,MODEL}`
+  配置组逐字段覆盖决策层、缺省逐字段回落；`load_vision_config()`；Radeon 网关
+  （OpenAI 兼容 + image_url data URL）实测可直用；请求日志新增
+  `channel / image_width_px / image_height_px / rate_limited / endpoint_host`
+  五个字段 —— 视觉调用可直读、429 与模型失败分开计数。
+- **d3 决策模型客户端（V4）**：`/v1/systemone` 唯一入口（`/chat/completions`
+  实测 400）；`D3Config / load_d3_config`（d3 键 → 视觉键 → 决策键回落）；
+  每次调用落一行 JSONL（选项数/概率/confidence/耗时/HTTP/429 标记，不含 key）。
+- **d3 候选重排 + 置信度闸门（V4）**：`D3CandidateReranker` —— 候选得分差
+  < 0.1（配置项）才调 d3（锦标赛），confidence < 0.5（配置项）**不点转人工**
+  （fail-closed），d3 失败降级 = 不点（不是猜）；**0.0px 契约**：只选候选编号，
+  落点永远取候选框物理中心；`TwoStageGrounder` 新增 `reranker` 注入口，
+  重排的 fail-closed 是**终态**（不回落点式路径 —— 回落等于绕过闸门）；
+  累计统计 `stats` 直读 d3 调用数 / 低置信拒绝数。
+- **零模型图标候选源（V3）**：`IconProposalCandidateSource` —— 梯度 + Otsu +
+  连通域的图标区域提议，IoU+pHash 去重（不同位置的相似图标不合并），OCR 邻近词
+  或位置型占位描述；住在 model 包（ground 有只许标准库的源码级红线）。
+- **ScreenParser 检测模型候选源（V3）**：`ScreenParserCandidateSource`
+  （docling-project/ScreenParser，Apache-2.0，YOLO UI 检测）—— 物理像素候选 +
+  检测标签描述 + OCR 邻近词；torch/ultralytics 懒加载，环境缺失抛带指引的
+  RuntimeError（调用方退回零模型源并如实记录）；**不引入** OmniParser
+  icon_detect（AGPL）。
+- **视觉必需任务集（V5）**：`scripts/v5_vision_tasks.py` —— 8 条 canvas 任务
+  （文字按钮 / 无字图形按钮 / 无字色块 / 图形场景），DOM 无节点、UIA 原理上
+  不可达 → 视觉通道兜底；judge 只读窗口标题（`V5HIT:` 标记，不读截图）；
+  `--group a|b|c` 一台三用。
+
+### 评测与文档
+
+- **V2 视觉配对实验**：`scripts/v2_paired_models.py`（臂 A 复用 W6 同批 60 条、
+  臂 B Qwen3.8-27B；两臂提示词逐字相同；429/传输失败单独计数；增量落盘 +
+  断点续跑）+ `scripts/make_v2_report.py`（报告 + 配对 JSON 入库）。
+- **V3 覆盖率量化**：`scripts/v3_icon_coverage.py`（OCR / 零模型 / 检测模型
+  三源对照，candidate_coverage 三列口径）。
+- **V6 A/B/C 对比**：`scripts/make_v6_report.py`（三组 summary → 对比表 +
+  JSON 入库；原 30 条的结构性等同论证如实写明）。
+- 视觉必需任务集说明：`docs/v5-vision-required.md`。
+
 ## v0.1.6 — 2026-11-02
 
 本条目对应 v0.1.5 之后的交付：W5 可靠性四件套、W7 全部七条 P2 修复、W4 真机任务级
