@@ -1,0 +1,481 @@
+{
+  "a": {
+    "group": "a",
+    "vision_model": "Qwen3.8-27B",
+    "candidate_source": null,
+    "d3_rerank": false,
+    "n_tasks": 8,
+    "judged": 8,
+    "pass": 6,
+    "fail": 2,
+    "error": 0,
+    "paused": 0,
+    "blocked": 0,
+    "success_at_1": 0.75,
+    "vision_channel_used": 8,
+    "d3_stats": null,
+    "mean_elapsed_s": 118.2,
+    "dangerous_actions": 0,
+    "human_takeovers": 0,
+    "outcomes": [
+      {
+        "task": "w01",
+        "description": "画布里写着「乙」的深蓝色按钮",
+        "expected": "乙",
+        "page": "canvas-text-buttons.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          662,
+          311
+        ],
+        "note": "",
+        "elapsed_s": 19.7,
+        "ok": true,
+        "error_code": null,
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w02",
+        "description": "画布里写着「丙」的深蓝色按钮",
+        "expected": "丙",
+        "page": "canvas-text-buttons.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          1691,
+          393
+        ],
+        "note": "",
+        "elapsed_s": 84.9,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:丙 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w03",
+        "description": "画布里实心三角形（播放）图标按钮",
+        "expected": "播放",
+        "page": "canvas-icon-buttons.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          1030,
+          453
+        ],
+        "note": "",
+        "elapsed_s": 18.8,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:播放 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w04",
+        "description": "画布里实心正方形（停止）图标按钮",
+        "expected": "停止",
+        "page": "canvas-icon-buttons.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          661,
+          361
+        ],
+        "note": "",
+        "elapsed_s": 730.2,
+        "ok": true,
+        "error_code": null,
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w05",
+        "description": "调色板里第一行最左边的红色色块",
+        "expected": "红色",
+        "page": "canvas-palette.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          950,
+          431
+        ],
+        "note": "",
+        "elapsed_s": 19.9,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:红色 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w06",
+        "description": "调色板里第二行最左边的蓝色色块",
+        "expected": "蓝色",
+        "page": "canvas-palette.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          951,
+          627
+        ],
+        "note": "",
+        "elapsed_s": 21.3,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:蓝色 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w07",
+        "description": "画布里左侧的红色圆形图案",
+        "expected": "红圆",
+        "page": "canvas-scene.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          1020,
+          502
+        ],
+        "note": "",
+        "elapsed_s": 27.0,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:红圆 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w08",
+        "description": "画布里右侧的黄色三角形图案",
+        "expected": "黄三角",
+        "page": "canvas-scene.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 2,
+        "landing": [
+          1529,
+          495
+        ],
+        "note": "",
+        "elapsed_s": 23.5,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:黄三角 - 个人 - Microsoft​ Edge"
+      }
+    ]
+  },
+  "b": {
+    "group": "b",
+    "vision_model": "Qwen3.8-27B",
+    "candidate_source": "icon-proposals",
+    "d3_rerank": false,
+    "n_tasks": 8,
+    "judged": 8,
+    "pass": 6,
+    "fail": 2,
+    "error": 0,
+    "paused": 0,
+    "blocked": 0,
+    "success_at_1": 0.75,
+    "vision_channel_used": 8,
+    "d3_stats": null,
+    "mean_elapsed_s": 168.0,
+    "dangerous_actions": 0,
+    "human_takeovers": 0,
+    "outcomes": [
+      {
+        "task": "w01",
+        "description": "画布里写着「乙」的深蓝色按钮",
+        "expected": "乙",
+        "page": "canvas-text-buttons.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 1,
+        "landing": [
+          1334,
+          393
+        ],
+        "note": "",
+        "elapsed_s": 37.0,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:乙 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w02",
+        "description": "画布里写着「丙」的深蓝色按钮",
+        "expected": "丙",
+        "page": "canvas-text-buttons.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 1,
+        "landing": [
+          1693,
+          393
+        ],
+        "note": "",
+        "elapsed_s": 24.9,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:丙 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w03",
+        "description": "画布里实心三角形（播放）图标按钮",
+        "expected": "播放",
+        "page": "canvas-icon-buttons.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 1,
+        "landing": [
+          1031,
+          453
+        ],
+        "note": "",
+        "elapsed_s": 344.8,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:播放 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w04",
+        "description": "画布里实心正方形（停止）图标按钮",
+        "expected": "停止",
+        "page": "canvas-icon-buttons.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 3,
+        "landing": [
+          660,
+          361
+        ],
+        "note": "",
+        "elapsed_s": 761.8,
+        "ok": true,
+        "error_code": null,
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w05",
+        "description": "调色板里第一行最左边的红色色块",
+        "expected": "红色",
+        "page": "canvas-palette.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 1,
+        "landing": [
+          1130,
+          432
+        ],
+        "note": "",
+        "elapsed_s": 16.9,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:橙色 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w06",
+        "description": "调色板里第二行最左边的蓝色色块",
+        "expected": "蓝色",
+        "page": "canvas-palette.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 3,
+        "landing": [
+          950,
+          626
+        ],
+        "note": "",
+        "elapsed_s": 69.4,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:蓝色 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w07",
+        "description": "画布里左侧的红色圆形图案",
+        "expected": "红圆",
+        "page": "canvas-scene.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 3,
+        "landing": [
+          1021,
+          499
+        ],
+        "note": "",
+        "elapsed_s": 38.0,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:红圆 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w08",
+        "description": "画布里右侧的黄色三角形图案",
+        "expected": "黄三角",
+        "page": "canvas-scene.html",
+        "status": "pass",
+        "channel": "visual",
+        "model_calls": 3,
+        "landing": [
+          1529,
+          495
+        ],
+        "note": "",
+        "elapsed_s": 51.2,
+        "ok": true,
+        "error_code": null,
+        "title": "V5HIT:黄三角 - 个人 - Microsoft​ Edge"
+      }
+    ]
+  },
+  "c": {
+    "group": "c",
+    "vision_model": "Qwen3.8-27B",
+    "candidate_source": "icon-proposals",
+    "d3_rerank": true,
+    "n_tasks": 8,
+    "judged": 8,
+    "pass": 0,
+    "fail": 8,
+    "error": 0,
+    "paused": 0,
+    "blocked": 0,
+    "success_at_1": 0.0,
+    "vision_channel_used": 8,
+    "d3_stats": {
+      "rerank_calls": 8,
+      "d3_called": 8,
+      "direct": 0,
+      "reranked": 0,
+      "low_confidence": 2,
+      "d3_unavailable": 6,
+      "not_applicable": 0
+    },
+    "mean_elapsed_s": 70.6,
+    "dangerous_actions": 0,
+    "human_takeovers": 0,
+    "outcomes": [
+      {
+        "task": "w01",
+        "description": "画布里写着「乙」的深蓝色按钮",
+        "expected": "乙",
+        "page": "canvas-text-buttons.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 103.6,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w02",
+        "description": "画布里写着「丙」的深蓝色按钮",
+        "expected": "丙",
+        "page": "canvas-text-buttons.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 60.4,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w03",
+        "description": "画布里实心三角形（播放）图标按钮",
+        "expected": "播放",
+        "page": "canvas-icon-buttons.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 126.4,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w04",
+        "description": "画布里实心正方形（停止）图标按钮",
+        "expected": "停止",
+        "page": "canvas-icon-buttons.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 126.5,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w05",
+        "description": "调色板里第一行最左边的红色色块",
+        "expected": "红色",
+        "page": "canvas-palette.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 126.4,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w06",
+        "description": "调色板里第二行最左边的蓝色色块",
+        "expected": "蓝色",
+        "page": "canvas-palette.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 9.2,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w07",
+        "description": "画布里左侧的红色圆形图案",
+        "expected": "红圆",
+        "page": "canvas-scene.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 6.1,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      },
+      {
+        "task": "w08",
+        "description": "画布里右侧的黄色三角形图案",
+        "expected": "黄三角",
+        "page": "canvas-scene.html",
+        "status": "fail",
+        "channel": "visual",
+        "model_calls": 0,
+        "landing": null,
+        "note": "",
+        "elapsed_s": 6.1,
+        "ok": false,
+        "error_code": "locate_failed",
+        "title": "V5 未点击 - 个人 - Microsoft​ Edge"
+      }
+    ]
+  }
+}

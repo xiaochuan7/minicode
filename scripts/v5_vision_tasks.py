@@ -308,10 +308,21 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
     from minicode.model.request_log import JsonlRequestLog
 
     vision_config = load_vision_config()
-    client = ModelClient(
-        vision_config,
-        JsonlRequestLog(out_dir / f"{log_prefix}-model-requests.jsonl"),
-        channel="vision",
+    # **重试缝**（与 V2 同纪律）：60s 固定退避、最多 3 次、单请求 100s 超时 ——
+    # 冒烟实测：裸客户端一次精定位超时 → 回落到偏掉的粗点（坏落点）；
+    # 重试让 refine 有第二次机会，粗点才不至于一锤定音。
+    from minicode.model.retry import RetryingModelCaller, RetryPolicy
+
+    client = RetryingModelCaller(
+        ModelClient(
+            vision_config,
+            JsonlRequestLog(out_dir / f"{log_prefix}-model-requests.jsonl"),
+            channel="vision",
+            timeout_s=100.0,
+        ),
+        policy=RetryPolicy(
+            max_attempts=3, base_delay_s=60.0, max_delay_s=60.0, jitter_s=0.0
+        ),
     )
     width, height = dpi.physical_screen_size()
     model_input = model_input_size_for(width, height)
@@ -333,9 +344,11 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
     )
 
     candidate_source = None
+    source_name = None
     reranker = None
     if group in ("b", "c"):
         candidate_source = _make_candidate_source()
+        source_name = type(candidate_source).__name__
     if group == "c":
         d3_client = D3Client(
             load_d3_config(),
@@ -351,7 +364,7 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
         candidate_source=candidate_source,
         reranker=reranker,
     )
-    return admission_port, grounder, vision_config.model
+    return admission_port, grounder, vision_config.model, source_name
 
 
 def attach_vision(service, admission_port, grounder) -> None:
@@ -536,7 +549,7 @@ def main() -> int:
         paths = _write_pages(out_dir)
         log_prefix = f"group-{args.group}"
 
-        admission_port, grounder, vision_model = build_vision(
+        admission_port, grounder, vision_model, source_name = build_vision(
             args.group, out_dir, log_prefix
         )
         print(
@@ -575,7 +588,7 @@ def main() -> int:
         summary = {
             "group": args.group,
             "vision_model": vision_model,
-            "candidate_source": "icon-proposals" if args.group in ("b", "c") else None,
+            "candidate_source": source_name,
             "d3_rerank": args.group == "c",
             "n_tasks": len(outcomes),
             "judged": len(judged),

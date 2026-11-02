@@ -87,12 +87,12 @@ def main() -> int:
     add("| --- | --- | --- | --- | --- |")
     for name, label, note in (
         ("a", "A（现状）", "视觉通道兜底，无候选增强、无重排"),
-        ("b", "B", "V3 的 IconProposalCandidateSource 当附加候选源"),
+        ("b", "B", "V3 候选源注入（ScreenParser 检测模型优先，零模型回退）"),
         ("c", "C", "B 的基础上加 D3CandidateReranker（/v1/systemone）"),
     ):
         s = groups.get(name)
         model = s.get("vision_model") if s else "—"
-        source = "无" if name == "a" else "icon-proposals"
+        source = (s.get("candidate_source") or "无") if s else "—"
         rerank = "关" if name != "c" else "开（gap<0.1 才调；confidence<0.5 不点）"
         add(f"| {label} | {model} | {source} | {rerank} | {note} |")
     add("")
@@ -152,6 +152,30 @@ def main() -> int:
     add("* V3 量化（runs/v3）已证实：零模型图标候选在 ScreenSpot-Pro 上的覆盖率极低")
     add("  （icon 1/30），在 canvas 页这类**常规密度 UI**上的表现以本台三组对照为准；")
     add("* d3 只决定「选哪个候选」（落点仍取候选框物理中心，0.0px 契约）。")
+    add("* **已知元数据误差**：本轮三组 summary 的 ``candidate_source`` 字段误标为")
+    add("  ``icon-proposals``（runner 硬编码缺陷，已修复）—— 组 B/C 实际用的是")
+    add("  **ScreenParserCandidateSource**（跑批日志「候选源：ScreenParser」与")
+    add("  d3 调用日志的 15~20 选项数可证）；runs/ 产物照原样保留不改。")
+    d3_path = v5_dir / "group-c-d3-calls.jsonl"
+    if d3_path.exists():
+        rows = [
+            json.loads(line)
+            for line in d3_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        low = sum(1 for r in rows if r.get("confidence") is not None and r.get("confidence") < 0.5)
+        timeout = sum(1 for r in rows if r.get("error") and "timed out" in str(r.get("error")))
+        gateway_400 = sum(
+            1 for r in rows if str(r.get("http_status")) == "400" and "not found" in str(r.get("error", "")).lower()
+        )
+        ok = sum(1 for r in rows if r.get("http_status") == 200 and r.get("confidence") is not None)
+        add(
+            f"* **组 C 的 d3 调用拆账**（{len(rows)} 次，日志 `group-c-d3-calls.jsonl`）："
+            f"成功返回 {ok}（其中低置信拒绝 {low}）、超时 {timeout}、"
+            f"网关 400「Decision model not found」{gateway_400} —— "
+            "fail-closed 全部兑现为**不点**（对照组 B 同批 6/8 无一点错）；"
+            "d3 网关的间歇不可用与多选项超时是**环境侧**问题，如实披露。"
+        )
     add("")
 
     out = _ROOT / args.out
