@@ -265,6 +265,26 @@ def _write_pages(out_dir: Path) -> dict[str, Path]:
 # ---------------------------------------------------------------------------
 
 
+def _make_candidate_source():
+    """组 B/C 的候选源：**ScreenParser 优先**（V3 第 2 步，真检测器），
+    环境里没有 torch/ultralytics → **退回零模型图标提议**（V3 第 1 步），
+    用了哪个**如实打印**（进报告的「候选源」一栏）。"""
+    try:
+        from minicode.model.detector_source import ScreenParserCandidateSource
+
+        source = ScreenParserCandidateSource(max_candidates=20)
+        print("候选源：ScreenParser（检测模型，Apache-2.0）", flush=True)
+        return source
+    except RuntimeError as exc:
+        from minicode.model.icon_proposals import IconProposalCandidateSource
+
+        print(
+            f"⚠️ 检测模型不可用（{exc}）→ 退回零模型图标提议（如实记录）",
+            flush=True,
+        )
+        return IconProposalCandidateSource(max_candidates=20)
+
+
 def build_vision(group: str, out_dir: Path, log_prefix: str):
     """标定 + 准入 + grounder（一次装配，整个任务批共用）。"""
     _load_env()
@@ -278,7 +298,6 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
     from minicode.model.client import ModelClient
     from minicode.model.config import load_d3_config, load_vision_config
     from minicode.model.d3 import D3Client, JsonlD3Log
-    from minicode.model.icon_proposals import IconProposalCandidateSource
     from minicode.model.image import model_input_size_for
     from minicode.model.request_log import JsonlRequestLog
 
@@ -304,7 +323,7 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
     candidate_source = None
     reranker = None
     if group in ("b", "c"):
-        candidate_source = IconProposalCandidateSource(max_candidates=20)
+        candidate_source = _make_candidate_source()
     if group == "c":
         d3_client = D3Client(
             load_d3_config(),
