@@ -395,6 +395,7 @@ def run_task(
     grounder,
 ) -> dict:
     """一条任务：spawn → 服务 → 点击（视觉兜底）→ 判分（读标题）→ 关窗。"""
+    from minicode.action.protocol import PROTOCOL_VERSION
     from minicode.guard.policy import GuardPolicy, load_policy
     from minicode.serve.real import build_real_service
 
@@ -445,7 +446,7 @@ def run_task(
         started = time.monotonic()
         response = service.execute(
             {
-                "protocol": "minicode.action/1",
+                "protocol": PROTOCOL_VERSION,
                 "action": "click",
                 "target": description,
             }
