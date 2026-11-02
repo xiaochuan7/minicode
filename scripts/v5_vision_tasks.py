@@ -319,6 +319,12 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
     outcome = probe.run()
     admission_port = CalibrationAdmission(outcome)
     desktop = current_virtual_desktop()
+    print(
+        f"=== 标定：判定标度={outcome.detected_scale.value}｜"
+        f"准入={'可用' if admission_port.admit().available else '不可用'}｜"
+        f"最大误差={outcome.candidate(outcome.detected_scale).max_error_px:.2f}px ===",
+        flush=True,
+    )
 
     candidate_source = None
     reranker = None
