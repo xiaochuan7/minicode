@@ -55,10 +55,17 @@ from minicode.model.retry import RetryingModelCaller, RetryPolicy  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-#: 429 的退避纪律（任务书）：**60s 固定**，最多 5 次（含首次）。
+#: 429 的退避纪律（任务书）：**60s 固定退避，最多 5 次** —— 这里取 3 次
+#: （≤5 合规）：实测服务端对个别大请求会**挂到超时**（首轮 p90=342s 的
+#: 全是 180s 超时 ×2），5 次重试会把一个样本拖到 20 分钟；
+#: 3 次 + 100s 超时把最坏情形压到 ~7 分钟，429 仍有两次 60s 退避机会。
 RATE_LIMIT_POLICY = RetryPolicy(
-    max_attempts=5, base_delay_s=60.0, max_delay_s=60.0, jitter_s=0.0
+    max_attempts=3, base_delay_s=60.0, max_delay_s=60.0, jitter_s=0.0
 )
+
+#: 单次请求超时（秒）。Qwen 大图 p50 ≈ 28s；100s 覆盖正常慢请求，
+#: 挂死的请求快速失败进重试（而不是耗满 180s×N）。
+REQUEST_TIMEOUT_S = 100.0
 
 
 def _geometry(sample_size: tuple[int, int], model_input: tuple[int, int]) -> FrameGeometry:
@@ -94,6 +101,7 @@ class _ThreadLocalClients:
                     self._config,
                     JsonlRequestLog(self._log_path),
                     channel="vision",
+                    timeout_s=REQUEST_TIMEOUT_S,
                 ),
                 policy=RATE_LIMIT_POLICY,
             )
@@ -297,10 +305,23 @@ def main() -> int:
         )
     if args.limit:
         subset = subset[: args.limit]
-    print(f"=== 样本：{len(subset)} 条（每层 {args.per_stratum}，seed={args.seed}，与 W6 同批）===", flush=True)
-
+    # -- 断点续跑：v2-raw.json 里已有的样本跳过（增量落盘的前提）------------
     out_dir = _ROOT / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = out_dir / "v2-raw.json"
+    arm_b_raw: list[dict] = []
+    if raw_path.exists():
+        arm_b_raw = json.loads(raw_path.read_text(encoding="utf-8"))
+        done_ids = {row["sample_id"] for row in arm_b_raw}
+        before = len(subset)
+        subset = [sample for sample in subset if sample.sample_id not in done_ids]
+        print(
+            f"=== 断点续跑：{before - len(subset)} 条已完成（v2-raw.json），"
+            f"剩 {len(subset)} 条 ===",
+            flush=True,
+        )
+    print(f"=== 样本：{len(subset)} 条（每层 {args.per_stratum}，seed={args.seed}，与 W6 同批）===", flush=True)
+
     log_path = out_dir / "model-requests.jsonl"
     if log_path.exists():
         # 断点续跑的口径：日志按追加写 —— 重新整轮跑时先挪开旧日志。
@@ -309,7 +330,6 @@ def main() -> int:
 
     # -- 臂 B：分批控速（并发 ≤ workers，批间 batch-sleep 秒）----------------
     arm_b_outcomes: list[ArmOutcome] = []
-    arm_b_raw: list[dict] = []
     started = time.time()
 
     def work(sample):
@@ -329,10 +349,46 @@ def main() -> int:
                     f"hit={outcome.hit} ({time.time() - started:.0f}s)",
                     flush=True,
                 )
+        # **增量落盘**：每批结束把 raw 写盘 —— 中断后从断点续跑，
+        # 已完成的样本不重跑（额度与时间都不浪费）。
+        raw_path.write_text(
+            json.dumps(arm_b_raw, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         time.sleep(args.batch_sleep)
 
     # -- 429 / 传输失败 / 无文本：单独计数（不混进失败率）--------------------
     rate_report = _count_rate_limits(log_path)
+
+    # -- 断点续跑：把 v2-raw.json 里已完成样本的 raw **重建**为 ArmOutcome ----
+    # （hit 重新判定：surface_point 落在 GT bbox 内，与实时判定同一口径。）
+    sample_by_id = {sample.sample_id: sample for sample in load_samples(Path(args.dataset))}
+    run_ids = {outcome.sample_id for outcome in arm_b_outcomes}
+    for row in arm_b_raw:
+        if row["sample_id"] in run_ids:
+            continue
+        sample = sample_by_id[row["sample_id"]]
+        point = (
+            (float(row["surface_point"][0]), float(row["surface_point"][1]))
+            if row.get("surface_point")
+            else None
+        )
+        hit = False
+        if point is not None:
+            x1, y1, x2, y2 = sample.bbox
+            hit = x1 <= point[0] <= x2 and y1 <= point[1] <= y2
+        arm_b_outcomes.append(
+            _outcome(
+                sample,
+                arm="qwen_vision",
+                hit=hit,
+                point=point,
+                raw_center=(
+                    tuple(row["raw_center"]) if row.get("raw_center") else None
+                ),
+                model_calls=1,
+                error=row.get("error", ""),
+            )
+        )
 
     # -- 配对统计（与 W6 同一份实现，全部字段一次给齐）----------------------
     arm_a_outcomes = [
@@ -362,7 +418,7 @@ def main() -> int:
             "不为任何一臂特调"
         ),
         "judge": "官方口径：落点（表面像素）落在 GT bbox 内",
-        "n_samples": len(subset),
+        "n_samples": len(arm_b_raw),
         "per_stratum": args.per_stratum,
         "seed": args.seed,
         "effort": args.effort,
@@ -370,9 +426,11 @@ def main() -> int:
         "rate_control": {
             "workers": args.workers,
             "batch_sleep_s": args.batch_sleep,
-            "retry_policy": "429 → 60s 固定退避，最多 5 次（含首次）",
+            "retry_policy": "429/传输失败 → 60s 固定退避，最多 3 次尝试（≤5 合规）；"
+            "单请求超时 100s",
             "arm_b_requests": rate_report,
-            "note": "429 是配额问题不是模型失败，单独计数；臂 A 沿用 W6 的请求日志",
+            "note": "429 是配额问题不是模型失败，单独计数；臂 A 沿用 W6 的请求日志；"
+            "本报告的 429/传输计数只覆盖**最后一轮**跑批（断点续跑时旧日志已轮转）",
         },
         "paired": stats,
         "outcomes": {
