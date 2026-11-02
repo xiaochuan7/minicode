@@ -80,6 +80,9 @@ def _ultralytics_predictor(model_id: str, confidence: float, device: str) -> Pre
     ⚠️ torch/ultralytics 是**重量级可选项**（不在任何 extras 里）——
     环境里没装就抛出带指引的 RuntimeError，**不悄悄降级**（调用方决定退回
     零模型源，并在报告里写明「检测器不可用」）。
+    ⚠️ 权重用 :func:`huggingface_hub.hf_hub_download` 拉（``HF_ENDPOINT``
+    指到镜像即可）—— ultralytics 的 ``YOLO(<repo id>)`` **不会**自动从
+    HF hub 下载（实测 FileNotFoundError）。
     """
     try:
         from ultralytics import YOLO
@@ -89,7 +92,15 @@ def _ultralytics_predictor(model_id: str, confidence: float, device: str) -> Pre
             "https://download.pytorch.org/whl/cpu && pip install ultralytics）；"
             "当前环境没有 —— 调用方应退回零模型候选源并如实记录检测器不可用"
         ) from exc
-    model = YOLO(model_id)
+    import os
+
+    if os.path.exists(model_id):
+        weights_path = model_id
+    else:
+        from huggingface_hub import hf_hub_download
+
+        weights_path = hf_hub_download(model_id, "best.pt")
+    model = YOLO(weights_path)
 
     def predict(image) -> list[Detection]:
         results = model.predict(image, conf=confidence, device=device, verbose=False)
