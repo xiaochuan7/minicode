@@ -137,6 +137,19 @@ def main() -> int:
     }
     if reader is not None:
         sources["ocr_words"] = OcrCandidateSource(reader, max_candidates=20)
+    # 检测模型（V3 第 2 步，Apache-2.0）：环境里有 torch/ultralytics 才进对照；
+    # 没有 → 如实缺失（报告 metrics_note 已声明「OCR 不可用 → 如实缺失」，
+    # 检测器同理）。
+    try:
+        from minicode.model.detector_source import ScreenParserCandidateSource
+
+        sources["screenparser"] = ScreenParserCandidateSource(
+            max_candidates=20,
+            word_reader=reader,
+        )
+        print("=== 检测模型候选源：ScreenParser（Apache-2.0）===", flush=True)
+    except RuntimeError as exc:
+        print(f"⚠️ ScreenParser 不可用（{exc}）—— 对照表里如实缺失", flush=True)
 
     print("=== 跑两个候选源 ===", flush=True)
     rows = _coverage_rows(subset, sources)
