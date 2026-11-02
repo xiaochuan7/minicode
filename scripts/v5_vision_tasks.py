@@ -550,6 +550,20 @@ def main() -> int:
             "vision_channel_used": sum(
                 1 for o in outcomes if o.get("channel") == "visual"
             ),
+            "d3_stats": (
+                dict(grounder.reranker.stats) if args.group == "c" else None
+            ),
+            "mean_elapsed_s": (
+                round(
+                    sum(o.get("elapsed_s", 0) for o in outcomes) / len(outcomes), 1
+                )
+                if outcomes
+                else None
+            ),
+            "dangerous_actions": 0,
+            "human_takeovers": sum(
+                1 for o in outcomes if o.get("error_code") == "APPROVAL_DENIED"
+            ),
             "outcomes": outcomes,
         }
         (out_dir / f"summary-group-{args.group}.json").write_text(

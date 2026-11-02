@@ -123,6 +123,18 @@ class D3CandidateReranker:
         self.client = client
         self.gate = gate or D3RerankGate()
         self._scorer = scorer or _match_scorer
+        #: **累计统计**（V6 的口径直接读它）：d3 实际调用数、低置信拒绝数、
+        #: 各动作的次数 —— 「d3 到底被调用了多少次、拒绝了多少次」要有
+        #: 一个直读的答案，不靠翻日志数。
+        self.stats: dict[str, int] = {
+            "rerank_calls": 0,
+            "d3_called": 0,
+            "direct": 0,
+            "reranked": 0,
+            "low_confidence": 0,
+            "d3_unavailable": 0,
+            "not_applicable": 0,
+        }
 
     def rerank(
         self,
@@ -134,8 +146,10 @@ class D3CandidateReranker:
         ⚠️ 候选超过 :data:`MAX_D3_OPTIONS` 时**不问 d3**（网关约束）——
         直接选启发式 top1（如实记 ``direct``，不静默截断候选清单）。
         """
+        self.stats["rerank_calls"] += 1
         if len(candidates) < 2:
             top = candidates[0].number if candidates else None
+            self.stats["not_applicable"] += 1
             return RerankOutcome(
                 action=RerankAction.NOT_APPLICABLE, chosen_number=top,
                 heuristic_number=top,
@@ -152,6 +166,7 @@ class D3CandidateReranker:
         gap = top_score - second_score
         if gap >= self.gate.score_gap_threshold or len(candidates) > MAX_D3_OPTIONS:
             # 分数拉开了（或选项太多）→ **直接选**，不问 d3。
+            self.stats["direct"] += 1
             return RerankOutcome(
                 action=RerankAction.DIRECT,
                 chosen_number=top.number,
@@ -168,6 +183,8 @@ class D3CandidateReranker:
             reply = self.client.decide(state, "rerank", criteria)
         except D3Error as exc:
             kind = "限流（429）" if exc.rate_limited else "调用失败"
+            self.stats["d3_called"] += 1
+            self.stats["d3_unavailable"] += 1
             return RerankOutcome(
                 action=RerankAction.D3_UNAVAILABLE,
                 chosen_number=None,
@@ -175,8 +192,10 @@ class D3CandidateReranker:
                 called_d3=True,
                 reason=f"d3 {kind}：{exc}",
             )
+        self.stats["d3_called"] += 1
         winner = _argmax_option(reply.probabilities, candidates)
         if reply.confidence < self.gate.min_confidence:
+            self.stats["low_confidence"] += 1
             return RerankOutcome(
                 action=RerankAction.LOW_CONFIDENCE,
                 chosen_number=None,
@@ -191,6 +210,7 @@ class D3CandidateReranker:
             )
         if winner is None:
             # d3 给的选项不在候选清单里（响应形状级别的意外）→ 降级不点。
+            self.stats["d3_unavailable"] += 1
             return RerankOutcome(
                 action=RerankAction.D3_UNAVAILABLE,
                 chosen_number=None,
@@ -200,6 +220,7 @@ class D3CandidateReranker:
                 called_d3=True,
                 reason=f"d3 的 argmax 不在候选清单里（{reply.chosen!r}）",
             )
+        self.stats["reranked"] += 1
         return RerankOutcome(
             action=RerankAction.RERANKED,
             chosen_number=winner.number,
