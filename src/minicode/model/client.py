@@ -82,6 +82,24 @@ ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_TIMEOUT_S = 180.0
 
 
+def _first_image_size(*images_base64: str | None) -> tuple[int, int] | None:
+    """第一张图的**实际尺寸**（PNG 直读；读不出 / 没有图 → ``None``，不猜）。
+
+    请求日志要落「实际发出的那张图多大」（V1 结构化日志）——
+    :func:`~minicode.model.request_log.png_image_size` 从 PNG 的 IHDR 直读，
+    不是按 token 规则反推的估计值。
+    """
+    for data in images_base64:
+        if not data:
+            continue
+        try:
+            raw = base64.b64decode(data)
+        except (ValueError, TypeError):
+            return None
+        return png_image_size(raw)
+    return None
+
+
 @dataclass(frozen=True)
 class ModelReply:
     """一次模型调用的结果。
@@ -594,11 +612,16 @@ class ModelClient:
         *,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         clock: Callable[[], float] = time.perf_counter,
+        channel: str = "",
     ):
         self.config = config
         self.request_log = request_log
         self.timeout_s = timeout_s
         self._clock = clock
+        #: **调用通道标注**（V1 视觉通道可插拔）：``vision`` = 视觉通道 VLM、
+        #: ``d3`` = 候选重排（V4）、空串 = 决策层。原样落进每条请求日志
+        #: （``channel`` 字段）—— 配对分析（V2）据此直读「哪些请求是视觉调用」。
+        self.channel = channel
         # **传输层 keep-alive**（性能 #1）：urllib 每次请求新建 TCP+TLS，
         # 10~20MB 的图像请求从 TCP 慢启动传 —— 每步白付 0.5~1.5s 握手与慢启动。
         # 改用 http.client 长连接：同一端点在客户端生命周期内复用连接。
@@ -672,6 +695,7 @@ class ModelClient:
         image_tokens = image_tokens_of(
             image_base64, *images_base64, protocol=self.config.protocol
         )
+        image_size = _first_image_size(image_base64, *images_base64)
         try:
             status, raw = self._post(endpoint, headers, body)
         except ModelTransportError as exc:
@@ -713,6 +737,7 @@ class ModelClient:
                 cache_read_input_tokens=usage.get("cache_read_input_tokens"),
                 cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
                 image_tokens=image_tokens,
+                image_size=image_size,
                 stop_reason=stop_reason,
                 content_block_types=block_types,
                 # 「没有文本输出」是**确知的 0**；其它失败形态不知道 → ``None``。
@@ -733,6 +758,7 @@ class ModelClient:
             cache_read_input_tokens=reply.cache_read_input_tokens,
             cache_creation_input_tokens=reply.cache_creation_input_tokens,
             image_tokens=image_tokens,
+            image_size=image_size,
             stop_reason=reply.stop_reason,
             content_block_types=reply.content_block_types,
             text_len=len(reply.text),
@@ -796,6 +822,7 @@ class ModelClient:
         output_tokens: int | None = None,
         thinking_tokens: int | None = None,
         image_tokens: int | None = None,
+        image_size: tuple[int, int] | None = None,
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
         stop_reason: str | None = None,
@@ -822,5 +849,11 @@ class ModelClient:
                 text_len=text_len,
                 parse_ok=parse_ok,
                 error=error,
+                channel=self.channel,
+                image_width_px=image_size[0] if image_size else None,
+                image_height_px=image_size[1] if image_size else None,
+                # 429 与模型失败**分开计数**（V2 的纪律）：限流是配额问题。
+                # 传输层失败（状态码都没有）→ ``None``（不知道就是不知道）。
+                rate_limited=(http_status == 429) if http_status is not None else None,
             )
         )

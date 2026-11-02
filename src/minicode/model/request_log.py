@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from fractions import Fraction
@@ -100,6 +101,30 @@ class RequestLog:
     #: ``None`` 是**合法值**：``text_len > 0`` 且 ``parse_ok is None`` 照样落盘
     #: （「有文本但没人判定过能不能解析」与「解析失败」是两件事）。
     parse_ok: bool | None = None
+    #: **调用通道**（V1 视觉通道可插拔）：``vision`` = 视觉通道 VLM 的调用，
+    #: ``d3`` = 候选重排（V4），空串 = 决策层/未标注。
+    #:
+    #: 视觉配对分析（V2）靠它把「哪些请求是视觉调用」**直读**出来，不再靠
+    #: 「有没有 image_tokens」去猜（纯文字的视觉调用 —— 比如描述规范化 ——
+    #: 也是视觉通道的一部分）。
+    channel: str = ""
+    #: **实际发出的那张图的尺寸**（像素；第一张图；多图时记第一张）。
+    #:
+    #: 从请求体里的 PNG 字节直读（:func:`png_image_size`）—— 不是估计值。
+    #: 读不出（非 PNG / 没有图）→ ``None``。
+    image_width_px: int | None = None
+    image_height_px: int | None = None
+    #: 这次请求**是否被限流**（HTTP 429）。
+    #:
+    #: V2 配对实验的纪律：429 与模型失败**分开计数** —— 限流是配额问题，
+    #: 不是「模型答错了」，混进失败率会把两臂的比较污染掉。
+    #: 传输层失败（连状态码都没拿到）→ ``None``。
+    rate_limited: bool | None = None
+    #: 端点**主机名**（不含路径、不含任何凭据 —— key 从来不在 URL 里）。
+    #:
+    #: 报告里报主机名就够了（「哪一臂走了哪个网关」）；完整 URL 已在
+    #: :attr:`endpoint`，那里同样没有凭据。
+    endpoint_host: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -258,8 +283,20 @@ def build_request_log(
     text_len: int | None = None,
     parse_ok: bool | None = None,
     error: str | None = None,
+    channel: str = "",
+    image_width_px: int | None = None,
+    image_height_px: int | None = None,
+    rate_limited: bool | None = None,
 ) -> RequestLog:
-    """构造一条请求日志（纯函数）。"""
+    """构造一条请求日志（纯函数）。
+
+    ``endpoint_host`` 从 ``endpoint`` 里取主机名（urllib 解析；解析不出 → 空串，
+    **不猜**）。主机名不含任何凭据（key 走请求头，从来不在 URL 里）。
+    """
+    try:
+        host = urllib.parse.urlsplit(endpoint).hostname or ""
+    except ValueError:
+        host = ""
     return RequestLog(
         effort=str(effort),
         model=model,
@@ -277,6 +314,11 @@ def build_request_log(
         content_block_types=content_block_types,
         text_len=text_len,
         parse_ok=parse_ok,
+        channel=channel,
+        image_width_px=image_width_px,
+        image_height_px=image_height_px,
+        rate_limited=rate_limited,
+        endpoint_host=host,
     )
 
 

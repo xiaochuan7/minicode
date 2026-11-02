@@ -153,7 +153,7 @@ def _run(args) -> int:
     from minicode.exec import dpi  # noqa: F401  (导入即声明 PMv2)
     from minicode.ground.channel import TwoStageGrounder
     from minicode.model.client import ModelClient
-    from minicode.model.config import load_config
+    from minicode.model.config import load_vision_config
     from minicode.model.request_log import JsonlRequestLog
     from minicode.privacy.guard import windows_guard
     from minicode.uia.capability import CapabilityTable
@@ -165,9 +165,14 @@ def _run(args) -> int:
         describe_window,
     )
 
-    config = load_config()
+    # V1 视觉通道可插拔：这个客户端服务的**全是视觉调用**（标定探针 + 两级
+    # grounding）→ 用视觉配置（``MINICODE_VISION_*`` 优先，逐字段回落
+    # ``MINICODE_*``）；只配一组键时与从前完全一致。
+    vision_config = load_vision_config()
     client = ModelClient(
-        config, JsonlRequestLog(Path(args.out) / "model-requests.jsonl")
+        vision_config,
+        JsonlRequestLog(Path(args.out) / "model-requests.jsonl"),
+        channel="vision",
     )
     model_input = _parse_size(args.model_input)
     desktop = current_virtual_desktop()
@@ -194,7 +199,7 @@ def _run(args) -> int:
         spec=default_probe_spec(width, height),
         model_input_size=model_input,
         call_path="image",
-        model_id=config.model,
+        model_id=vision_config.model,
     )
     print(f"=== 标定（image 路径）｜探针 {width}×{height}｜模型输入 {model_input[0]}×{model_input[1]} ===")
     outcome = probe.run()

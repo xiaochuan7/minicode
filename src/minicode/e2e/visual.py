@@ -459,15 +459,17 @@ class VisualChannel:
         from minicode.calib.probe import default_probe_spec
         from minicode.exec import dpi
         from minicode.model.client import ModelClient
-        from minicode.model.config import load_config
+        from minicode.model.config import load_vision_config
         from minicode.model.request_log import JsonlRequestLog
         from minicode.model.retry import RetryingModelCaller
 
-        config = load_config()
+        # V1 视觉通道可插拔：e2e 视觉线的被测对象就是视觉通道 → 用视觉配置
+        # （``MINICODE_VISION_*`` 优先，逐字段回落 ``MINICODE_*``）。
+        config = load_vision_config()
         sink = RecordingSink(JsonlRequestLog(self.out_dir / "model-requests.jsonl"))
         # **重试缝**（W5）在录制层内侧：捕获的是最终生效的那次请求文本。
         client = PromptCapturingCaller(
-            RetryingModelCaller(ModelClient(config, sink))
+            RetryingModelCaller(ModelClient(config, sink, channel="vision"))
         )
         width, height = dpi.physical_screen_size()
         #: **声明的模型输入尺寸**：从**量出来的表面尺寸**算

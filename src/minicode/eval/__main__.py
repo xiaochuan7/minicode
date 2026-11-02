@@ -27,6 +27,7 @@ import platform
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,7 @@ from minicode.e2e.visual import (
 from minicode.ground.gate import default_gate_params
 from minicode.ground.response_pool import ResponsePool
 from minicode.model.client import ModelClient
-from minicode.model.config import load_config
+from minicode.model.config import load_vision_config
 from minicode.model.effort import Effort
 from minicode.model.image import (
     MODEL_INPUT_MAX_HEIGHT_PX,
@@ -122,9 +123,10 @@ class _ThreadLocalModel:
     共享的只有**落盘的请求日志**（它有自己的锁）。
     """
 
-    def __init__(self, config, log):
+    def __init__(self, config, log, *, channel: str = ""):
         self._config = config
         self._log = log
+        self._channel = channel
         self._local = threading.local()
 
     def pair(self):
@@ -132,7 +134,12 @@ class _ThreadLocalModel:
         holder = getattr(self._local, "holder", None)
         if holder is None:
             sink = RecordingSink(_LockedSink(self._log))
-            holder = (PromptCapturingCaller(ModelClient(self._config, sink)), sink)
+            holder = (
+                PromptCapturingCaller(
+                    ModelClient(self._config, sink, channel=self._channel)
+                ),
+                sink,
+            )
             self._local.holder = holder
         return holder
 
@@ -332,7 +339,10 @@ def main(argv=None) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    config = load_config()
+    #: **这个台的被测对象就是视觉通道**（V1 视觉通道可插拔）→ 用视觉配置
+    #: （``MINICODE_VISION_*`` 优先，逐字段回落 ``MINICODE_*``），
+    #: 产物里的 model_id 因此写的是**实际被测的那个视觉模型**。
+    config = load_vision_config()
     #: **档位**：不填 = 生产档（``model/image.py`` 的常量）。
     #: 填了 → 那两个数就是上界（``model_input_size_for`` 仍是**声明尺寸的唯一来源**）。
     if args.model_input:
@@ -343,9 +353,10 @@ def main(argv=None) -> int:
         f"=== 档位：{tier_width}×{tier_height}（整屏模型输入上界）"
         f"{'｜生产档' if not args.model_input else '｜对照臂'} ==="
     )
+    print(f"=== 视觉模型：{config.model}（端点主机：{urllib.parse.urlsplit(config.endpoint).hostname}）===")
     #: 请求日志：落盘（**线程安全**）；每个线程一套（客户端 + 记录器）。
     model = _ThreadLocalModel(
-        config, JsonlRequestLog(out_dir / "model-requests.jsonl")
+        config, JsonlRequestLog(out_dir / "model-requests.jsonl"), channel="vision"
     )
     #: **应答记忆端口**：记忆缓存**落盘**，
     #: 跨进程的两轮（例如「只换 crop 尺寸」）共用同一次上游回答 → 那一对**真配对**。

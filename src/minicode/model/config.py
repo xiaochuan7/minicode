@@ -20,12 +20,18 @@
 * 新（通用 provider）：``MINICODE_PROVIDER`` / ``MINICODE_BASE_URL`` / ``MINICODE_API_KEY``；
 * 旧（Anthropic 时代）：``MINICODE_ANTHROPIC_BASE_URL`` / ``MINICODE_ANTHROPIC_API_KEY``；
 * ``MINICODE_MODEL`` 两套共用。
+
+**视觉通道 VLM 另有一组键**（V1 视觉通道可插拔，:func:`load_vision_config`）：
+``MINICODE_VISION_PROVIDER`` / ``MINICODE_VISION_BASE_URL`` /
+``MINICODE_VISION_API_KEY`` / ``MINICODE_VISION_MODEL`` ——
+**逐字段**覆盖决策层的同名值，没配的字段回落 ``MINICODE_*``
+（只配一组键时行为与从前完全一致）。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .errors import ModelConfigError
@@ -41,9 +47,12 @@ __all__ = [
     "PROTOCOLS",
     "PROTOCOL_ANTHROPIC",
     "PROTOCOL_OPENAI",
+    "VISION_CONFIG_KEYS",
+    "VISION_OPTIONAL_CONFIG_KEYS",
     "ModelConfig",
     "find_env_file",
     "load_config",
+    "load_vision_config",
     "parse_env_file",
     "resolve_endpoint",
 ]
@@ -81,6 +90,27 @@ OPTIONAL_CONFIG_KEYS: dict[str, str] = {
     "user_agent": "MINICODE_HTTP_USER_AGENT",
     "client_header": "MINICODE_HTTP_CLIENT",
     "temperature": "MINICODE_TEMPERATURE",
+}
+
+#: **视觉通道 VLM**（V1 视觉通道可插拔）的键 → 字段名。
+#:
+#: 与决策层（:data:`GENERIC_CONFIG_KEYS`）**两组键并存**：视觉组的键**逐字段**
+#: 覆盖决策层的同名值，没配的字段回落决策层 —— 一组 ``MINICODE_*`` 也能跑
+#: （向后兼容：两个客户端拿到同一份配置，行为与分组前一致）。
+VISION_CONFIG_KEYS: dict[str, str] = {
+    "protocol": "MINICODE_VISION_PROVIDER",
+    "base_url": "MINICODE_VISION_BASE_URL",
+    "api_key": "MINICODE_VISION_API_KEY",
+    "model": "MINICODE_VISION_MODEL",
+}
+
+#: 视觉通道的**可选**键（V1）。``session_id`` / ``client_header`` 是网关语义的
+#: 头（``x-opencode-*``）—— **不回落**决策层的值（发给另一个网关是噪声）；
+#: ``user_agent`` **回落**（浏览器 UA 是过边缘层的通行证，与网关无关）。
+VISION_OPTIONAL_CONFIG_KEYS: dict[str, str] = {
+    "session_id": "MINICODE_VISION_SESSION_ID",
+    "user_agent": "MINICODE_VISION_HTTP_USER_AGENT",
+    "client_header": "MINICODE_VISION_CLIENT",
 }
 
 #: ``user-agent`` 的缺省值（通用 provider 不该被内部网关的头绑死）。
@@ -303,6 +333,61 @@ def load_config(env_file: Path | None = None) -> ModelConfig:
     return config
 
 
+def load_vision_config(env_file: Path | None = None) -> ModelConfig:
+    """**视觉通道（VLM）**的配置：``MINICODE_VISION_*`` 优先，逐字段回落 ``MINICODE_*``。
+
+    V1 视觉通道可插拔：决策层 LLM 与视觉通道 VLM 各有一组键
+    （:data:`VISION_CONFIG_KEYS`）；视觉组的键**逐字段**覆盖决策层的同名值，
+    没配的字段回落决策层 —— 只配一组 ``MINICODE_*`` 时两个客户端拿到
+    **同一份配置**（行为与分组前一致，向后兼容）。
+
+    * 决策层的必填项缺失照样报错 —— **视觉组不替决策层兜底**（决策循环没有
+      配置就是起不来，静默回落只会把问题推迟到第一次调用）；
+    * ``origins`` 如实记录每个字段实际生效的键名（``MINICODE_VISION_MODEL``
+      或回落来源 ``MINICODE_MODEL``），启动日志据此对账；
+    * 可选头：``MINICODE_VISION_HTTP_USER_AGENT`` 回落决策层的 UA
+      （过边缘层的通行证与网关无关）；``MINICODE_VISION_SESSION_ID`` /
+      ``MINICODE_VISION_CLIENT`` **不回落**（``x-opencode-*`` 是网关语义的头，
+      发给另一个网关是噪声）。
+    """
+    decision = load_config(env_file)
+    values = parse_env_file(Path(decision.source))
+
+    overrides: dict[str, str] = {}
+    origins = dict(decision.origins)
+    for field_name, key in VISION_CONFIG_KEYS.items():
+        value = values.get(key, "").strip()
+        if value:
+            overrides[field_name] = value
+            origins[field_name] = key
+    if not overrides:
+        # 一组 VISION 键都没配 → 与决策层同一份（行为与改造前一致）。
+        return decision
+
+    vision_session, vision_session_origin = _vision_optional_value(values, "session_id")
+    vision_user_agent_raw, vision_user_agent_origin = _vision_optional_value(
+        values, "user_agent"
+    )
+    vision_client, vision_client_origin = _vision_optional_value(values, "client_header")
+
+    config = replace(
+        decision,
+        **overrides,
+        session_id=vision_session,
+        user_agent=vision_user_agent_raw or decision.user_agent,
+        client_header=vision_client,
+        origins={
+            **origins,
+            "session_id": vision_session_origin,
+            "user_agent": vision_user_agent_origin or origins.get("user_agent", ""),
+            "client_header": vision_client_origin,
+        },
+    )
+    # 视觉端点在装载时就拼一次（别等到发请求才发现协议/地址对不上）。
+    resolve_endpoint(config.base_url, config.protocol)
+    return config
+
+
 def _protocol_of(values: Mapping[str, str]) -> tuple[str, str]:
     """协议：**可选**，缺省 ``anthropic``；给了就必须是允许值之一。"""
     key = GENERIC_CONFIG_KEYS["protocol"]
@@ -333,6 +418,15 @@ def _pick_configured_key(values: Mapping[str, str], field_name: str) -> tuple[st
 def _optional_value(values: Mapping[str, str], field_name: str) -> tuple[str, str]:
     """取一个**可选**字段；返回 ``(值, 实际生效的键名)``，缺省时键名为空串。"""
     key = OPTIONAL_CONFIG_KEYS[field_name]
+    value = values.get(key, "").strip()
+    return value, (key if value else "")
+
+
+def _vision_optional_value(
+    values: Mapping[str, str], field_name: str
+) -> tuple[str, str]:
+    """取一个**视觉通道**的可选字段（:data:`VISION_OPTIONAL_CONFIG_KEYS`）。"""
+    key = VISION_OPTIONAL_CONFIG_KEYS[field_name]
     value = values.get(key, "").strip()
     return value, (key if value else "")
 
