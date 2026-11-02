@@ -1,4 +1,6 @@
 """V5 落点诊断：起页面 → 窗口矩形 → 全屏截图 + 落点 crop（诊断脚本，不入交付）。"""
+import ctypes
+import ctypes.wintypes
 import subprocess
 import sys
 import time
@@ -8,11 +10,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-import ctypes
-import ctypes.wintypes
-
-from w3_probe import find_new_window, visible_windows  # noqa: E402
 from v5_vision_tasks import EDGE, EDGE_CLASSES, _write_pages  # noqa: E402
+from w3_probe import find_new_window, visible_windows  # noqa: E402
 
 USER32 = ctypes.windll.user32
 WM_CLOSE = 0x0010

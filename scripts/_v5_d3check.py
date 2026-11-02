@@ -5,7 +5,11 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 path = Path("runs/v5/group-c-d3-calls.jsonl")
-rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+rows = [
+    json.loads(line)
+    for line in path.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
 print(f"d3 调用 {len(rows)} 次")
 for r in rows[:10]:
     probs = r.get("probabilities") or {}
