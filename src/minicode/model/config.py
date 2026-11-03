@@ -423,6 +423,11 @@ def load_vision_config(env_file: Path | None = None) -> ModelConfig:
       （过边缘层的通行证与网关无关）；``MINICODE_VISION_SESSION_ID`` /
       ``MINICODE_VISION_CLIENT`` **不回落**（``x-opencode-*`` 是网关语义的头，
       发给另一个网关是噪声）。
+
+    ⚠️ **默认口径（2026-11-03 收口）**：视觉通道默认且唯一使用决策层同款模型
+    —— **给视觉通道换模型这条路已证伪一次**（Qwen3.8-27B 臂更低且 Δ 未达
+    MDE，见 ``docs/v2-vision-paired.md``）。本函数保留可插拔能力，但仓库
+    ``.env`` 不再配置 ``MINICODE_VISION_*`` 键组；V2 的双模型跑批脚本已删除。
     """
     decision = load_config(env_file)
     values = parse_env_file(Path(decision.source))
