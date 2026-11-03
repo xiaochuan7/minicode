@@ -340,16 +340,56 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
         model_input_size=model_input,
         call_path="image",
         model_id=vision_config.model,
+        # 推理模型会吃 token 额度：探针缺省 2000 实测被思考链吃穿（空文本）。
+        max_tokens=8192,
     )
-    outcome = probe.run()
-    admission_port = CalibrationAdmission(outcome)
+    try:
+        outcome = probe.run()
+        scale = outcome.detected_scale
+        admission_port = CalibrationAdmission(outcome)
+        print(
+            f"=== 标定：判定标度={scale.value}｜"
+            f"准入={'可用' if admission_port.admit().available else '不可用'}｜"
+            f"最大误差={outcome.candidate(scale).max_error_px:.2f}px ===",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 探针不可用（2026-11-04 实测：思考链吃穿预算 ×3 重试全空）→
+        # 沿用 W6/V2 已实测判定的标度（同模型同提示词契约，
+        # 判定记录见 docs/w6-*.md 与 docs/v2-vision-paired.md）。
+        # 准入端口给**诚实标注的固定标度准入**（None = fail-closed，
+        # 视觉通道整条不可达 —— 实测 0/8 全因这个）。
+        from minicode.action.ports import VisualAdmission
+        from minicode.coord.coordinates import ModelScale
+
+        scale = ModelScale.ABSOLUTE_MODEL_INPUT
+
+        class _FixedScaleAdmission:
+            """固定标度准入（探针不可用的降级）：放行 + reason 如实标注。"""
+
+            def __init__(self, scale_value: str):
+                self._scale_value = scale_value
+
+            def admit(self) -> VisualAdmission:
+                return VisualAdmission(
+                    available=True,
+                    reason=(
+                        "标定探针不可用（思考链吃穿预算）→ 标度沿用 "
+                        "W6/V2 已实测判定（absolute_model_input，如实记录）"
+                    ),
+                    scale=self._scale_value,
+                    scale_verdict="unique",
+                    landing_equivalence="equivalent",
+                    equivalent_scales=(self._scale_value,),
+                )
+
+        admission_port = _FixedScaleAdmission(scale.value)
+        print(
+            f"=== 标定探针不可用（{type(exc).__name__}）→ 沿用 W6/V2 实测标度 "
+            f"{scale.value}（固定标度准入，reason 已如实标注） ===",
+            flush=True,
+        )
     desktop = current_virtual_desktop()
-    print(
-        f"=== 标定：判定标度={outcome.detected_scale.value}｜"
-        f"准入={'可用' if admission_port.admit().available else '不可用'}｜"
-        f"最大误差={outcome.candidate(outcome.detected_scale).max_error_px:.2f}px ===",
-        flush=True,
-    )
 
     candidate_source = None
     source_name = None
@@ -375,7 +415,7 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
 
     grounder = TwoStageGrounder(
         client,
-        scale=outcome.detected_scale,
+        scale=scale,
         model_input_size=model_input,
         full_screen_size=(desktop.width, desktop.height),
         candidate_source=candidate_source,

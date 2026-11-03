@@ -2,6 +2,54 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
+## v0.2.0 — 2026-11-04
+
+本条目对应 v0.1.7 之后的交付（通宵任务 W1–W6）：**视觉配置收口**（W1）、
+**精定位专项量化**（W2）、**d3 逐候选重排**（W3）、**长任务评测集与自愈层**
+（W4/W5）。**为什么是 minor（0.2.0）而不是 patch**：两处行为契约变化——
+① d3 重排的降级语义从「d3 不可用 = 不点（fail-closed）」改为「跳过重排，
+用启发式 top1 继续」（W3.6，多选项模式已证伪后的逐候选改制配套）；② 视觉
+通道的部署默认从「`.env` 可配第二模型」收口为「默认且唯一 deepseek-v4.1-flash」
+（换模型已证伪一次，见 V2 报告）。`MINICODE_VISION_*` 可插拔机制与测试全部
+保留——已部署的配置不受影响。
+
+### 变更
+
+- **视觉配置收口（W1）**：视觉通道默认且唯一使用决策层同款
+  deepseek-v4.1-flash（仓库 `.env` 不再配置 `MINICODE_VISION_*` 键组，
+  `load_vision_config` 回落决策层）；**删除** V2 的双模型跑批脚本
+  `scripts/v2_paired_models.py`（防误用；报告生成器与配对 JSON 保留可复算）；
+  README / V2 报告 / `load_vision_config` docstring 三处写明
+  「换模型已证伪一次（见 V2 报告）」。
+- **d3 逐候选重排（W3）**：V4 的「16~20 选项一次问」（整包评分，实测
+  3 超时 + 3 网关 400 + 2 低置信）**已证伪并替换**为逐候选 `noul` yes/no——
+  新增 `D3Client.decide_noul`（noul 请求/响应形状实测探明：无 criteria、
+  yes/no 概率、无 choice 字段）与 `D3PerCandidateReranker`（启发式前 K=3
+  逐个问，yes 最高者 < 0.6 不点转人工；不可用 → 启发式 top1 继续；
+  429 退避 60s 单独计数；逐候选判定 JSONL 日志）。旧 `D3CandidateReranker`
+  保留（接口不变，调用方择一注入）。
+
+### 新增
+
+- **精定位专项量化（W2）**：`scripts/w2_refine_quant.py`（S-Pro 同批 60 条
+  注入式三臂：真实粗点 / GT 中心不放大 / GT 中心+生产 zoom；基线复用 W6
+  pixel 臂零新调用）+ `scripts/w2_refine_canvas.py`（自建 canvas 22 目标
+  × 粗点偏移 0/50/100/200px 扫描，GT 从截图品红条实测）+ 离线 crop 几何
+  与重试效果分析。**结论：精定位一级有独立、统计显著的价值**——粗定位
+  单独 13/46 vs 粗+精 22/46（Δ=+19.6pp，p=0.0063，CI 排 0）；GT 粗点下
+  73.3%（Δ=+51.7pp 达 MDE）；中位误差 41px→5.7px。生产参数（crop 1×/
+  取整/zoom 规则）经 A/B 全部维持原状。报告：
+  `docs/w2-refine-quant.md`（原始 JSON 四份入库可复算）。
+- **长任务评测集 + 自愈层（W4/W5）**：`scripts/w4_long_tasks.py`——
+  10~30 步跨应用任务的 reset/步骤+故障注入/judge/budget 三件套，
+  四类确定性故障注入器（对话框/遮挡失焦/位置漂移/元素禁用），每步包
+  W5 自愈包装（五类失败分类 → 策略 → 触发/救回落盘 `heal-log.jsonl`）。
+  首轮 T1–T4（覆盖全部四类故障）4/4 pass（全 clean，零自愈触发——确定性
+  步骤序列对这四类故障天然耐受；T4 带诚实注记，见结果文档）。
+  `docs/w4-long-tasks.md`（10 条全量设计）+ `docs/w4-long-results.md`。
+- **真机让位友好包装**：`scripts/wait_idle_then_run.py`（等桌面持续空闲
+  N 秒再启动真机任务，用户活跃超时则如实放弃）。
+
 ## v0.1.7 — 2026-11-03
 
 本条目对应 v0.1.6 之后的交付（通宵任务 V1–V7）：**视觉通道可插拔**（V1）、
