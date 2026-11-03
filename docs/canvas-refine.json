@@ -1,0 +1,3267 @@
+{
+  "experiment": "W2.2 canvas 精定位量化：粗点偏移 0/50/100/200px 扫描",
+  "model": "deepseek-v4.1-flash",
+  "scale_detected": "absolute_model_input",
+  "capture": {
+    "source": "runs/w2/canvas-frame.png"
+  },
+  "canvas_measurement": {
+    "canvas_origin_physical": [
+      89,
+      119
+    ],
+    "canvas_size_physical": [
+      1493,
+      1044
+    ],
+    "scale_x": 1.493,
+    "scale_y": 1.4914,
+    "dpr_assumed_consistent": true,
+    "strip_rows": 3,
+    "strip_cols": 3
+  },
+  "canvas_css": [
+    1000,
+    700
+  ],
+  "targets": [
+    {
+      "index": 0,
+      "class": "icon_small",
+      "name": "红色小方块",
+      "desc": "白色画布上方一排小图标里的红色小方块图标",
+      "bbox": [
+        60,
+        40,
+        72,
+        52
+      ],
+      "gt_bbox_physical": [
+        178.58,
+        178.656,
+        196.496,
+        196.5528
+      ],
+      "gt_center_physical": [
+        187.538,
+        187.6044
+      ]
+    },
+    {
+      "index": 1,
+      "class": "icon_small",
+      "name": "蓝色小圆点",
+      "desc": "白色画布上方一排小图标里的蓝色小圆点图标",
+      "bbox": [
+        180,
+        40,
+        192,
+        52
+      ],
+      "gt_bbox_physical": [
+        357.74,
+        178.656,
+        375.656,
+        196.5528
+      ],
+      "gt_center_physical": [
+        366.69800000000004,
+        187.6044
+      ]
+    },
+    {
+      "index": 2,
+      "class": "icon_small",
+      "name": "绿色小三角",
+      "desc": "白色画布上方一排小图标里的绿色小三角图标",
+      "bbox": [
+        300,
+        40,
+        312,
+        52
+      ],
+      "gt_bbox_physical": [
+        536.9000000000001,
+        178.656,
+        554.816,
+        196.5528
+      ],
+      "gt_center_physical": [
+        545.858,
+        187.6044
+      ]
+    },
+    {
+      "index": 3,
+      "class": "icon_small",
+      "name": "黑色小方块",
+      "desc": "白色画布上方一排小图标里的黑色小方块图标",
+      "bbox": [
+        420,
+        40,
+        432,
+        52
+      ],
+      "gt_bbox_physical": [
+        716.0600000000001,
+        178.656,
+        733.976,
+        196.5528
+      ],
+      "gt_center_physical": [
+        725.018,
+        187.6044
+      ]
+    },
+    {
+      "index": 4,
+      "class": "icon_small",
+      "name": "紫色小圆点",
+      "desc": "白色画布上方一排小图标里的紫色小圆点图标",
+      "bbox": [
+        540,
+        40,
+        556,
+        56
+      ],
+      "gt_bbox_physical": [
+        895.22,
+        178.656,
+        919.1080000000001,
+        202.51839999999999
+      ],
+      "gt_center_physical": [
+        907.1640000000001,
+        190.5872
+      ]
+    },
+    {
+      "index": 5,
+      "class": "icon_small",
+      "name": "橙色小方块",
+      "desc": "白色画布上方一排小图标里的橙色小方块图标",
+      "bbox": [
+        660,
+        40,
+        676,
+        56
+      ],
+      "gt_bbox_physical": [
+        1074.38,
+        178.656,
+        1098.268,
+        202.51839999999999
+      ],
+      "gt_center_physical": [
+        1086.324,
+        190.5872
+      ]
+    },
+    {
+      "index": 6,
+      "class": "icon_small",
+      "name": "青色小三角",
+      "desc": "白色画布上方一排小图标里的青色小三角图标",
+      "bbox": [
+        780,
+        40,
+        796,
+        56
+      ],
+      "gt_bbox_physical": [
+        1253.5400000000002,
+        178.656,
+        1277.428,
+        202.51839999999999
+      ],
+      "gt_center_physical": [
+        1265.4840000000002,
+        190.5872
+      ]
+    },
+    {
+      "index": 7,
+      "class": "icon_small",
+      "name": "深灰小圆点",
+      "desc": "白色画布上方一排小图标里的深灰小圆点图标",
+      "bbox": [
+        900,
+        40,
+        916,
+        56
+      ],
+      "gt_bbox_physical": [
+        1432.7,
+        178.656,
+        1456.5880000000002,
+        202.51839999999999
+      ],
+      "gt_center_physical": [
+        1444.644,
+        190.5872
+      ]
+    },
+    {
+      "index": 8,
+      "class": "button",
+      "name": "保存草稿",
+      "desc": "画布里写着「保存草稿」的深蓝色按钮",
+      "bbox": [
+        60,
+        140,
+        200,
+        184
+      ],
+      "gt_bbox_physical": [
+        178.58,
+        327.79600000000005,
+        387.6,
+        393.4176
+      ],
+      "gt_center_physical": [
+        283.09000000000003,
+        360.6068
+      ]
+    },
+    {
+      "index": 9,
+      "class": "button",
+      "name": "打开文件",
+      "desc": "画布里写着「打开文件」的深蓝色按钮",
+      "bbox": [
+        60,
+        214,
+        200,
+        258
+      ],
+      "gt_bbox_physical": [
+        178.58,
+        438.1596,
+        387.6,
+        503.7812
+      ],
+      "gt_center_physical": [
+        283.09000000000003,
+        470.97040000000004
+      ]
+    },
+    {
+      "index": 10,
+      "class": "button",
+      "name": "复制链接",
+      "desc": "画布里写着「复制链接」的深蓝色按钮",
+      "bbox": [
+        60,
+        288,
+        200,
+        332
+      ],
+      "gt_bbox_physical": [
+        178.58,
+        548.5232000000001,
+        387.6,
+        614.1448
+      ],
+      "gt_center_physical": [
+        283.09000000000003,
+        581.3340000000001
+      ]
+    },
+    {
+      "index": 11,
+      "class": "button",
+      "name": "撤销更改",
+      "desc": "画布里写着「撤销更改」的深蓝色按钮",
+      "bbox": [
+        60,
+        362,
+        200,
+        406
+      ],
+      "gt_bbox_physical": [
+        178.58,
+        658.8868,
+        387.6,
+        724.5084
+      ],
+      "gt_center_physical": [
+        283.09000000000003,
+        691.6976
+      ]
+    },
+    {
+      "index": 12,
+      "class": "button",
+      "name": "刷新页面",
+      "desc": "画布里写着「刷新页面」的深蓝色按钮",
+      "bbox": [
+        300,
+        140,
+        440,
+        184
+      ],
+      "gt_bbox_physical": [
+        536.9000000000001,
+        327.79600000000005,
+        745.9200000000001,
+        393.4176
+      ],
+      "gt_center_physical": [
+        641.4100000000001,
+        360.6068
+      ]
+    },
+    {
+      "index": 13,
+      "class": "button",
+      "name": "切换主题",
+      "desc": "画布里写着「切换主题」的深蓝色按钮",
+      "bbox": [
+        300,
+        214,
+        440,
+        258
+      ],
+      "gt_bbox_physical": [
+        536.9000000000001,
+        438.1596,
+        745.9200000000001,
+        503.7812
+      ],
+      "gt_center_physical": [
+        641.4100000000001,
+        470.97040000000004
+      ]
+    },
+    {
+      "index": 14,
+      "class": "button",
+      "name": "导出报表",
+      "desc": "画布里写着「导出报表」的深蓝色按钮",
+      "bbox": [
+        300,
+        288,
+        440,
+        332
+      ],
+      "gt_bbox_physical": [
+        536.9000000000001,
+        548.5232000000001,
+        745.9200000000001,
+        614.1448
+      ],
+      "gt_center_physical": [
+        641.4100000000001,
+        581.3340000000001
+      ]
+    },
+    {
+      "index": 15,
+      "class": "button",
+      "name": "重置表单",
+      "desc": "画布里写着「重置表单」的深蓝色按钮",
+      "bbox": [
+        300,
+        362,
+        440,
+        406
+      ],
+      "gt_bbox_physical": [
+        536.9000000000001,
+        658.8868,
+        745.9200000000001,
+        724.5084
+      ],
+      "gt_center_physical": [
+        641.4100000000001,
+        691.6976
+      ]
+    },
+    {
+      "index": 16,
+      "class": "list_row",
+      "name": "行1",
+      "desc": "右侧清单里写着「清单行：阿尔法」的那一行",
+      "bbox": [
+        620,
+        120,
+        940,
+        146
+      ],
+      "gt_bbox_physical": [
+        1014.6600000000001,
+        297.968,
+        1492.42,
+        336.74440000000004
+      ],
+      "gt_center_physical": [
+        1253.5400000000002,
+        317.3562
+      ]
+    },
+    {
+      "index": 17,
+      "class": "list_row",
+      "name": "行3",
+      "desc": "右侧清单里写着「清单行：伽玛」的那一行",
+      "bbox": [
+        620,
+        172,
+        940,
+        198
+      ],
+      "gt_bbox_physical": [
+        1014.6600000000001,
+        375.5208,
+        1492.42,
+        414.29720000000003
+      ],
+      "gt_center_physical": [
+        1253.5400000000002,
+        394.909
+      ]
+    },
+    {
+      "index": 18,
+      "class": "list_row",
+      "name": "行5",
+      "desc": "右侧清单里写着「清单行：伊普西」的那一行",
+      "bbox": [
+        620,
+        224,
+        940,
+        250
+      ],
+      "gt_bbox_physical": [
+        1014.6600000000001,
+        453.0736,
+        1492.42,
+        491.85
+      ],
+      "gt_center_physical": [
+        1253.5400000000002,
+        472.46180000000004
+      ]
+    },
+    {
+      "index": 19,
+      "class": "list_row",
+      "name": "行7",
+      "desc": "右侧清单里写着「清单行：艾塔」的那一行",
+      "bbox": [
+        620,
+        276,
+        940,
+        302
+      ],
+      "gt_bbox_physical": [
+        1014.6600000000001,
+        530.6264,
+        1492.42,
+        569.4028000000001
+      ],
+      "gt_center_physical": [
+        1253.5400000000002,
+        550.0146
+      ]
+    },
+    {
+      "index": 20,
+      "class": "list_row",
+      "name": "行10",
+      "desc": "右侧清单里写着「清单行：卡帕」的那一行",
+      "bbox": [
+        620,
+        354,
+        940,
+        380
+      ],
+      "gt_bbox_physical": [
+        1014.6600000000001,
+        646.9556,
+        1492.42,
+        685.732
+      ],
+      "gt_center_physical": [
+        1253.5400000000002,
+        666.3438
+      ]
+    },
+    {
+      "index": 21,
+      "class": "list_row",
+      "name": "行12",
+      "desc": "右侧清单里写着「清单行：缪」的那一行",
+      "bbox": [
+        620,
+        406,
+        940,
+        432
+      ],
+      "gt_bbox_physical": [
+        1014.6600000000001,
+        724.5084,
+        1492.42,
+        763.2848
+      ],
+      "gt_center_physical": [
+        1253.5400000000002,
+        743.8966
+      ]
+    }
+  ],
+  "offsets": [
+    0,
+    50,
+    100,
+    200
+  ],
+  "direction_rule": "offset>0 的方向按目标序号轮转 8 方位",
+  "judge": "hit_strict=落点在目标 bbox 内（官方口径）；hit_pad8=bbox 外扩 8px（V5 可点容差）",
+  "summary": {
+    "icon_small": {
+      "n_targets": 8,
+      "per_offset": {
+        "0": {
+          "n": 8,
+          "hit_strict": 7,
+          "hit_pad8": 8,
+          "error": {
+            "n": 8,
+            "median": 5.9,
+            "mean": 5.9625,
+            "p90": 9.319999999999999
+          },
+          "fallback": 0
+        },
+        "50": {
+          "n": 8,
+          "hit_strict": 7,
+          "hit_pad8": 7,
+          "error": {
+            "n": 8,
+            "median": 5.8,
+            "mean": 7.0875,
+            "p90": 11.039999999999997
+          },
+          "fallback": 0
+        },
+        "100": {
+          "n": 8,
+          "hit_strict": 6,
+          "hit_pad8": 8,
+          "error": {
+            "n": 8,
+            "median": 8.399999999999999,
+            "mean": 9.924999999999999,
+            "p90": 15.839999999999998
+          },
+          "fallback": 0
+        },
+        "200": {
+          "n": 8,
+          "hit_strict": 3,
+          "hit_pad8": 5,
+          "error": {
+            "n": 5,
+            "median": 9.2,
+            "mean": 9.36,
+            "p90": 12.84
+          },
+          "fallback": 0
+        }
+      },
+      "recovery": {
+        "n_offset_cases": 24,
+        "saved_strict": 16,
+        "saved_pad8": 20,
+        "error_reduced": 21
+      }
+    },
+    "button": {
+      "n_targets": 8,
+      "per_offset": {
+        "0": {
+          "n": 8,
+          "hit_strict": 8,
+          "hit_pad8": 8,
+          "error": {
+            "n": 8,
+            "median": 6.4,
+            "mean": 6.25,
+            "p90": 7.1
+          },
+          "fallback": 0
+        },
+        "50": {
+          "n": 8,
+          "hit_strict": 8,
+          "hit_pad8": 8,
+          "error": {
+            "n": 8,
+            "median": 6.4,
+            "mean": 6.175000000000001,
+            "p90": 7.29
+          },
+          "fallback": 0
+        },
+        "100": {
+          "n": 8,
+          "hit_strict": 8,
+          "hit_pad8": 8,
+          "error": {
+            "n": 8,
+            "median": 7.1,
+            "mean": 8.9375,
+            "p90": 12.659999999999997
+          },
+          "fallback": 0
+        },
+        "200": {
+          "n": 8,
+          "hit_strict": 7,
+          "hit_pad8": 7,
+          "error": {
+            "n": 8,
+            "median": 6.35,
+            "mean": 10.95,
+            "p90": 17.879999999999992
+          },
+          "fallback": 0
+        }
+      },
+      "recovery": {
+        "n_offset_cases": 20,
+        "saved_strict": 19,
+        "saved_pad8": 19,
+        "error_reduced": 20
+      }
+    },
+    "list_row": {
+      "n_targets": 6,
+      "per_offset": {
+        "0": {
+          "n": 6,
+          "hit_strict": 4,
+          "hit_pad8": 5,
+          "error": {
+            "n": 6,
+            "median": 5.7,
+            "mean": 12.683333333333332,
+            "p90": 29.1
+          },
+          "fallback": 0
+        },
+        "50": {
+          "n": 6,
+          "hit_strict": 4,
+          "hit_pad8": 4,
+          "error": {
+            "n": 6,
+            "median": 8.35,
+            "mean": 14.116666666666667,
+            "p90": 31.5
+          },
+          "fallback": 0
+        },
+        "100": {
+          "n": 6,
+          "hit_strict": 6,
+          "hit_pad8": 6,
+          "error": {
+            "n": 6,
+            "median": 4.1,
+            "mean": 4.300000000000001,
+            "p90": 6.75
+          },
+          "fallback": 0
+        },
+        "200": {
+          "n": 6,
+          "hit_strict": 5,
+          "hit_pad8": 5,
+          "error": {
+            "n": 6,
+            "median": 5.0,
+            "mean": 10.933333333333332,
+            "p90": 24.449999999999996
+          },
+          "fallback": 0
+        }
+      },
+      "recovery": {
+        "n_offset_cases": 12,
+        "saved_strict": 10,
+        "saved_pad8": 10,
+        "error_reduced": 12
+      }
+    }
+  },
+  "rows": [
+    {
+      "target": "红色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的红色小方块图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        187.5,
+        187.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        179,
+        187
+      ],
+      "error_vs_gt_center_px": 8.6,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "红色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的红色小方块图标",
+      "offset": 50,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        237.5,
+        187.6
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        181,
+        185
+      ],
+      "error_vs_gt_center_px": 7.0,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "红色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的红色小方块图标",
+      "offset": 100,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        287.5,
+        187.6
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        181,
+        187
+      ],
+      "error_vs_gt_center_px": 6.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "红色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的红色小方块图标",
+      "offset": 200,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        387.5,
+        187.6
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        174,
+        185
+      ],
+      "error_vs_gt_center_px": 13.8,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "蓝色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的蓝色小圆点图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        366.7,
+        187.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        356,
+        190
+      ],
+      "error_vs_gt_center_px": 11.0,
+      "error_reduced": false,
+      "hit_strict": false,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "蓝色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的蓝色小圆点图标",
+      "offset": 50,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        416.7,
+        237.6
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        349,
+        185
+      ],
+      "error_vs_gt_center_px": 17.9,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "蓝色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的蓝色小圆点图标",
+      "offset": 100,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        466.7,
+        287.6
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        358,
+        194
+      ],
+      "error_vs_gt_center_px": 10.8,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "蓝色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的蓝色小圆点图标",
+      "offset": 200,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        566.7,
+        387.6
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        364,
+        181
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "绿色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的绿色小三角图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        545.9,
+        187.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        544,
+        186
+      ],
+      "error_vs_gt_center_px": 2.5,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "绿色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的绿色小三角图标",
+      "offset": 50,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        545.9,
+        237.6
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        541,
+        184
+      ],
+      "error_vs_gt_center_px": 6.0,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "绿色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的绿色小三角图标",
+      "offset": 100,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        545.9,
+        287.6
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        538,
+        182
+      ],
+      "error_vs_gt_center_px": 9.7,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "绿色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的绿色小三角图标",
+      "offset": 200,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        545.9,
+        387.6
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        535,
+        191
+      ],
+      "error_vs_gt_center_px": 11.4,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "黑色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的黑色小方块图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        725.0,
+        187.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        717,
+        185
+      ],
+      "error_vs_gt_center_px": 8.4,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "黑色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的黑色小方块图标",
+      "offset": 50,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        675.0,
+        237.6
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        720,
+        194
+      ],
+      "error_vs_gt_center_px": 8.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "黑色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的黑色小方块图标",
+      "offset": 100,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        625.0,
+        287.6
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        719,
+        186
+      ],
+      "error_vs_gt_center_px": 6.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "黑色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的黑色小方块图标",
+      "offset": 200,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        525.0,
+        387.6
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        720,
+        186
+      ],
+      "error_vs_gt_center_px": 5.3,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "紫色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的紫色小圆点图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        907.2,
+        190.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        908,
+        186
+      ],
+      "error_vs_gt_center_px": 4.7,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "紫色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的紫色小圆点图标",
+      "offset": 50,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        857.2,
+        190.6
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        904,
+        186
+      ],
+      "error_vs_gt_center_px": 5.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "紫色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的紫色小圆点图标",
+      "offset": 100,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        807.2,
+        190.6
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        894,
+        190
+      ],
+      "error_vs_gt_center_px": 13.2,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "紫色小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的紫色小圆点图标",
+      "offset": 200,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        707.2,
+        190.6
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        898,
+        190
+      ],
+      "error_vs_gt_center_px": 9.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "橙色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的橙色小方块图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1086.3,
+        190.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1082,
+        185
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "橙色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的橙色小方块图标",
+      "offset": 50,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        1036.3,
+        140.6
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        1083,
+        192
+      ],
+      "error_vs_gt_center_px": 3.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "橙色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的橙色小方块图标",
+      "offset": 100,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        986.3,
+        90.6
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        1067,
+        180
+      ],
+      "error_vs_gt_center_px": 22.0,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "橙色小方块",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的橙色小方块图标",
+      "offset": 200,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        886.3,
+        -9.4
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": null,
+      "error_vs_gt_center_px": null,
+      "error_reduced": false,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": null,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": "整屏第二遍结果不可用：模型输出 (698.0, -7.0) 超出 absolute_model_input 的合法区间 (-1.575, 2017.575) × (-1.575, 1261.575)"
+    },
+    {
+      "target": "青色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的青色小三角图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1265.5,
+        190.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1264,
+        188
+      ],
+      "error_vs_gt_center_px": 3.0,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "青色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的青色小三角图标",
+      "offset": 50,
+      "direction": [
+        0,
+        -1
+      ],
+      "coarse_surface": [
+        1265.5,
+        140.6
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        1260,
+        190
+      ],
+      "error_vs_gt_center_px": 5.5,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "青色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的青色小三角图标",
+      "offset": 100,
+      "direction": [
+        0,
+        -1
+      ],
+      "coarse_surface": [
+        1265.5,
+        90.6
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        1262,
+        192
+      ],
+      "error_vs_gt_center_px": 3.8,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "青色小三角",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的青色小三角图标",
+      "offset": 200,
+      "direction": [
+        0,
+        -1
+      ],
+      "coarse_surface": [
+        1265.5,
+        -9.4
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": null,
+      "error_vs_gt_center_px": null,
+      "error_reduced": false,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": null,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": "整屏第二遍结果不可用：模型输出 (997.0, -7.0) 超出 absolute_model_input 的合法区间 (-1.575, 2017.575) × (-1.575, 1261.575)"
+    },
+    {
+      "target": "深灰小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的深灰小圆点图标",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1444.6,
+        190.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1447,
+        191
+      ],
+      "error_vs_gt_center_px": 2.4,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "深灰小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的深灰小圆点图标",
+      "offset": 50,
+      "direction": [
+        1,
+        -1
+      ],
+      "coarse_surface": [
+        1494.6,
+        140.6
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        1442,
+        192
+      ],
+      "error_vs_gt_center_px": 3.0,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "深灰小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的深灰小圆点图标",
+      "offset": 100,
+      "direction": [
+        1,
+        -1
+      ],
+      "coarse_surface": [
+        1544.6,
+        90.6
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        1438,
+        193
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "深灰小圆点",
+      "class": "icon_small",
+      "desc": "白色画布上方一排小图标里的深灰小圆点图标",
+      "offset": 200,
+      "direction": [
+        1,
+        -1
+      ],
+      "coarse_surface": [
+        1644.6,
+        -9.4
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": null,
+      "error_vs_gt_center_px": null,
+      "error_reduced": false,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": null,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": "整屏第二遍结果不可用：模型输出 (1295.0, -7.0) 超出 absolute_model_input 的合法区间 (-1.575, 2017.575) × (-1.575, 1261.575)"
+    },
+    {
+      "target": "保存草稿",
+      "class": "button",
+      "desc": "画布里写着「保存草稿」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        283.1,
+        360.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        277,
+        362
+      ],
+      "error_vs_gt_center_px": 6.2,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "保存草稿",
+      "class": "button",
+      "desc": "画布里写着「保存草稿」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        333.1,
+        360.6
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        276,
+        362
+      ],
+      "error_vs_gt_center_px": 7.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "保存草稿",
+      "class": "button",
+      "desc": "画布里写着「保存草稿」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        383.1,
+        360.6
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        276,
+        361
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "保存草稿",
+      "class": "button",
+      "desc": "画布里写着「保存草稿」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        483.1,
+        360.6
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        276,
+        362
+      ],
+      "error_vs_gt_center_px": 7.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "打开文件",
+      "class": "button",
+      "desc": "画布里写着「打开文件」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        283.1,
+        471.0
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        276,
+        471
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "打开文件",
+      "class": "button",
+      "desc": "画布里写着「打开文件」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        333.1,
+        521.0
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        278,
+        476
+      ],
+      "error_vs_gt_center_px": 7.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "打开文件",
+      "class": "button",
+      "desc": "画布里写着「打开文件」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        383.1,
+        571.0
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        276,
+        471
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "打开文件",
+      "class": "button",
+      "desc": "画布里写着「打开文件」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        483.1,
+        671.0
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        277,
+        471
+      ],
+      "error_vs_gt_center_px": 6.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "复制链接",
+      "class": "button",
+      "desc": "画布里写着「复制链接」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        283.1,
+        581.3
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        276,
+        582
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "复制链接",
+      "class": "button",
+      "desc": "画布里写着「复制链接」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        283.1,
+        631.3
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        276,
+        582
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "复制链接",
+      "class": "button",
+      "desc": "画布里写着「复制链接」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        283.1,
+        681.3
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        276,
+        581
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "复制链接",
+      "class": "button",
+      "desc": "画布里写着「复制链接」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        283.1,
+        781.3
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        276,
+        581
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "撤销更改",
+      "class": "button",
+      "desc": "画布里写着「撤销更改」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        283.1,
+        691.7
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        276,
+        692
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "撤销更改",
+      "class": "button",
+      "desc": "画布里写着「撤销更改」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        233.1,
+        741.7
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        277,
+        696
+      ],
+      "error_vs_gt_center_px": 7.5,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "撤销更改",
+      "class": "button",
+      "desc": "画布里写着「撤销更改」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        183.1,
+        791.7
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        276,
+        692
+      ],
+      "error_vs_gt_center_px": 7.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "撤销更改",
+      "class": "button",
+      "desc": "画布里写着「撤销更改」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        83.1,
+        891.7
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        277,
+        693
+      ],
+      "error_vs_gt_center_px": 6.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "刷新页面",
+      "class": "button",
+      "desc": "画布里写着「刷新页面」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        641.4,
+        360.6
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        638,
+        360
+      ],
+      "error_vs_gt_center_px": 3.5,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "刷新页面",
+      "class": "button",
+      "desc": "画布里写着「刷新页面」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        591.4,
+        360.6
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        636,
+        360
+      ],
+      "error_vs_gt_center_px": 5.4,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "刷新页面",
+      "class": "button",
+      "desc": "画布里写着「刷新页面」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        541.4,
+        360.6
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        637,
+        367
+      ],
+      "error_vs_gt_center_px": 7.8,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "刷新页面",
+      "class": "button",
+      "desc": "画布里写着「刷新页面」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        441.4,
+        360.6
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        638,
+        366
+      ],
+      "error_vs_gt_center_px": 6.4,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "切换主题",
+      "class": "button",
+      "desc": "画布里写着「切换主题」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        641.4,
+        471.0
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        636,
+        474
+      ],
+      "error_vs_gt_center_px": 6.2,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "切换主题",
+      "class": "button",
+      "desc": "画布里写着「切换主题」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        591.4,
+        421.0
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        638,
+        474
+      ],
+      "error_vs_gt_center_px": 4.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "切换主题",
+      "class": "button",
+      "desc": "画布里写着「切换主题」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        541.4,
+        371.0
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        635,
+        469
+      ],
+      "error_vs_gt_center_px": 6.7,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "切换主题",
+      "class": "button",
+      "desc": "画布里写着「切换主题」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        441.4,
+        271.0
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        636,
+        472
+      ],
+      "error_vs_gt_center_px": 5.5,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "导出报表",
+      "class": "button",
+      "desc": "画布里写着「导出报表」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        641.4,
+        581.3
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        637,
+        586
+      ],
+      "error_vs_gt_center_px": 6.4,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "导出报表",
+      "class": "button",
+      "desc": "画布里写着「导出报表」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        0,
+        -1
+      ],
+      "coarse_surface": [
+        641.4,
+        531.3
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        637,
+        583
+      ],
+      "error_vs_gt_center_px": 4.7,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "导出报表",
+      "class": "button",
+      "desc": "画布里写着「导出报表」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        0,
+        -1
+      ],
+      "coarse_surface": [
+        641.4,
+        481.3
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        636,
+        558
+      ],
+      "error_vs_gt_center_px": 24.0,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "导出报表",
+      "class": "button",
+      "desc": "画布里写着「导出报表」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        0,
+        -1
+      ],
+      "coarse_surface": [
+        641.4,
+        381.3
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        635,
+        539
+      ],
+      "error_vs_gt_center_px": 42.8,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "重置表单",
+      "class": "button",
+      "desc": "画布里写着「重置表单」的深蓝色按钮",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        641.4,
+        691.7
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        637,
+        687
+      ],
+      "error_vs_gt_center_px": 6.4,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "重置表单",
+      "class": "button",
+      "desc": "画布里写着「重置表单」的深蓝色按钮",
+      "offset": 50,
+      "direction": [
+        1,
+        -1
+      ],
+      "coarse_surface": [
+        691.4,
+        641.7
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        636,
+        690
+      ],
+      "error_vs_gt_center_px": 5.7,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "重置表单",
+      "class": "button",
+      "desc": "画布里写着「重置表单」的深蓝色按钮",
+      "offset": 100,
+      "direction": [
+        1,
+        -1
+      ],
+      "coarse_surface": [
+        741.4,
+        591.7
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        637,
+        693
+      ],
+      "error_vs_gt_center_px": 4.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "重置表单",
+      "class": "button",
+      "desc": "画布里写着「重置表单」的深蓝色按钮",
+      "offset": 200,
+      "direction": [
+        1,
+        -1
+      ],
+      "coarse_surface": [
+        841.4,
+        491.7
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        636,
+        695
+      ],
+      "error_vs_gt_center_px": 6.3,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行1",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：阿尔法」的那一行",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1253.5,
+        317.4
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1251,
+        312
+      ],
+      "error_vs_gt_center_px": 5.9,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行1",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：阿尔法」的那一行",
+      "offset": 50,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        1303.5,
+        317.4
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1253,
+        322
+      ],
+      "error_vs_gt_center_px": 4.7,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行1",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：阿尔法」的那一行",
+      "offset": 100,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        1353.5,
+        317.4
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1250,
+        316
+      ],
+      "error_vs_gt_center_px": 3.8,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行1",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：阿尔法」的那一行",
+      "offset": 200,
+      "direction": [
+        1,
+        0
+      ],
+      "coarse_surface": [
+        1453.5,
+        317.4
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1252,
+        316
+      ],
+      "error_vs_gt_center_px": 2.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行3",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伽玛」的那一行",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1253.5,
+        394.9
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1251,
+        390
+      ],
+      "error_vs_gt_center_px": 5.5,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行3",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伽玛」的那一行",
+      "offset": 50,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        1303.5,
+        444.9
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        1252,
+        383
+      ],
+      "error_vs_gt_center_px": 12.0,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行3",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伽玛」的那一行",
+      "offset": 100,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        1353.5,
+        494.9
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        1251,
+        395
+      ],
+      "error_vs_gt_center_px": 2.5,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行3",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伽玛」的那一行",
+      "offset": 200,
+      "direction": [
+        1,
+        1
+      ],
+      "coarse_surface": [
+        1453.5,
+        594.9
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        1250,
+        392
+      ],
+      "error_vs_gt_center_px": 4.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行5",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伊普西」的那一行",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1253.5,
+        472.5
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1252,
+        436
+      ],
+      "error_vs_gt_center_px": 36.5,
+      "error_reduced": false,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行5",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伊普西」的那一行",
+      "offset": 50,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        1253.5,
+        522.5
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        1253,
+        444
+      ],
+      "error_vs_gt_center_px": 28.5,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行5",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伊普西」的那一行",
+      "offset": 100,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        1253.5,
+        572.5
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        1252,
+        473
+      ],
+      "error_vs_gt_center_px": 1.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行5",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：伊普西」的那一行",
+      "offset": 200,
+      "direction": [
+        0,
+        1
+      ],
+      "coarse_surface": [
+        1253.5,
+        672.5
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": false,
+      "landing": [
+        1253,
+        479
+      ],
+      "error_vs_gt_center_px": 6.6,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行7",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：艾塔」的那一行",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1253.5,
+        550.0
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1252,
+        549
+      ],
+      "error_vs_gt_center_px": 1.8,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行7",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：艾塔」的那一行",
+      "offset": 50,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        1203.5,
+        600.0
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        1252,
+        549
+      ],
+      "error_vs_gt_center_px": 1.8,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行7",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：艾塔」的那一行",
+      "offset": 100,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        1153.5,
+        650.0
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        1252,
+        543
+      ],
+      "error_vs_gt_center_px": 7.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行7",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：艾塔」的那一行",
+      "offset": 200,
+      "direction": [
+        -1,
+        1
+      ],
+      "coarse_surface": [
+        1053.5,
+        750.0
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        1249,
+        508
+      ],
+      "error_vs_gt_center_px": 42.3,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行10",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：卡帕」的那一行",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1253.5,
+        666.3
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1253,
+        688
+      ],
+      "error_vs_gt_center_px": 21.7,
+      "error_reduced": false,
+      "hit_strict": false,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行10",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：卡帕」的那一行",
+      "offset": 50,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        1203.5,
+        666.3
+      ],
+      "coarse_error_px": 50.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1250,
+        632
+      ],
+      "error_vs_gt_center_px": 34.5,
+      "error_reduced": true,
+      "hit_strict": false,
+      "hit_pad8": false,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行10",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：卡帕」的那一行",
+      "offset": 100,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        1153.5,
+        666.3
+      ],
+      "coarse_error_px": 100.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1249,
+        662
+      ],
+      "error_vs_gt_center_px": 6.3,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行10",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：卡帕」的那一行",
+      "offset": 200,
+      "direction": [
+        -1,
+        0
+      ],
+      "coarse_surface": [
+        1053.5,
+        666.3
+      ],
+      "coarse_error_px": 200.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1252,
+        671
+      ],
+      "error_vs_gt_center_px": 4.9,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行12",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：缪」的那一行",
+      "offset": 0,
+      "direction": null,
+      "coarse_surface": [
+        1253.5,
+        743.9
+      ],
+      "coarse_error_px": 0.0,
+      "coarse_in_bbox": true,
+      "landing": [
+        1251,
+        740
+      ],
+      "error_vs_gt_center_px": 4.7,
+      "error_reduced": false,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行12",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：缪」的那一行",
+      "offset": 50,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        1203.5,
+        693.9
+      ],
+      "coarse_error_px": 70.7,
+      "coarse_in_bbox": false,
+      "landing": [
+        1251,
+        742
+      ],
+      "error_vs_gt_center_px": 3.2,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行12",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：缪」的那一行",
+      "offset": 100,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        1153.5,
+        643.9
+      ],
+      "coarse_error_px": 141.4,
+      "coarse_in_bbox": false,
+      "landing": [
+        1252,
+        748
+      ],
+      "error_vs_gt_center_px": 4.4,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    },
+    {
+      "target": "行12",
+      "class": "list_row",
+      "desc": "右侧清单里写着「清单行：缪」的那一行",
+      "offset": 200,
+      "direction": [
+        -1,
+        -1
+      ],
+      "coarse_surface": [
+        1053.5,
+        543.9
+      ],
+      "coarse_error_px": 282.8,
+      "coarse_in_bbox": false,
+      "landing": [
+        1252,
+        739
+      ],
+      "error_vs_gt_center_px": 5.1,
+      "error_reduced": true,
+      "hit_strict": true,
+      "hit_pad8": true,
+      "fallback": false,
+      "fallback_cause": "",
+      "refine_upscale_factor": 1.0,
+      "crop_contains_target": null,
+      "model_calls": 2,
+      "error": ""
+    }
+  ]
+}

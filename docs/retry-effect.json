@@ -1,0 +1,11 @@
+{
+ "total_sequences": 155,
+ "attempt1_success": 70,
+ "saved_by_retry": 60,
+ "exhausted": 25,
+ "rates": {
+  "without_retry": 0.4516,
+  "with_retry": 0.8387
+ },
+ "note": "救回 = 第 2/3 次尝试才成功的序列；exhausted = 3 次全败（回落粗点）；429 与传输失败已由重试层处理，此处只按最终成败分桶"
+}

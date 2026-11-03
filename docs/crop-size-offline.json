@@ -1,0 +1,1272 @@
+{
+ "experiment": "W2.3 离线 crop 尺寸对比（含住率，零模型调用）",
+ "batch": "S-Pro 同批 60（per_stratum=10, seed=20251020）",
+ "coarse_source": "W6 pixel 臂真实粗点（runs/w6/w6-raw.json）",
+ "judge": "crop 矩形完全罩住 GT 框（与 ground/crop_geometry 同口径）",
+ "sizes": {
+  "0.5x": "生产尺寸(0.5x帧,min512) × 0.5",
+  "1x": "生产尺寸(0.5x帧,min512) × 1.0",
+  "2x": "生产尺寸(0.5x帧,min512) × 2.0"
+ },
+ "stats": {
+  "0.5x": {
+   "n": 46,
+   "contained": 40,
+   "rate": 0.8696
+  },
+  "1x": {
+   "n": 46,
+   "contained": 44,
+   "rate": 0.9565
+  },
+  "2x": {
+   "n": 46,
+   "contained": 46,
+   "rate": 1.0
+  }
+ },
+ "rows": [
+  {
+   "sample_id": "android_studio_macos_44",
+   "size": "0.5x",
+   "crop": [
+    960,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_44",
+   "size": "1x",
+   "crop": [
+    1920,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_44",
+   "size": "2x",
+   "crop": [
+    3840,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_53",
+   "size": "0.5x",
+   "crop": [
+    960,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_53",
+   "size": "1x",
+   "crop": [
+    1920,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_53",
+   "size": "2x",
+   "crop": [
+    3840,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_54",
+   "size": "0.5x",
+   "crop": [
+    960,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_54",
+   "size": "1x",
+   "crop": [
+    1920,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "android_studio_macos_54",
+   "size": "2x",
+   "crop": [
+    3840,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "autocad_windows_23",
+   "size": "0.5x",
+   "crop": [
+    960,
+    270
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "autocad_windows_23",
+   "size": "1x",
+   "crop": [
+    1920,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "autocad_windows_23",
+   "size": "2x",
+   "crop": [
+    3840,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_11",
+   "size": "0.5x",
+   "crop": [
+    540,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_11",
+   "size": "1x",
+   "crop": [
+    1080,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_11",
+   "size": "2x",
+   "crop": [
+    2160,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_38",
+   "size": "0.5x",
+   "crop": [
+    540,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_38",
+   "size": "1x",
+   "crop": [
+    1080,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_38",
+   "size": "2x",
+   "crop": [
+    2160,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_6",
+   "size": "0.5x",
+   "crop": [
+    540,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_6",
+   "size": "1x",
+   "crop": [
+    1080,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "eviews_windows_6",
+   "size": "2x",
+   "crop": [
+    2160,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "excel_macos_42",
+   "size": "0.5x",
+   "crop": [
+    864,
+    558
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "excel_macos_42",
+   "size": "1x",
+   "crop": [
+    1728,
+    1117
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "excel_macos_42",
+   "size": "2x",
+   "crop": [
+    3456,
+    2234
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "illustrator_windows_4",
+   "size": "0.5x",
+   "crop": [
+    1280,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "illustrator_windows_4",
+   "size": "1x",
+   "crop": [
+    2560,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "illustrator_windows_4",
+   "size": "2x",
+   "crop": [
+    5120,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_1",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_1",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_1",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_10",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "linux_common_linux_10",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "linux_common_linux_10",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_13",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_13",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_13",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_17",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_17",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_17",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_18",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_18",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_18",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_19",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "linux_common_linux_19",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_19",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_2",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_2",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_2",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_20",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_20",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_20",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_25",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_25",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_25",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_32",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_32",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_32",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_35",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "linux_common_linux_35",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_35",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_36",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_36",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_36",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_40",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_40",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_40",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_41",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_41",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_41",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_47",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_47",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_47",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_7",
+   "size": "0.5x",
+   "crop": [
+    864,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_7",
+   "size": "1x",
+   "crop": [
+    1728,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "linux_common_linux_7",
+   "size": "2x",
+   "crop": [
+    3456,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "macos_common_macos_56",
+   "size": "0.5x",
+   "crop": [
+    864,
+    558
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "macos_common_macos_56",
+   "size": "1x",
+   "crop": [
+    1728,
+    1117
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "macos_common_macos_56",
+   "size": "2x",
+   "crop": [
+    3456,
+    2234
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "macos_common_macos_63",
+   "size": "0.5x",
+   "crop": [
+    864,
+    558
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "macos_common_macos_63",
+   "size": "1x",
+   "crop": [
+    1728,
+    1117
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "macos_common_macos_63",
+   "size": "2x",
+   "crop": [
+    3456,
+    2234
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "matlab_macos_91",
+   "size": "0.5x",
+   "crop": [
+    640,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "matlab_macos_91",
+   "size": "1x",
+   "crop": [
+    1280,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "matlab_macos_91",
+   "size": "2x",
+   "crop": [
+    2560,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "origin_windows_13",
+   "size": "0.5x",
+   "crop": [
+    960,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "origin_windows_13",
+   "size": "1x",
+   "crop": [
+    1920,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "origin_windows_13",
+   "size": "2x",
+   "crop": [
+    3840,
+    2160
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "photoshop_windows_34",
+   "size": "0.5x",
+   "crop": [
+    640,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "photoshop_windows_34",
+   "size": "1x",
+   "crop": [
+    1280,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "photoshop_windows_34",
+   "size": "2x",
+   "crop": [
+    2560,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "pycharm_macos_48",
+   "size": "0.5x",
+   "crop": [
+    1280,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "pycharm_macos_48",
+   "size": "1x",
+   "crop": [
+    2560,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "pycharm_macos_48",
+   "size": "2x",
+   "crop": [
+    5120,
+    2880
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "quartus_windows_43",
+   "size": "0.5x",
+   "crop": [
+    480,
+    270
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "quartus_windows_43",
+   "size": "1x",
+   "crop": [
+    960,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "quartus_windows_43",
+   "size": "2x",
+   "crop": [
+    1920,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "quartus_windows_9",
+   "size": "0.5x",
+   "crop": [
+    480,
+    270
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "quartus_windows_9",
+   "size": "1x",
+   "crop": [
+    960,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "quartus_windows_9",
+   "size": "2x",
+   "crop": [
+    1920,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "solidworks_windows_20",
+   "size": "0.5x",
+   "crop": [
+    960,
+    270
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "solidworks_windows_20",
+   "size": "1x",
+   "crop": [
+    1920,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "solidworks_windows_20",
+   "size": "2x",
+   "crop": [
+    3840,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "solidworks_windows_3",
+   "size": "0.5x",
+   "crop": [
+    960,
+    270
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "solidworks_windows_3",
+   "size": "1x",
+   "crop": [
+    1920,
+    540
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "solidworks_windows_3",
+   "size": "2x",
+   "crop": [
+    3840,
+    1080
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "stata_windows_10",
+   "size": "0.5x",
+   "crop": [
+    540,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "stata_windows_10",
+   "size": "1x",
+   "crop": [
+    1080,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "stata_windows_10",
+   "size": "2x",
+   "crop": [
+    2160,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vmware_macos_34",
+   "size": "0.5x",
+   "crop": [
+    864,
+    558
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "vmware_macos_34",
+   "size": "1x",
+   "crop": [
+    1728,
+    1117
+   ],
+   "contained": false
+  },
+  {
+   "sample_id": "vmware_macos_34",
+   "size": "2x",
+   "crop": [
+    3456,
+    2234
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vmware_macos_37",
+   "size": "0.5x",
+   "crop": [
+    864,
+    558
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vmware_macos_37",
+   "size": "1x",
+   "crop": [
+    1728,
+    1117
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vmware_macos_37",
+   "size": "2x",
+   "crop": [
+    3456,
+    2234
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_0",
+   "size": "0.5x",
+   "crop": [
+    640,
+    416
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_0",
+   "size": "1x",
+   "crop": [
+    1280,
+    832
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_0",
+   "size": "2x",
+   "crop": [
+    2560,
+    1664
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_50",
+   "size": "0.5x",
+   "crop": [
+    640,
+    400
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_50",
+   "size": "1x",
+   "crop": [
+    1280,
+    800
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_50",
+   "size": "2x",
+   "crop": [
+    2560,
+    1600
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_54",
+   "size": "0.5x",
+   "crop": [
+    640,
+    416
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_54",
+   "size": "1x",
+   "crop": [
+    1280,
+    832
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "vscode_macos_54",
+   "size": "2x",
+   "crop": [
+    2560,
+    1664
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "windows_common_windows_40",
+   "size": "0.5x",
+   "crop": [
+    1280,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "windows_common_windows_40",
+   "size": "1x",
+   "crop": [
+    2560,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "windows_common_windows_40",
+   "size": "2x",
+   "crop": [
+    5120,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "windows_common_windows_53",
+   "size": "0.5x",
+   "crop": [
+    1280,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "windows_common_windows_53",
+   "size": "1x",
+   "crop": [
+    2560,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "windows_common_windows_53",
+   "size": "2x",
+   "crop": [
+    5120,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_2",
+   "size": "0.5x",
+   "crop": [
+    640,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_2",
+   "size": "1x",
+   "crop": [
+    1280,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_2",
+   "size": "2x",
+   "crop": [
+    2560,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_53",
+   "size": "0.5x",
+   "crop": [
+    640,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_53",
+   "size": "1x",
+   "crop": [
+    1280,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_53",
+   "size": "2x",
+   "crop": [
+    2560,
+    1440
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_71",
+   "size": "0.5x",
+   "crop": [
+    640,
+    360
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_71",
+   "size": "1x",
+   "crop": [
+    1280,
+    720
+   ],
+   "contained": true
+  },
+  {
+   "sample_id": "word_macos_71",
+   "size": "2x",
+   "crop": [
+    2560,
+    1440
+   ],
+   "contained": true
+  }
+ ]
+}
