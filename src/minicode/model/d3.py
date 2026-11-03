@@ -167,6 +167,39 @@ class D3Client:
             "state": state,
             "questions": {question: {"type": "choice", "criteria": dict(criteria)}},
         }
+        return self._ask(payload, question, state, option_count=len(criteria))
+
+    def decide_noul(self, state: str, question: str = "judge") -> D3Reply:
+        """问一道 **noul（yes/no）题**：拿「yes」的概率（W3 逐候选判定的入口）。
+
+        请求形状（**实测探明** 2026-11-03）：``questions = {题名: {"type": "noul"}}``
+        —— noul 的 criteria 只接受 ``true``/``false`` 键，**不带 criteria** 即
+        服务端默认 yes/no；候选是否目标的判断语义写进 ``state``（目标描述 +
+        该候选描述）。
+
+        响应形状（实测）：``answers[题名].probabilities = {"yes": p, "no": …}``、
+        ``confidence``（实测与 yes 概率同值）。返回的 :class:`D3Reply` 里
+        ``probabilities["yes"]`` 就是 yes 概率；``chosen`` 是服务端的 argmax
+        （``"yes"``/``"no"``）—— **本方法不解释语义**，交给重排层。
+
+        失败一律 :class:`D3Error`（调用方据此**降级**，不许猜）。
+        """
+        payload = {
+            "model": self.config.model,
+            "state": state,
+            "questions": {question: {"type": "noul"}},
+        }
+        return self._ask(payload, question, state, option_count=2)
+
+    def _ask(
+        self,
+        payload: dict[str, Any],
+        question: str,
+        state: str,
+        *,
+        option_count: int,
+    ) -> D3Reply:
+        """发一次 ``/systemone`` 请求并解析（``decide`` / ``decide_noul`` 共用）。"""
         headers = {
             "content-type": "application/json",
             "accept": "application/json",
@@ -187,13 +220,13 @@ class D3Client:
         except urllib.error.HTTPError as exc:
             latency = (self._clock() - started) * 1000.0
             message = exc.read().decode("utf-8", errors="replace")[:500]
-            self._log_failure(question, len(criteria), latency, exc.code, message)
+            self._log_failure(question, option_count, latency, exc.code, message)
             raise D3Error(
                 f"d3 HTTP {exc.code}：{message}", status=exc.code
             ) from exc
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             latency = (self._clock() - started) * 1000.0
-            self._log_failure(question, len(criteria), latency, None, str(exc))
+            self._log_failure(question, option_count, latency, None, str(exc))
             raise D3Error(f"d3 传输失败：{exc}", status=None) from exc
         latency = (self._clock() - started) * 1000.0
 
@@ -207,7 +240,7 @@ class D3Client:
             confidence = float(answer["confidence"])
             chosen = str(answer.get("choice", ""))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            self._log_failure(question, len(criteria), latency, status, f"响应形状不对：{exc}")
+            self._log_failure(question, option_count, latency, status, f"响应形状不对：{exc}")
             raise D3Error(
                 f"d3 响应形状不对（缺 answers/{question} 或字段类型意外）：{exc}",
                 status=status,
@@ -218,7 +251,7 @@ class D3Client:
                     model=self.config.model,
                     endpoint=self.config.endpoint,
                     question=question,
-                    option_count=len(criteria),
+                    option_count=option_count,
                     probabilities=probabilities,
                     confidence=confidence,
                     chosen=chosen,

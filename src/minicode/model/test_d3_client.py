@@ -156,6 +156,75 @@ def io_bytes(data: bytes):
     return io.BytesIO(data)
 
 
+class DecideNoulTests(unittest.TestCase):
+    """W3 逐候选判定的入口：noul 题的请求形状与响应解析（形状实测 2026-11-03）。"""
+
+    def test_posts_noul_without_criteria(self):
+        sink = InMemoryD3Log()
+        client, urlopen = _client(sink, body=_noul_body())
+        with mock.patch("minicode.model.d3.urllib.request.urlopen", urlopen):
+            reply = client.decide_noul("目标：设置图标\n候选：齿轮图标")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://gateway.example/api/v1/systemone")
+        payload = json.loads(request.data.decode("utf-8"))
+        # 实测形状：noul 不带 criteria（criteria 只接受 true/false 键）。
+        self.assertEqual(payload["questions"]["judge"], {"type": "noul"})
+        self.assertEqual(payload["state"], "目标：设置图标\n候选：齿轮图标")
+        # 响应解析：yes 概率原样带回；noul 响应**没有 choice 字段**（实测）→ chosen 为空。
+        self.assertEqual(reply.probabilities, {"yes": 0.8, "no": 0.2})
+        self.assertEqual(reply.chosen, "")
+        self.assertEqual(reply.http_status, 200)
+
+    def test_noul_call_is_logged(self):
+        sink = InMemoryD3Log()
+        client, urlopen = _client(sink, body=_noul_body())
+        with mock.patch("minicode.model.d3.urllib.request.urlopen", urlopen):
+            client.decide_noul("state")
+        record = sink.records[-1]
+        self.assertEqual(record.question, "judge")
+        self.assertEqual(record.option_count, 2)
+        self.assertEqual(record.confidence, 0.8)
+        self.assertFalse(record.rate_limited)
+        self.assertNotIn("d3-secret-key", json.dumps(record.to_dict()))
+
+    def test_noul_failure_is_an_error(self):
+        import urllib.error
+
+        sink = InMemoryD3Log()
+        client, _ = _client(sink)
+        error = urllib.error.HTTPError(
+            "https://gateway.example/api/v1/systemone",
+            400,
+            "Bad Request",
+            {},
+            io_bytes(b'{"error": {"message": "bad"}}'),
+        )
+        urlopen = mock.MagicMock(side_effect=error)
+        with mock.patch("minicode.model.d3.urllib.request.urlopen", urlopen):
+            with self.assertRaises(D3Error) as ctx:
+                client.decide_noul("state")
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertFalse(ctx.exception.rate_limited)
+
+
+def _noul_body():
+    return json.dumps(
+        {
+            "answers": {
+                "judge": {
+                    "type": "noul",
+                    "noul": 0.8,
+                    "probabilities": {"yes": 0.8, "no": 0.2},
+                    "confidence": 0.8,
+                }
+            },
+            "usage": {"input_tokens": 50, "output_tokens": 0},
+            "model": "d3",
+            "object": "structured_decision",
+        }
+    ).encode()
+
+
 class InMemoryD3Log:
     """内存日志（单测用）。"""
 

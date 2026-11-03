@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,8 +32,11 @@ from minicode.model.d3 import D3Client, D3Error
 
 __all__ = [
     "DEFAULT_MIN_CONFIDENCE",
+    "DEFAULT_MIN_YES_PROBABILITY",
+    "DEFAULT_PER_CANDIDATE_K",
     "DEFAULT_SCORE_GAP_THRESHOLD",
     "D3CandidateReranker",
+    "D3PerCandidateReranker",
     "D3RerankGate",
     "RerankAction",
     "RerankOutcome",
@@ -47,6 +51,16 @@ DEFAULT_SCORE_GAP_THRESHOLD = 0.1
 
 #: **最低置信度**（缺省）：d3 的 confidence 低于它 → 不点，转人工。
 DEFAULT_MIN_CONFIDENCE = 0.5
+
+#: **逐候选 yes/no 的默认 K**（启发式排序前 K 个候选逐个问；K 之外不调用）。
+DEFAULT_PER_CANDIDATE_K = 3
+
+#: **逐候选 yes/no 的默认判定阈值**：最高 yes 概率低于它 → 不点（fail-closed）。
+DEFAULT_MIN_YES_PROBABILITY = 0.6
+
+#: **429 的退避纪律**（任务书）：60s 固定退避、单独计数、**不许计入模型失败**。
+PER_CANDIDATE_RATE_LIMIT_BACKOFF_S = 60.0
+PER_CANDIDATE_RATE_LIMIT_MAX_ATTEMPTS = 3
 
 #: d3 的选项数上限（网关约束：选项 ≤ 26 —— 编号 1~26）。
 MAX_D3_OPTIONS = 26
@@ -63,6 +77,8 @@ class RerankAction:
     LOW_CONFIDENCE = "low_confidence"
     #: d3 调用失败 → **不点**（降级不是猜）。
     D3_UNAVAILABLE = "d3_unavailable"
+    #: d3 不可用 → **跳过重排，用启发式 top1**（W3：不许因 d3 挂了整条任务失败）。
+    RERANK_UNAVAILABLE = "rerank_unavailable"
     #: 候选不足两个 → 没什么可重排的（直接选唯一/零个）。
     NOT_APPLICABLE = "not_applicable"
 
@@ -234,6 +250,204 @@ class D3CandidateReranker:
 def _match_scorer(description: str, candidate: GroundingCandidate) -> float:
     """缺省打分：候选文字与描述的匹配度（0.0 / 1.0）。"""
     return candidate_match_score(description, candidate.text)
+
+
+class D3PerCandidateReranker:
+    """**逐候选 yes/no 重排**（W3）：对启发式前 K 个候选各问一道 noul 题。
+
+    **为什么改**（V4/V6 的实证）：16~20 个选项一次问（choice 题）实测
+    3 超时 + 3 网关 400 + 2 低置信（n=8）→ 多选项模式已证伪。逐候选模式把
+    一道大题拆成 K 道**二值小题**（``noul``），每次调用小而快、可逐条审计。
+
+    **决策规则**（fail-closed）：
+
+    * 取 **yes 概率最高**的候选；最高者 < :attr:`min_yes_probability` →
+      **不点，转人工**（记 ``low_confidence``）—— d3 永远不输出坐标，
+      落点仍由调用方取候选框物理中心；
+    * 任一候选的 d3 调用不可用（超时 / 429 重试耗尽 / 400 / 网关错）→
+      **跳过重排，用启发式 top1**（记 ``rerank_unavailable``）——
+      **不许因为 d3 挂了就整条任务失败**；
+    * 429 按 :data:`PER_CANDIDATE_RATE_LIMIT_BACKOFF_S` 固定退避重试，
+      **单独计数，不计入模型失败**。
+
+    **日志**：``D3Client`` 每次调用落一条 :class:`D3CallRecord`；本类再把
+    每条「候选判定」落一份带候选序号的记录（``call_log`` sink 可选）。
+    """
+
+    def __init__(
+        self,
+        client: D3Client,
+        *,
+        k: int = DEFAULT_PER_CANDIDATE_K,
+        min_yes_probability: float = DEFAULT_MIN_YES_PROBABILITY,
+        scorer=None,
+        call_log=None,
+        sleep=time.sleep,
+    ):
+        self.client = client
+        self.k = max(1, int(k))
+        self.min_yes_probability = float(min_yes_probability)
+        self._scorer = scorer or _match_scorer
+        self._call_log = call_log
+        self._sleep = sleep
+        #: **累计统计**：与 :class:`D3CandidateReranker` 同名键 + 逐候选的计数。
+        self.stats: dict[str, int] = {
+            "rerank_calls": 0,
+            "d3_called": 0,
+            "direct": 0,
+            "reranked": 0,
+            "low_confidence": 0,
+            "rerank_unavailable": 0,
+            "not_applicable": 0,
+            "rate_limited": 0,
+        }
+
+    def rerank(
+        self,
+        description: str,
+        candidates: Sequence[GroundingCandidate],
+    ) -> RerankOutcome:
+        """重排一次（**永远不返回坐标**；接口与 :class:`D3CandidateReranker` 一致）。"""
+        self.stats["rerank_calls"] += 1
+        if len(candidates) < 2:
+            top = candidates[0].number if candidates else None
+            self.stats["not_applicable"] += 1
+            return RerankOutcome(
+                action=RerankAction.NOT_APPLICABLE, chosen_number=top,
+                heuristic_number=top,
+            )
+        scored = sorted(
+            (
+                (float(self._scorer(description, candidate)), candidate)
+                for candidate in candidates
+            ),
+            key=lambda item: (-item[0], item[1].number),
+        )
+        top_score, top = scored[0]
+        shortlist = [candidate for _score, candidate in scored[: self.k]]
+
+        yes_probabilities: dict[str, float] = {}
+        for candidate in shortlist:
+            outcome = self._ask_candidate(description, candidate)
+            if outcome is None:
+                # 任一候选不可用 → 整次重排不可用 → 启发式 top1（W3.6 的降级）。
+                self.stats["d3_called"] += len(yes_probabilities)
+                self.stats["rerank_unavailable"] += 1
+                return RerankOutcome(
+                    action=RerankAction.RERANK_UNAVAILABLE,
+                    chosen_number=top.number,
+                    heuristic_number=top.number,
+                    probabilities=dict(yes_probabilities),
+                    called_d3=True,
+                    reason=f"d3 不可用：候选 {candidate.number} 判定失败（用启发式 top1 继续）",
+                )
+            yes_probabilities[str(candidate.number)] = outcome
+        self.stats["d3_called"] += len(shortlist)
+
+        best_number = max(
+            yes_probabilities.items(), key=lambda item: (item[1], -int(item[0]))
+        )[0]
+        best_probability = yes_probabilities[best_number]
+        if best_probability < self.min_yes_probability:
+            self.stats["low_confidence"] += 1
+            return RerankOutcome(
+                action=RerankAction.LOW_CONFIDENCE,
+                chosen_number=None,
+                heuristic_number=top.number,
+                confidence=best_probability,
+                probabilities=dict(yes_probabilities),
+                called_d3=True,
+                reason=(
+                    f"最高 yes 概率 {best_probability:.3f} < 阈值 "
+                    f"{self.min_yes_probability}（不点，转人工）"
+                ),
+            )
+        self.stats["reranked"] += 1
+        return RerankOutcome(
+            action=RerankAction.RERANKED,
+            chosen_number=int(best_number),
+            heuristic_number=top.number,
+            confidence=best_probability,
+            probabilities=dict(yes_probabilities),
+            called_d3=True,
+        )
+
+    def _ask_candidate(
+        self,
+        description: str,
+        candidate: GroundingCandidate,
+    ) -> float | None:
+        """问一个候选「是不是要点的目标」，返回 yes 概率（不可用 → ``None``）。
+
+        429 → 60s 固定退避重试（单独计数）；其它失败**不重试**（V4/V6 实测
+        网关 400 重试无用）→ 直接 ``None``。
+        """
+        left, top, right, bottom = candidate.box
+        state = (
+            f"任务：{description}\n"
+            f"候选：{candidate.text or '（无文字）'}"
+            f"（位置 left={left}, top={top}, right={right}, bottom={bottom}）\n"
+            "这个候选是否是上述任务要点击的目标？"
+        )
+        for attempt in range(1, PER_CANDIDATE_RATE_LIMIT_MAX_ATTEMPTS + 1):
+            try:
+                reply = self.client.decide_noul(state)
+            except D3Error as exc:
+                self._log_call(
+                    candidate, None, exc, attempt, rate_limited=exc.rate_limited
+                )
+                if exc.rate_limited:
+                    self.stats["rate_limited"] += 1
+                    if attempt < PER_CANDIDATE_RATE_LIMIT_MAX_ATTEMPTS:
+                        self._sleep(PER_CANDIDATE_RATE_LIMIT_BACKOFF_S)
+                        continue
+                return None
+            probability = reply.probabilities.get("yes")
+            if probability is None:
+                self._log_call(candidate, None, D3Error("noul 响应缺 yes 概率"), attempt)
+                return None
+            self._log_call(
+                candidate,
+                (probability, reply.confidence, reply.latency_ms, reply.http_status),
+                None,
+                attempt,
+            )
+            return float(probability)
+        return None
+
+    def _log_call(
+        self,
+        candidate: GroundingCandidate,
+        success: tuple[float, float, float, int] | None,
+        error: Exception | None,
+        attempt: int,
+        *,
+        rate_limited: bool = False,
+    ) -> None:
+        """逐候选判定日志（候选序号 / yes 概率 / 耗时 / 状态 / 429 / 错误）。"""
+        if self._call_log is None:
+            return
+        record: dict[str, Any] = {
+            "candidate_number": candidate.number,
+            "candidate_text": candidate.text or "",
+            "attempt": attempt,
+            "rate_limited": rate_limited,
+            "error": "" if error is None else str(error)[:300],
+        }
+        if success is not None:
+            probability, confidence, latency_ms, status = success
+            record.update(
+                {
+                    "yes_probability": probability,
+                    "confidence": confidence,
+                    "latency_ms": round(latency_ms, 1),
+                    "http_status": status,
+                }
+            )
+        else:
+            record.update({"yes_probability": None, "confidence": None,
+                           "latency_ms": None, "http_status": None})
+        self._call_log(record)
 
 
 def _state_text(

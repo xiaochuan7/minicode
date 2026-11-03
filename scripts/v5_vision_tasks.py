@@ -291,6 +291,14 @@ def _make_candidate_source():
         return IconProposalCandidateSource(max_candidates=20)
 
 
+def _append_jsonl(path: Path, record: dict) -> None:
+    """逐候选判定日志：一行一条 JSON（与 d3 调用日志同一纪律）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+
+
 def build_vision(group: str, out_dir: Path, log_prefix: str):
     """标定 + 准入 + grounder（一次装配，整个任务批共用）。"""
     _load_env()
@@ -300,7 +308,7 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
     from minicode.calib.probe import default_probe_spec
     from minicode.exec import dpi
     from minicode.ground.channel import TwoStageGrounder
-    from minicode.ground.d3_rerank import D3CandidateReranker
+    from minicode.ground.d3_rerank import D3PerCandidateReranker
     from minicode.model.client import ModelClient
     from minicode.model.config import load_d3_config, load_vision_config
     from minicode.model.d3 import D3Client, JsonlD3Log
@@ -354,7 +362,16 @@ def build_vision(group: str, out_dir: Path, log_prefix: str):
             load_d3_config(),
             JsonlD3Log(out_dir / f"{log_prefix}-d3-calls.jsonl"),
         )
-        reranker = D3CandidateReranker(d3_client)
+        # **W3 改制**：C 组从「多选项整包评分」（V4，已证伪：16~20 选项一次问
+        # 3 超时 + 3 网关 400 + 2 低置信）换成**逐候选 yes/no**——
+        # 启发式前 K 个各问一道 noul 题；不可用 → 启发式 top1 继续。
+        # 逐候选判定日志落 ``{log_prefix}-d3-percandidate.jsonl``。
+        reranker = D3PerCandidateReranker(
+            d3_client,
+            call_log=lambda record: _append_jsonl(
+                out_dir / f"{log_prefix}-d3-percandidate.jsonl", record
+            ),
+        )
 
     grounder = TwoStageGrounder(
         client,
