@@ -287,7 +287,15 @@ def _append_jsonl(path: Path, record: dict) -> None:
 
 
 def _fingerprint(service) -> str:
-    """界面指纹（W5.3 的变化检测）：标题 + 前几个控件值。"""
+    """界面指纹（W5.3 的变化检测）：标题 + 前几个控件值。
+
+    ⚠️ **W7 修正注记**：原实现调 ``observer.observe(None)`` ——
+    那是**无条件全树查询**，被 ``UnconditionalQueryError`` 架构红线拒绝
+    （只许定点查询），所以本函数**一直**返回空串（旧产物里 fingerprint
+    全空就是它）。Loop Breaker 的观测改走 :func:`_window_fingerprint`
+    （窗口标题 + 类名，零 UIA 依赖）；本函数保留供 click 步骤的 detail
+    字段口径不变。
+    """
     try:
         observer = service._observer  # noqa: SLF001 - 评测台脚本
         values = [
@@ -296,6 +304,24 @@ def _fingerprint(service) -> str:
         ]
         return "|".join(values)
     except Exception:  # noqa: BLE001 - 指纹拿不到就退化成空串（视为不变）
+        return ""
+
+
+def _window_fingerprint(run) -> str:
+    """Loop Breaker 的观测指纹：**活动实例窗口的标题 + 类名**。
+
+    为什么不用 UIA：全树查询被红线拒绝（见 :func:`_fingerprint` 注记），
+    定点查询需要目标控件名（与步骤语义耦合）。窗口标题是零依赖、确定性、
+    真机可复算的观测 —— 记事本标题随脏标记/文件名变化，覆盖 T1–T4 的
+    主要状态转移。**局限（如实）**：标题不变的点击（如 calc 按键）会
+    被记为「无可见变化」——计数器分布的解读要带这条口径。
+    """
+    try:
+        hwnd = run.windows.get(run.active_alias, 0)
+        if not hwnd:
+            return ""
+        return f"{window_class(hwnd)}|{window_text(hwnd)}"
+    except Exception:  # noqa: BLE001 —— 指纹拿不到就空串（该步跳过计数）
         return ""
 
 
@@ -1325,10 +1351,9 @@ def run_attempt(task: LongTask, out_dir: Path) -> dict:
         try:
             for index, step in enumerate(task.steps, start=1):
                 # Loop Breaker（W7）：每步观测前后指纹 → 双计数器无条件落盘。
-                active_service = run.services.get(run.active_alias)
                 before_fp = (
-                    _fingerprint(active_service)
-                    if active_service is not None and step["do"] not in ("fault", "wait")
+                    _window_fingerprint(run)
+                    if step["do"] not in ("fault", "wait")
                     else ""
                 )
                 if pending_blacklist:
@@ -1338,9 +1363,7 @@ def run_attempt(task: LongTask, out_dir: Path) -> dict:
                     print(f"  [loop-break 黑名单] {pending_blacklist}", flush=True)
                 detail = run.healer.execute(step)
                 # 执行后指纹：click 类步骤的 detail 已带；其他步骤（type 等）现取。
-                after_fp = str(detail.get("fingerprint") or "") or (
-                    _fingerprint(active_service) if active_service is not None else ""
-                )
+                after_fp = str(detail.get("fingerprint") or "") or _window_fingerprint(run)
                 if before_fp and after_fp:
                     loop_verdict = loop_breaker.observe(
                         step=index,
