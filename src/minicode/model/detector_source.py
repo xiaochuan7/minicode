@@ -3,7 +3,9 @@
 **许可与身份（V3 要求核实并在报告写明）**：`docling-project/ScreenParser`
 （IBM docling 系，Hugging Face），**Apache-2.0**；YOLO 架构，在 ScreenParse
 （77.1 万张网页截图、2100 万 UI 元素标注）上微调。
-**禁止 OmniParser 的 icon_detect（AGPL）** —— 本模块不引入。
+**不引入 OmniParser 的 icon_detect（2026-11-04 口径修订）**：v1/v2 检测权重
+确为 AGPL-3.0；**v3（icon_detect_v3/LICENSE）与 icon_caption 均为 MIT** ——
+许可上 v3 可用，但**实证 2/30 的低覆盖才是主证据**，与许可证无关。
 
 **为什么需要它**（V3 量化的结论）：OCR 词框对 icon 目标覆盖 0/30（根因坐实）、
 零模型启发式 1/30（召回不足）—— 「补候选」要走**真检测器**。

@@ -59,6 +59,9 @@ if TYPE_CHECKING:
 __all__ = [
     "ICON_PROPOSAL_SOURCE",
     "MAX_ICON_CANDIDATES",
+    "MAX_ICON_PHYSICAL_PX",
+    "MIN_AREA_PHYSICAL_PX",
+    "MIN_ICON_PHYSICAL_PX",
     "PHASH_DEDUPE_HAMMING",
     "PROPOSAL_MAX_WIDTH_PX",
     "IconProposalCandidateSource",
@@ -66,8 +69,26 @@ __all__ = [
     "phash_of_frame",
 ]
 
-#: 提议所在的工作分辨率（最长边，像素）。太小图标细节没了，太慢。
-PROPOSAL_MAX_WIDTH_PX = 640
+#: 提议所在的工作分辨率（最长边，像素）。
+#:
+#: ⚠️ **W7 修正（2026-11-04）**：原值 640 的理由是「连通域是纯 Python 逐像素
+#: BFS，大了太慢」—— 连通域已重写为 numpy 两趟并查集（见
+#: :func:`_connected_components`），640 的性能理由不复存在。
+#: **留着 640 的代价是分辨率污染**：4K（3840 宽）→ 缩放 0.167，
+#: 6 个工作像素 = 36 个物理像素 —— 尺寸过滤若在工作分辨率里卡物理阈值，
+#: 21/30 的 S-Pro icon 样本在算法跑之前就被机械排除。
+PROPOSAL_MAX_WIDTH_PX = 2016
+
+#: 图标提议的**物理像素**域尺寸阈值（最小边）—— 16px 级小图标远高于它，
+#: 只滤噪点。⚠️ 判定在**物理像素**域做（工作分辨率尺寸 × inv_scale），
+#: 不许再回到「工作分辨率里卡物理尺寸」的老坑。
+MIN_ICON_PHYSICAL_PX = 6
+
+#: 图标提议的**物理像素**域尺寸阈值（最大边）—— 大窗口不是图标。
+MAX_ICON_PHYSICAL_PX = 200
+
+#: 连通域块的最小面积（**物理像素**²；工作分辨率面积 × inv_scale² 换算）。
+MIN_AREA_PHYSICAL_PX = 12
 
 #: 图标提议清单的长度上限（与 :data:`minicode.ground.candidates.MAX_CANDIDATES`
 #: 同档 —— 上限是否够用由 V3 的量化脚本回答，配置项在这里可调）。
@@ -152,32 +173,79 @@ def _dilate(mask: numpy.ndarray, radius: int) -> numpy.ndarray:
 
 
 def _connected_components(mask: numpy.ndarray) -> list[tuple[int, int, int, int, int]]:
-    """4 邻接连通域（迭代 BFS）→ ``(left, top, right, bottom, 像素数)`` 列表。"""
+    """4 邻接连通域（**numpy 两趟并查集**）→ ``(left, top, right, bottom, 像素数)`` 列表。
+
+    坐标是**工作分辨率**；``right`` / ``bottom`` 是半开区间（旧 BFS 同口径）。
+
+    ⚠️ 旧实现是纯 Python 逐像素 BFS —— 在 640 宽的工作分辨率上够用，
+    但工作分辨率提到 2016 后是几十秒级的（这就是当初只敢取 640 的原因，
+    也是 W7 分辨率污染的根因）。两趟并查集把逐像素工作交给 numpy
+    （**第 1 趟**：逐行 run 长编码 —— 像素 → 远少于像素的 run），
+    **第 2 趟**：相邻两行的 run 按列区间相交合并（区间相交矩阵也是 numpy），
+    并查集只对 run 做 —— 纯 Python 部分只剩下对 run 的 union/find，毫秒级。
+    """
     numpy = _require_numpy()
-    height, width = mask.shape
-    visited = numpy.zeros_like(mask, dtype=bool)
-    components: list[tuple[int, int, int, int, int]] = []
-    for start_y, start_x in zip(*numpy.nonzero(mask), strict=True):
-        if visited[start_y, start_x]:
+    height, _width = mask.shape
+    # -- 第 1 趟：逐行 run 长编码（向量化：diff 找每行的起点/终点）--------
+    # ``dx[y, x] = padded[y, x+1] - padded[y, x]``；+1 = run 起点，-1 = 终点。
+    # 左右各补一列哨兵 0 —— 右端哨兵保证「贴到最后一列的段」也有终点可检。
+    padded = numpy.zeros((height, _width + 2), dtype=numpy.int8)
+    padded[:, 1 : _width + 1] = mask
+    diffs = numpy.diff(padded, axis=1)
+    row_of_start, x0_all = numpy.nonzero(diffs == 1)
+    row_of_end, x1_all = numpy.nonzero(diffs == -1)
+    # nonzero 按行主序返回 → 起点与终点逐位置配对（同一行内）。
+    runs: list[tuple[int, int, int]] = [
+        (int(y), int(x0), int(x1))
+        for y, x0, x1 in zip(row_of_start, x0_all, x1_all, strict=True)
+    ]
+    if not runs:
+        return []
+
+    # -- 第 2 趟：并查集，相邻行的 run 列区间相交 → 合并 -------------------
+    parent = list(range(len(runs)))
+
+    def find(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    by_row: dict[int, list[int]] = {}
+    for index, (row, _x0, _x1) in enumerate(runs):
+        by_row.setdefault(row, []).append(index)
+    for row in sorted(by_row):
+        previous = by_row.get(row - 1)
+        if not previous:
             continue
-        stack = [(int(start_y), int(start_x))]
-        visited[start_y, start_x] = True
-        left = right = int(start_x)
-        top = bottom = int(start_y)
-        area = 0
-        while stack:
-            y, x = stack.pop()
-            area += 1
-            left = min(left, x)
-            right = max(right, x)
-            top = min(top, y)
-            bottom = max(bottom, y)
-            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
-                if 0 <= ny < height and 0 <= nx < width and mask[ny, nx] and not visited[ny, nx]:
-                    visited[ny, nx] = True
-                    stack.append((ny, nx))
-        components.append((left, top, right + 1, bottom + 1, area))
-    return components
+        current = by_row[row]
+        starts_a = numpy.fromiter((runs[i][1] for i in current), dtype=numpy.int64)
+        ends_a = numpy.fromiter((runs[i][2] for i in current), dtype=numpy.int64)
+        starts_b = numpy.fromiter((runs[i][1] for i in previous), dtype=numpy.int64)
+        ends_b = numpy.fromiter((runs[i][2] for i in previous), dtype=numpy.int64)
+        # 4 邻接：上下两行的像素在**同一列**才相邻 → 列区间相交。
+        overlap = (starts_a[:, None] < ends_b[None, :]) & (
+            starts_b[None, :] < ends_a[:, None]
+        )
+        for ia, ib in zip(*numpy.nonzero(overlap), strict=True):
+            root_a, root_b = find(current[ia]), find(previous[ib])
+            if root_a != root_b:
+                parent[root_a] = root_b
+
+    # -- 第 3 趟：按根汇总包围盒与面积（面积按 run 长累计 = 真实像素数）----
+    boxes: dict[int, list[int]] = {}
+    for index, (row, x0, x1) in enumerate(runs):
+        root = find(index)
+        box = boxes.get(root)
+        if box is None:
+            boxes[root] = [x0, row, x1, row + 1, x1 - x0]
+            continue
+        box[0] = min(box[0], x0)
+        box[1] = min(box[1], row)
+        box[2] = max(box[2], x1)
+        box[3] = max(box[3], row + 1)
+        box[4] += x1 - x0
+    return [(box[0], box[1], box[2], box[3], box[4]) for box in boxes.values()]
 
 
 def _dct_matrix(size: int) -> numpy.ndarray:
@@ -283,13 +351,21 @@ class IconProposalCandidateSource:
         mask = _dilate(edge_mask, radius=1)
 
         # -- 连通域 → 过滤（尺寸 / 密实度 / 边缘密度）----------------------
+        # 尺寸判定在**物理像素**域（W7 修正）：阈值是按物理图标尺寸定的，
+        # 在工作分辨率里卡会让 4K 下的小图标在算法跑之前就被机械排除。
+        inv_scale = 1.0 / scale
         proposals: list[_Proposal] = []
         for left, top, right, bottom, area in _connected_components(mask):
             width = right - left
             height = bottom - top
-            if not (6 <= width <= 200 and 6 <= height <= 200):
+            width_physical = width * inv_scale
+            height_physical = height * inv_scale
+            if not (
+                MIN_ICON_PHYSICAL_PX <= width_physical <= MAX_ICON_PHYSICAL_PX
+                and MIN_ICON_PHYSICAL_PX <= height_physical <= MAX_ICON_PHYSICAL_PX
+            ):
                 continue
-            if area < 12:
+            if area * inv_scale * inv_scale < MIN_AREA_PHYSICAL_PX:
                 continue
             box_area = width * height
             fill = area / box_area
@@ -311,7 +387,6 @@ class IconProposalCandidateSource:
         proposals = proposals[: self.max_candidates * 3]
 
         # -- 工作分辨率 → 物理像素 ----------------------------------------
-        inv_scale = 1.0 / scale
 
         def _physical(box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
             left, top, right, bottom = box

@@ -38,6 +38,12 @@ from typing import Any
 from minicode.model.image import model_input_size_for
 from minicode.model.request_log import total_input_tokens
 
+#: 视觉通路的输出预算（**8192，不是 2000**）：换来的模型（推理型）会先产
+#: reasoning 再给 content —— reasoning token **吃 max_tokens**，给 2000 会
+#: 出现「content 为空 → NoTextOutputError → 被重试掉 → 白烧配额」。
+#: 与 :data:`minicode.ground.channel.DEFAULT_MAX_TOKENS` 同一口径。
+VISION_MAX_TOKENS = 8192
+
 __all__ = [
     "VisualChannel",
     "PromptCapturingCaller",
@@ -112,7 +118,7 @@ def server_image_evidence_from_log(
     sink: Any,
     declared: tuple[int, int],
     *,
-    max_tokens: int = 2000,
+    max_tokens: int = VISION_MAX_TOKENS,
 ) -> tuple[tuple[int, int] | None, Any]:
     """一次测量 → **两个结论**：**相等断言**（闸门）与**盒子反查**（诊断）。
 
@@ -168,7 +174,7 @@ def reverse_lookup_from_log(
     sink: Any,
     declared: tuple[int, int],
     *,
-    max_tokens: int = 2000,
+    max_tokens: int = VISION_MAX_TOKENS,
 ) -> tuple[int, int] | None:
     """**诊断**（盒子反查）—— **不作准入依据**。
 
@@ -459,17 +465,34 @@ class VisualChannel:
         from minicode.calib.probe import default_probe_spec
         from minicode.exec import dpi
         from minicode.model.client import ModelClient
-        from minicode.model.config import load_vision_config
+        from minicode.model.config import load_retry_settings, load_vision_config
         from minicode.model.request_log import JsonlRequestLog
-        from minicode.model.retry import RetryingModelCaller
+        from minicode.model.retry import RetryingModelCaller, RetryLogWriter, RetryPolicy
 
         # V1 视觉通道可插拔：e2e 视觉线的被测对象就是视觉通道 → 用视觉配置
         # （``MINICODE_VISION_*`` 优先，逐字段回落 ``MINICODE_*``）。
         config = load_vision_config()
         sink = RecordingSink(JsonlRequestLog(self.out_dir / "model-requests.jsonl"))
+        # **重试策略可配**（W7 重试硬化）：视觉通道读 ``MINICODE_VISION_RETRY_*``
+        # （逐字段回落通用键，全缺 = 原缺省 3 次/0.5s/8s）。
+        settings = load_retry_settings(vision=True)
+        policy = RetryPolicy(
+            max_attempts=settings.max_attempts,
+            base_delay_s=settings.base_delay_s,
+            max_delay_s=settings.max_delay_s,
+            jitter_s=settings.jitter_s,
+        )
+        # **重试落盘**：每轮尝试的异常/退避/429 单独计数 → 独立 jsonl。
+        retry_log = RetryLogWriter(self.out_dir / "model-retries.jsonl")
         # **重试缝**（W5）在录制层内侧：捕获的是最终生效的那次请求文本。
+        # ``serial=True`` = 视觉调用 **in-flight = 1**（共享网关并发只加深 429）。
         client = PromptCapturingCaller(
-            RetryingModelCaller(ModelClient(config, sink, channel="vision"))
+            RetryingModelCaller(
+                ModelClient(config, sink, channel="vision"),
+                policy=policy,
+                attempt_sink=retry_log.write,
+                serial=True,
+            )
         )
         width, height = dpi.physical_screen_size()
         #: **声明的模型输入尺寸**：从**量出来的表面尺寸**算

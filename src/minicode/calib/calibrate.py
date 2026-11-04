@@ -590,7 +590,7 @@ class CalibrationProbe:
         call_path: str = "image",
         model_id: str = "",
         effort: Effort | str = Effort.LOW,
-        max_tokens: int = 2000,
+        max_tokens: int = 8192,
         calibration_tolerance_px: float = CALIBRATION_TOLERANCE_PX,
         out_of_bounds_tolerance_px: float = OUT_OF_BOUNDS_TOLERANCE_PX,
         equivalence_tolerance_px: float = SCALE_EQUIVALENCE_TOLERANCE_PX,

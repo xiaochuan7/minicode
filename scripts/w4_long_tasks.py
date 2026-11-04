@@ -57,6 +57,7 @@ from minicode.exec.input import press_scancode, scancode_of  # noqa: E402
 from minicode.guard.lockext import hold_desktop_lock  # noqa: E402
 from minicode.guard.policy import GuardBudget, GuardPolicy, load_policy  # noqa: E402
 from minicode.guard.win32 import last_input_tick, now_tick  # noqa: E402
+from minicode.reflection.loop_breaker import LoopBreaker  # noqa: E402
 from minicode.serve.real import build_real_service  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -253,6 +254,11 @@ HEAL_MAX_ROUNDS = 2
 
 _HEAL_LOG_PATH = TMP.parent / "heal-log.jsonl"
 
+#: Loop Breaker 的双计数器落盘（W7 主线 C1）：**每步无条件写** —— 不是只在
+#: 触发时写（结果分类器时代的教训：只在 heal 时留痕，就分不清「触发太窄」
+#: 和「策略无效」）。
+_LOOP_COUNTERS_PATH = TMP.parent / "loop-counters.jsonl"
+
 
 class HealLogger:
     """自愈事件落盘（W5.4 的口径来源）。"""
@@ -268,6 +274,16 @@ class HealLogger:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
             handle.flush()
+
+
+def _append_jsonl(path: Path, record: dict) -> None:
+    """一行一个 JSON 的追加落盘（Loop Breaker 计数器用；坏了不炸主链路）。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 —— 落盘失败不影响执行
+        pass
 
 
 def _fingerprint(service) -> str:
@@ -1174,14 +1190,71 @@ def _fill_template_line(run: LongRun, answer: str) -> dict:
 
 
 def _judge_t4(run: LongRun) -> dict:
-    out = read_file(TMP / "t4-units-out.txt")
+    """T4 判分（W7 主线 C2 的判据清单示范）：**主口径 = 逐行精确匹配**。
+
+    教训驱动（T4 曾两套读法并排没裁决）：主口径用确定性执行式判据
+    （OSWorld 风格），宽口径降为**敏感性分析**列。CompletenessChecker
+    （reflection/completeness.py）承载判据，驳回时写明缺哪条证据。
+    """
+    from minicode.reflection.completeness import CompletenessChecker, Criterion, CriterionResult
+
+    out_text = read_file(TMP / "t4-units-out.txt")
     original = read_file(TMP / "t4-units.txt")
-    ok_out = (
-        "42.17" in out and "38" in out and "180" in out
-        and "2500" in out and "150" in out
+    out_lines = [line for line in out_text.splitlines() if line.strip()]
+    expected_values = ("42.17", "38", "180", "2500", "150")
+
+    def _exact_lines(context: dict) -> CriterionResult:
+        # 主口径：5 行、每行行尾是期望值（行内容与模板骨架一致）。
+        ok = len(out_lines) == 5 and all(
+            line.rstrip().endswith(value)
+            for line, value in zip(out_lines, expected_values, strict=True)
+        )
+        evidence = (
+            f"lines={len(out_lines)} "
+            f"tails={[line[-14:] for line in out_lines]}"
+        )
+        return CriterionResult(
+            ok=ok, evidence=evidence if ok else "", error="逐行精确匹配未过"
+        )
+
+    def _template_intact(context: dict) -> CriterionResult:
+        ok = original.count("___") == 5  # 原模板未被破坏（只读生效）
+        return CriterionResult(
+            ok=ok,
+            evidence=f"placeholders={original.count('___')}" if ok else "",
+            error="原模板被破坏",
+        )
+
+    def _no_stale_buffer(context: dict) -> CriterionResult:
+        # 无陈旧缓冲残留：输出行数恰 5（第 6 行起有残留 = 严口径 fail 的来源）。
+        ok = len(out_lines) == 5
+        return CriterionResult(
+            ok=ok, evidence=f"line_count={len(out_lines)}" if ok else "",
+            error=f"输出有 {len(out_lines)} 行（期望 5，多出的是陈旧缓冲残留）",
+        )
+
+    checker = CompletenessChecker(
+        [
+            Criterion(name="exact-lines", verify=_exact_lines),
+            Criterion(name="template-intact", verify=_template_intact),
+            Criterion(name="no-stale-buffer", verify=_no_stale_buffer),
+        ],
+        stable_rounds=1,  # judge 是终态离线核验：单次读数即可（无逐步观测流）
     )
-    ok_original = original.count("___") == 5  # 原模板未被破坏（只读生效）
-    return {"ok": ok_out and ok_original, "out": out[:200], "original_intact": ok_original}
+    checker.note_observation("terminal")
+    context = {"out_lines": out_lines, "original": original}
+    verdict = checker.final_gate(context)
+
+    # 敏感性分析列（宽口径 = 旧的子串读法）：只单独报告，不参与主判定。
+    lenient_ok = all(value in out_text for value in expected_values)
+
+    return {
+        "ok": verdict.accepted,  # **主口径 = 判据清单全过**
+        "criteria": list(verdict.per_criterion),
+        "missing": list(verdict.missing),
+        "sensitivity_lenient_ok": lenient_ok,  # 敏感性分析：宽口径单独一列
+        "out_excerpt": out_text[:200],
+    }
 
 
 TASKS: dict[str, LongTask] = {t.id: t for t in (T1, T2, T3, T4)}
@@ -1225,6 +1298,11 @@ def run_attempt(task: LongTask, out_dir: Path) -> dict:
     fault_log: list[dict] = []
     heal_log = HealLogger(_HEAL_LOG_PATH)
     run = LongRun(task.id, fault_log, heal_log)
+    # Loop Breaker（W7 主线 C1）：双计数器每步无条件落盘；触发只产出
+    # 「换方式」指令（loop-break ≠ fail），黑名单只作用于下一步。
+    loop_breaker = LoopBreaker(
+        sink=lambda record: _append_jsonl(_LOOP_COUNTERS_PATH, {**record, "task": task.id}),
+    )
     idle_ms = (now_tick() - last_input_tick()) % 0x1_0000_0000
     own_recent_s = time.monotonic() - _OWN_LAST_INPUT
     if idle_ms < 1500 and own_recent_s > 3.0:
@@ -1243,10 +1321,47 @@ def run_attempt(task: LongTask, out_dir: Path) -> dict:
                     "error": f"reset 失败：{type(exc).__name__}: {exc}"}
         step_results: list[dict] = []
         status = "pass"
+        pending_blacklist = ""
         try:
             for index, step in enumerate(task.steps, start=1):
+                # Loop Breaker（W7）：每步观测前后指纹 → 双计数器无条件落盘。
+                active_service = run.services.get(run.active_alias)
+                before_fp = (
+                    _fingerprint(active_service)
+                    if active_service is not None and step["do"] not in ("fault", "wait")
+                    else ""
+                )
+                if pending_blacklist:
+                    # 黑名单只作用于下一步：随步骤记录下发（**骨架接线** ——
+                    # 改变执行行为的注入点留作后续；本步只记账，不注入决策）。
+                    step = {**step, "blacklist_next": pending_blacklist}
+                    print(f"  [loop-break 黑名单] {pending_blacklist}", flush=True)
                 detail = run.healer.execute(step)
-                detail.update({"step": index, "do": step["do"]})
+                # 执行后指纹：click 类步骤的 detail 已带；其他步骤（type 等）现取。
+                after_fp = str(detail.get("fingerprint") or "") or (
+                    _fingerprint(active_service) if active_service is not None else ""
+                )
+                if before_fp and after_fp:
+                    loop_verdict = loop_breaker.observe(
+                        step=index,
+                        action_key=f"{step['do']}@{step.get('target') or step.get('text') or ''}",
+                        obs_before=before_fp,
+                        obs_after=after_fp,
+                    )
+                else:
+                    # 指纹不可得（实例未起/取失败）→ 这一步不计入计数器（如实跳过）。
+                    loop_verdict = None
+                detail.update({
+                    "step": index,
+                    "do": step["do"],
+                    "loop": {
+                        "action_repeat_count": loop_verdict.action_repeat_count if loop_verdict else None,
+                        "obs_repeat_count": loop_verdict.obs_repeat_count if loop_verdict else None,
+                        "level": loop_verdict.level if loop_verdict else None,
+                        "skipped": loop_verdict is None,
+                    },
+                })
+                pending_blacklist = loop_breaker.consume_blacklist()
                 step_results.append(detail)
                 if not detail["ok"]:
                     status = "fail"
@@ -1292,6 +1407,8 @@ def run_attempt(task: LongTask, out_dir: Path) -> dict:
                      "by_category": dict(run.healer.heal_counts),
                      "saved_by_category": dict(run.healer.heal_saved),
                      "events": heal_events},
+            # Loop Breaker 三个分开的数（工单 5.1：遭遇故障数 / 触发自愈数 / 自愈成功数）。
+            "loop": dict(loop_breaker.stats),
             "wall_s": round(wall, 1),
         })
         print(

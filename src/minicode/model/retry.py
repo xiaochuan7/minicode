@@ -23,10 +23,13 @@
 
 from __future__ import annotations
 
+import json
 import random
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .client import ModelReply
 from .effort import Effort
@@ -38,7 +41,12 @@ from .errors import (
     NoTextOutputError,
 )
 
-__all__ = ["RetryPolicy", "RetryingModelCaller", "RetryAttempt"]
+__all__ = [
+    "RetryPolicy",
+    "RetryingModelCaller",
+    "RetryAttempt",
+    "RetryLogWriter",
+]
 
 #: 服务端**暂时性**故障的状态码（重试有意义的那几个）。
 RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
@@ -81,16 +89,49 @@ class RetryAttempt:
     attempt: int
     error: str
     delay_s: float | None  # 这次失败后睡了多久（``None`` = 没睡，直接抛）
+    #: 这笔失败是不是 **429 限流**（配额问题，**单独计数**：限流不许算进
+    #: 模型失败率 —— 免费共享网关打满 TPM 时单请求也秒 429，那是流量，
+    #: 不是模型或编码出错）。
+    rate_limited: bool = False
 
 
 class RetryingModelCaller:
-    """包住任意 ``ModelCaller`` 的重试缝（端口形状不变，调用方零改动）。"""
+    """包住任意 ``ModelCaller`` 的重试缝（端口形状不变，调用方零改动）。
 
-    def __init__(self, inner, policy: RetryPolicy | None = None):
+    W7 重试硬化新增（行为缺省与从前完全一致）：
+
+    * :param attempt_sink: 每轮 ``complete`` 结束（成功或耗尽）后回调一次，
+      收到的 dict 里带逐次尝试记录 —— 调用方拿它落盘（jsonl）。
+      **不落盘**（``None``）是缺省，与从前一致。
+    * :param serial: ``True`` = 整个 ``complete`` 全程持一把锁 ——
+      视觉通道的 **in-flight = 1**（免费共享网关并发 8 是整 key 共享的，
+      并发只会加深 429 风暴；视觉调用串行是纪律不是优化）。
+    """
+
+    def __init__(
+        self,
+        inner,
+        policy: RetryPolicy | None = None,
+        *,
+        attempt_sink: Callable[[dict], None] | None = None,
+        serial: bool = False,
+    ):
         self.inner = inner
         self.policy = policy or RetryPolicy()
+        self._attempt_sink = attempt_sink
+        self._serial_lock = threading.Lock() if serial else None
         #: 最近一次 ``complete`` 的逐次尝试记录（每次调用前清空）。
         self.attempts: list[RetryAttempt] = []
+
+    @property
+    def rate_limited_attempts(self) -> int:
+        """本轮（最近一次 ``complete``）里 **429** 的尝试数（单独计数）。"""
+        return sum(1 for a in self.attempts if a.rate_limited)
+
+    @property
+    def failure_attempts(self) -> int:
+        """本轮里**非 429** 的失败尝试数（模型失败率的分母口径：限流不算失败）。"""
+        return sum(1 for a in self.attempts if not a.rate_limited)
 
     def complete(
         self,
@@ -104,10 +145,9 @@ class RetryingModelCaller:
         parse_ok: bool | None = None,
     ) -> ModelReply:
         """带重试的模型调用（参数原样透传，**不重试成别的参数**）。"""
-        self.attempts = []
-        for attempt in range(1, self.policy.max_attempts + 1):
-            try:
-                return self.inner.complete(
+        if self._serial_lock is not None:
+            with self._serial_lock:
+                return self._complete_locked(
                     prompt,
                     effort=effort,
                     max_tokens=max_tokens,
@@ -116,43 +156,154 @@ class RetryingModelCaller:
                     thinking_disabled=thinking_disabled,
                     parse_ok=parse_ok,
                 )
-            except (
-                ModelTransportError,
-                NoTextOutputError,
-            ) as exc:
-                delay = self._after_failure(attempt, exc)
-                if delay is None:
-                    raise
-                self.policy.sleep(delay)
-            except ModelSideError as exc:
-                if exc.status not in RETRYABLE_STATUSES:
-                    # 4xx（除 429）= 请求本身有问题：重发一样的只会一样，如实抛。
+        return self._complete_locked(
+            prompt,
+            effort=effort,
+            max_tokens=max_tokens,
+            image_base64=image_base64,
+            images_base64=images_base64,
+            thinking_disabled=thinking_disabled,
+            parse_ok=parse_ok,
+        )
+
+    def _complete_locked(
+        self,
+        prompt: str,
+        *,
+        effort: Effort | str | None,
+        max_tokens: int,
+        image_base64: str | None,
+        images_base64: Sequence[str],
+        thinking_disabled: bool,
+        parse_ok: bool | None,
+    ) -> ModelReply:
+        self.attempts = []
+        outcome = "ok"
+        final_error = ""
+        try:
+            for attempt in range(1, self.policy.max_attempts + 1):
+                try:
+                    reply = self.inner.complete(
+                        prompt,
+                        effort=effort,
+                        max_tokens=max_tokens,
+                        image_base64=image_base64,
+                        images_base64=images_base64,
+                        thinking_disabled=thinking_disabled,
+                        parse_ok=parse_ok,
+                    )
+                    self._emit(prompt, outcome, final_error, max_tokens=max_tokens)
+                    return reply
+                except (
+                    ModelTransportError,
+                    NoTextOutputError,
+                ) as exc:
+                    delay = self._after_failure(attempt, exc, rate_limited=False)
+                    if delay is None:
+                        outcome, final_error = "exhausted", _brief(exc)
+                        raise
+                    self.policy.sleep(delay)
+                except ModelSideError as exc:
+                    if exc.status not in RETRYABLE_STATUSES:
+                        # 4xx（除 429）= 请求本身有问题：重发一样的只会一样，如实抛。
+                        self.attempts.append(
+                            RetryAttempt(
+                                attempt=attempt, error=_brief(exc), delay_s=None
+                            )
+                        )
+                        outcome, final_error = "non_retryable", _brief(exc)
+                        raise
+                    delay = self._after_failure(
+                        attempt, exc, rate_limited=(exc.status == 429)
+                    )
+                    if delay is None:
+                        outcome = (
+                            "rate_limited_exhausted" if exc.status == 429 else "exhausted"
+                        )
+                        final_error = _brief(exc)
+                        raise
+                    self.policy.sleep(delay)
+                except (ModelConfigError, EffortRequiredError) as exc:
+                    # 本地配置问题：不重试（重试前也记一笔，审计口径一致）。
                     self.attempts.append(
                         RetryAttempt(attempt=attempt, error=_brief(exc), delay_s=None)
                     )
+                    outcome, final_error = "config", _brief(exc)
                     raise
-                delay = self._after_failure(attempt, exc)
-                if delay is None:
-                    raise
-                self.policy.sleep(delay)
-            except (ModelConfigError, EffortRequiredError) as exc:
-                # 本地配置问题：不重试（重试前也记一笔，审计口径一致）。
-                self.attempts.append(
-                    RetryAttempt(attempt=attempt, error=_brief(exc), delay_s=None)
-                )
-                raise
-        raise AssertionError("不可达：max_attempts 循环必在其中一次返回或抛出")
+            raise AssertionError("不可达：max_attempts 循环必在其中一次返回或抛出")
+        except Exception:
+            self._emit(prompt, outcome, final_error, max_tokens=max_tokens)
+            raise
 
-    def _after_failure(self, attempt: int, exc: Exception) -> float | None:
+    def _after_failure(
+        self, attempt: int, exc: Exception, *, rate_limited: bool
+    ) -> float | None:
         """失败后决定「再睡多久重试」；次数用尽返回 ``None``（上层如实抛）。"""
         if attempt >= self.policy.max_attempts:
             self.attempts.append(
-                RetryAttempt(attempt=attempt, error=_brief(exc), delay_s=None)
+                RetryAttempt(
+                    attempt=attempt,
+                    error=_brief(exc),
+                    delay_s=None,
+                    rate_limited=rate_limited,
+                )
             )
             return None
         delay = self.policy.delay_for(attempt)
-        self.attempts.append(RetryAttempt(attempt=attempt, error=_brief(exc), delay_s=delay))
+        self.attempts.append(
+            RetryAttempt(
+                attempt=attempt,
+                error=_brief(exc),
+                delay_s=delay,
+                rate_limited=rate_limited,
+            )
+        )
         return delay
+
+    def _emit(
+        self, prompt: str, outcome: str, final_error: str, *, max_tokens: int
+    ) -> None:
+        """把本轮尝试记录交给落盘缝（没接缝 = 什么都不做，与从前一致）。"""
+        if self._attempt_sink is None:
+            return
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "outcome": outcome,
+            "final_error": final_error,
+            "attempts": [
+                {
+                    "attempt": a.attempt,
+                    "error": a.error,
+                    "delay_s": a.delay_s,
+                    "rate_limited": a.rate_limited,
+                }
+                for a in self.attempts
+            ],
+            "rate_limited_attempts": self.rate_limited_attempts,
+            "failure_attempts": self.failure_attempts,
+            "max_tokens": max_tokens,
+            "prompt_chars": len(prompt),
+        }
+        try:
+            self._attempt_sink(record)
+        except Exception:  # noqa: BLE001 —— 落盘失败不许影响调用本身
+            pass
+
+
+class RetryLogWriter:
+    """重试轮次的 **jsonl 落盘**（``attempt_sink`` 的仓库缺省实现）。
+
+    一行一个 JSON：每轮 ``complete``（成功或耗尽都写）的逐次尝试、
+    退避时长、429 单独计数。文件按行追加，不锁（调用方保证单写者）。
+    """
+
+    def __init__(self, path: Path | str):
+        self.path = Path(path)
+
+    def write(self, record: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def _brief(exc: Exception) -> str:

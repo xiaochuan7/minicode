@@ -247,10 +247,10 @@ C 组 0/8** —— 逐候选判定 20 次调用 18 次 HTTP 200（零超时零 4
 1. **唯一测试缝就是动作执行缝**：输入「目标描述 + 一帧截图 + 可选控件树」，输出「动作 + 最终落点 + 意图」。真机与假桌面共用同一套接线（[ADR 0007](docs/adr/0007-single-test-seam-action-execution.md)）。
 2. **坐标契约**：工程端全程物理像素，唯一真值 = 物理像素 × 虚拟桌面原点；模型端量纲不写死，由运行时标定在候选标度里判定（[ADR 0006](docs/adr/0006-crop-local-coordinate-contract.md)）。
 3. **模型选编号，不给坐标**：候选源先生成带编号候选表，模型只答编号，落点取候选框物理中心，零换算。
-   ⚠️ **这不是自创路线**：「编号选择的 GUI grounding」属 Set-of-Mark（[arXiv 2310.11441](https://arxiv.org/abs/2310.11441)）
-   与 WebAgent 的 axtree grounding（[arXiv 2309.08532](https://arxiv.org/abs/2309.08532)）谱系；
+   ⚠️ **这不是自创路线**：「编号选择的 GUI grounding」属 Set-of-Mark（[arXiv 2310.11441](https://arxiv.org/abs/2310.11441)）谱系
+   ——把界面上可交互元素标上编号、模型只答编号；本仓的候选编号路径是它在 GUI grounding 场景的工程严格化
+   （单一执行缝、标定准入闸门、零依赖 core）。
    「UIA 结构优先 + 视觉兜底」的混合检测，微软 UFO²（[arXiv 2504.14603](https://arxiv.org/abs/2504.14603)）是先例。
-   minicode 的差异点是**编号选择的工程严格化**（单一执行缝、标定准入闸门、零依赖 core），
    不是发明了这条路。
 
 完整取舍见 [ARCHITECTURE.md](ARCHITECTURE.md) 与 [docs/adr/](docs/adr/)（8 条架构决策记录）。

@@ -2,6 +2,61 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。日期为 Asia/Shanghai。
 
+## v0.2.1 — 2026-11-04（通宵任务 W7）
+
+**三条主线**：视觉模型切换实测（Qwen3.8-Flash-Next：标定/端到端通过但
+同批配对**显著更差** 2/60 vs 13/60 —— 已回退，见
+`docs/vision-switch-qwen38.md`）+ 重试硬化 + Loop Breaker / Completeness
+判定器。诚实注记：分辨率污染修复后零模型图标启发式命中率未变（同批
+1/30 → 1/30），弱在算法不在门槛。
+
+### 变更
+
+- **视觉模型切换实测与回退（W7-A）**：视觉通道切到 Qwen3.8-Flash-Next
+  完整实测——标定准入门通过（absolute_model_input 唯一、21 轮命中 100%、
+  中位 15.06px）、端到端真图一致；但**同批 60 条配对显著更差**
+  （2/60 vs deepseek 13/60，Δ=−18.3pp，McNemar exact p=0.0034 / mid-p=0.0018，
+  |Δ| 未达 MDE 18.7pp）→ 按预注册规则回退：`.env` 四键已删，回落
+  deepseek。证据与复现：`runs/w7-vision-switch/` + `docs/vision-switch-qwen38.md`。
+  结论补强：换**更强**模型已证伪（27B）、换**同级更快**模型同样更差——
+  「换模型」这条路线整体关闭。
+- **重试硬化（W7-A）**：`RetryPolicy` 可从 `.env` 配置（`MINICODE_RETRY_*` /
+  `MINICODE_VISION_RETRY_*` 四键，缺省保持原值，非法数字显式报错）；视觉
+  通道接激进值（16 次 / 1.5s / 90s / jitter 0.25）；429 与模型失败**分开
+  计数**（`rate_limited` 字段，限流不计入失败率）；每轮尝试落盘
+  `model-retries.jsonl`（`RetryLogWriter`）；视觉调用串行（in-flight = 1）；
+  新增 `VisionCallGuard` 外层冷却（重试耗尽 → 冷却 60–120s → 连续 5 次才
+  升级通道暂停，**绝不因限流终止整夜**）。视觉通路三处 `max_tokens`
+  2000 → 8192（推理模型 reasoning token 吃预算）。
+- **图标候选分辨率污染修复（W7-B）**：`icon_proposals.py` 工作分辨率
+  640 → 2016；尺寸阈值移到**物理像素域**判定（4K 下 16px 小图标不再被
+  机械排除）；连通域重写为 numpy 两趟并查集（12 组随机形状与旧 BFS
+  逐块等价，2016 宽最坏 0.64s）。**如实记录**：重测 604 条全量 icon 样本
+  —— 可达率 100%（修复属实），但命中率未变（20/604 ≈ 3.3%，同批 30 条
+  1/30 → 1/30）：弱在算法不在门槛。
+- **口径修订（W7-B）**：README 的 WebAgent/axtree 错引（2309.08532 是
+  EvoPrompt）删除；OmniParser 许可口径三处修订（v1/v2 icon_detect AGPL-3.0
+  属实，v3 与 icon_caption 为 MIT；不引入的主证据是实证 2/30 低覆盖）；
+  `load_vision_config` docstring 区分「换更强模型已证伪」与「换同级/更快
+  模型属部署选择」；`docs/w4-long-results.md` 自愈层表述修订（2 条记录、
+  都未救回、最终通过轮未触发 —— 此前「零触发」不准确）。
+
+### 新增
+
+- **Loop Breaker（W7-C1）**：`reflection/loop_breaker.py` —— VLAA-GUI 式
+  重复计数器（窗口=阈值的饱和判定：同动作×2 无变化 → 换交互方式；最近
+  3 观测 ≈ → 换整体策略；层 3 一次模型裁决 + 只作用下一步的黑名单）；
+  双计数器每步无条件落盘；loop-break ≠ fail；三个数分开报（遭遇 /
+  触发 / 救回）；已接线 `w4_long_tasks.py`（计数器落盘 + 黑名单随步骤
+  记录下发，行为注入点留作后续）。
+- **Completeness 判定器（W7-C2）**：`reflection/completeness.py` ——
+  两段式：K 条机器可验判据每步自查（零调用）+ done() 时逐条核验须给
+  直接证据（副作用动作要有可见确认）；驳回写「缺哪条证据」保留进展；
+  防误驳靠界面稳定合取条件。
+- **文档**：`docs/vision-switch-qwen38.md`（切换记录 + 标定 + 配对对照）、
+  `docs/loop-breaker.md`（三层设计 + 计数器分布 + 口径说明）、
+  `docs/long-task-v3.md`（长任务统计方案）。
+
 ## v0.2.0 — 2026-11-04
 
 本条目对应 v0.1.7 之后的交付（通宵任务 W1–W6）：**视觉配置收口**（W1）、

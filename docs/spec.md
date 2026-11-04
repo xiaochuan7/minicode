@@ -364,7 +364,8 @@ CalibrationResult := detected_scale | candidates | confident | unique
 ### 12. 引用与许可纪律
 
 - **只引用官方仓库 README 正文里的两组数**（换 harness **+19.6 分 / 步数 −53%**、代码执行 vs 同等 GUI+CLI 权限 **+6.1 分 / 步数 −14.8%**）。另一组更宽的区间**不在官方 README 正文**，要用必须先回查论文消融表并标出表号。
-- **不引入 OmniParser 做实时 grounding**（架构上禁止）：其官方模型卡自报 ScreenSpot-Pro 准确率仅 39.6%，端到端 0.6~0.8 秒/帧，且许可口径混合（仓库 CC-BY-4.0、**模型权重许可待查**、检测器是 YOLOv8 导出的 ONNX 而其自身许可未记录）→ 闭源商用前必须逐项核许可。
+- **不引入 OmniParser 做实时 grounding**（架构上禁止）：其官方模型卡自报 ScreenSpot-Pro 准确率仅 39.6%，端到端 0.6~0.8 秒/帧。
+  > 📌 **许可口径（2026-11-04 已核清）**：v1/v2 的 `icon_detect` 权重确为 AGPL-3.0；**`icon_detect_v3/LICENSE` 与 `icon_caption/LICENSE` 均为 MIT** —— 许可上 v3 可用。但**不引入它的主证据是实证**：零模型启发式对 icon 候选的覆盖 2/30（`docs/w3-d3-rerank.md`），低覆盖与许可证无关。
   > 📌 **2026-10-22 待澄清（本轮拍板第 3 条）**：这条禁的是「**当实时 grounding 主链**」，**不禁**「候选源里的**低频像素级预筛**」。
   > 但**本轮不引入任何像素级检测器** —— 只做「**UIA 主表 + OCR 附加表 + IoU 0.1**」的合并
   > （**那是算法规则，不是那个模型**）。
@@ -476,7 +477,7 @@ CalibrationResult := detected_scale | candidates | confident | unique
 
 1. **partial score 与 binary 成功率不并列**；厂商自评 61.7 必带口径，外部背书用官方榜的 75.19%。
 2. **只引用官方仓库 README 正文里的两组 harness 增益数**；更宽的那组区间禁止引用，除非能指到论文消融表的表号。
-3. **OmniParser 不做实时件**；许可三项未核清前不得进主链路。
+3. **OmniParser 不做实时件**（2026-11-04：许可已核清 —— v1/v2 检测权重 AGPL-3.0，v3 与 icon_caption MIT；不引入的主证据是实证低覆盖 2/30，与许可证无关）。
 
 ### 待办与前置
 

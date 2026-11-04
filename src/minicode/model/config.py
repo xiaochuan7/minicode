@@ -49,9 +49,13 @@ __all__ = [
     "PROTOCOL_OPENAI",
     "VISION_CONFIG_KEYS",
     "VISION_OPTIONAL_CONFIG_KEYS",
+    "VISION_RETRY_CONFIG_KEYS",
+    "RETRY_CONFIG_KEYS",
+    "RetryPolicySettings",
     "ModelConfig",
     "find_env_file",
     "load_config",
+    "load_retry_settings",
     "load_vision_config",
     "parse_env_file",
     "resolve_endpoint",
@@ -118,6 +122,30 @@ D3_CONFIG_KEYS: dict[str, str] = {
     "base_url": "MINICODE_D3_BASE_URL",
     "api_key": "MINICODE_D3_API_KEY",
     "model": "MINICODE_D3_MODEL",
+}
+
+#: **重试策略**（W7 重试硬化）的可配键 → 字段名。
+#:
+#: 全部**可选**：缺省保持 :class:`~minicode.model.retry.RetryPolicy` 的原值
+#: （max_attempts=3 / base 0.5s / max 8s / jitter 0.25s）—— 不配 = 行为不变，
+#: 既有测试与既有部署都不受影响。
+RETRY_CONFIG_KEYS: dict[str, str] = {
+    "max_attempts": "MINICODE_RETRY_MAX_ATTEMPTS",
+    "base_delay_s": "MINICODE_RETRY_BASE_DELAY_S",
+    "max_delay_s": "MINICODE_RETRY_MAX_DELAY_S",
+    "jitter_s": "MINICODE_RETRY_JITTER_S",
+}
+
+#: 视觉通道的**重试策略**键（逐字段回落通用键，再回落缺省值）。
+#:
+#: 视觉通道给**激进值**（免费共享网关深夜拥堵：慢无所谓，死掉才致命 ——
+#: 例：max_attempts=16 / base 1.5s / max 90s）。决策层的键单独一组，
+#: 两层互不跟随。
+VISION_RETRY_CONFIG_KEYS: dict[str, str] = {
+    "max_attempts": "MINICODE_VISION_RETRY_MAX_ATTEMPTS",
+    "base_delay_s": "MINICODE_VISION_RETRY_BASE_DELAY_S",
+    "max_delay_s": "MINICODE_VISION_RETRY_MAX_DELAY_S",
+    "jitter_s": "MINICODE_VISION_RETRY_JITTER_S",
 }
 
 #: ``user-agent`` 的缺省值（通用 provider 不该被内部网关的头绑死）。
@@ -424,10 +452,11 @@ def load_vision_config(env_file: Path | None = None) -> ModelConfig:
       ``MINICODE_VISION_CLIENT`` **不回落**（``x-opencode-*`` 是网关语义的头，
       发给另一个网关是噪声）。
 
-    ⚠️ **默认口径（2026-11-03 收口）**：视觉通道默认且唯一使用决策层同款模型
-    —— **给视觉通道换模型这条路已证伪一次**（Qwen3.8-27B 臂更低且 Δ 未达
-    MDE，见 ``docs/v2-vision-paired.md``）。本函数保留可插拔能力，但仓库
-    ``.env`` 不再配置 ``MINICODE_VISION_*`` 键组；V2 的双模型跑批脚本已删除。
+    ⚠️ **默认口径（2026-11-03 收口，2026-11-04 修订）**：视觉通道默认使用
+    决策层同款模型 —— **「换更强模型」这条路已证伪一次**（Qwen3.8-27B 臂更低
+    且 Δ 未达 MDE，见 ``docs/v2-vision-paired.md``）；**换同级/更快的模型**
+    （如 Qwen3.8-Flash-Next）属**部署选择，不在该证伪范围内**，启用需实测
+    留档（配对对照 + 标定准入）。本函数保留可插拔能力。
     """
     decision = load_config(env_file)
     values = parse_env_file(Path(decision.source))
@@ -465,6 +494,65 @@ def load_vision_config(env_file: Path | None = None) -> ModelConfig:
     # 视觉端点在装载时就拼一次（别等到发请求才发现协议/地址对不上）。
     resolve_endpoint(config.base_url, config.protocol)
     return config
+
+
+@dataclass(frozen=True)
+class RetryPolicySettings:
+    """重试策略的**配置数字**（.env 可配，缺省 = ``RetryPolicy`` 原值）。
+
+    ⚠️ 缺省值必须与 :class:`~minicode.model.retry.RetryPolicy` 的字段缺省
+    **逐一对齐**（``test_model_retry.py`` 有测试守着）；本类只管**读配置**，
+    不构造策略对象（组装留给调用方 —— config 层不依赖 retry 层）。
+    """
+
+    max_attempts: int = 3
+    base_delay_s: float = 0.5
+    max_delay_s: float = 8.0
+    jitter_s: float = 0.25
+
+
+def load_retry_settings(
+    env_file: Path | None = None, *, vision: bool = False
+) -> RetryPolicySettings:
+    """从仓库 ``.env`` 装载重试策略的**可配数字**（W7 重试硬化）。
+
+    * ``vision=False`` 读 :data:`RETRY_CONFIG_KEYS`（决策层 / 通用通道）；
+    * ``vision=True`` 读 :data:`VISION_RETRY_CONFIG_KEYS`，
+      每个字段**逐字段回落**通用键、再回落缺省值 —— 只想给视觉通道
+      配激进值时，四个 ``MINICODE_VISION_RETRY_*`` 各自生效；
+    * 全部键**可选**：一个都没配 → 返回缺省（行为与从前完全一致）；
+    * 给了但不是数字 → :class:`ModelConfigError`（**不静默回退** ——
+      与温度键同一口径：悄悄按缺省跑会让「配置生效没有」永远查不出来）。
+    """
+    path = Path(env_file) if env_file is not None else find_env_file()
+    values = parse_env_file(path) if path.is_file() else {}
+    keys = VISION_RETRY_CONFIG_KEYS if vision else RETRY_CONFIG_KEYS
+
+    resolved: dict[str, float | int] = {}
+    defaults = RetryPolicySettings()
+    for field_name, key in keys.items():
+        raw = values.get(key, "").strip()
+        if not raw and vision:
+            # 视觉键没配 → 逐字段回落通用键（同一组数字两层通吃）。
+            raw = values.get(RETRY_CONFIG_KEYS[field_name], "").strip()
+        if not raw:
+            continue  # 两层都没配 → 用缺省（行为与从前一致）
+        expected_type = int if field_name == "max_attempts" else float
+        try:
+            parsed = expected_type(raw)
+        except ValueError as exc:
+            raise ModelConfigError(
+                f"仓库配置 {path} 的 {key}={raw!r} 不是"
+                f"{'整数' if expected_type is int else '数字'}"
+            ) from exc
+        resolved[field_name] = parsed
+
+    return RetryPolicySettings(
+        max_attempts=int(resolved.get("max_attempts", defaults.max_attempts)),
+        base_delay_s=float(resolved.get("base_delay_s", defaults.base_delay_s)),
+        max_delay_s=float(resolved.get("max_delay_s", defaults.max_delay_s)),
+        jitter_s=float(resolved.get("jitter_s", defaults.jitter_s)),
+    )
 
 
 def _protocol_of(values: Mapping[str, str]) -> tuple[str, str]:
